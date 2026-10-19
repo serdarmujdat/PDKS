@@ -1,0 +1,6 @@
+{
+  "name": "PDKS Pro - QR Kodlu Personel Takip Sistemi",
+  "description": "Web tabanlı QR kodlu personel devam kontrol sistemi (PDKS). Canlı kamera kiosk terminali, giriş-çıkış kart basımı, vardiya planı ve mesai raporlama.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
