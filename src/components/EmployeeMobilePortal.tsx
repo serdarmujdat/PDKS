@@ -34,6 +34,7 @@ import {
   ShieldAlert,
   Bell,
   Timer,
+  ExternalLink,
 } from 'lucide-react';
 import {
   Employee,
@@ -46,7 +47,7 @@ import {
   MobileScanResult,
   CompanyWallQRConfig,
 } from '../types/pdks';
-import { pdksStorage } from '../services/storage';
+import { pdksStorage, getTodayString } from '../services/storage';
 import { generateQRDataURL } from '../utils/qr';
 import { playSuccessChime, playErrorBuzzer } from '../utils/audio';
 import { NotificationCenter } from './NotificationCenter';
@@ -91,7 +92,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
 
   // Overtime Modal State
   const [isOvertimeModalOpen, setIsOvertimeModalOpen] = useState(false);
-  const [overtimeDate, setOvertimeDate] = useState(new Date().toISOString().split('T')[0]);
+  const [overtimeDate, setOvertimeDate] = useState(getTodayString());
   const [overtimeStartTime, setOvertimeStartTime] = useState('18:00');
   const [overtimeEndTime, setOvertimeEndTime] = useState('21:00');
   const [overtimeHours, setOvertimeHours] = useState(3);
@@ -112,15 +113,24 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
   const [companyQR, setCompanyQR] = useState<CompanyWallQRConfig>(pdksStorage.getCompanyWallQR());
 
   // GPS & Live Workplace Location Verification State (Strictly confidential)
-  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  // GPS & Live Workplace Location Verification State (Strictly confidential)
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number; accuracy?: number } | null>(null);
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'loading' | 'success' | 'error' | 'denied'>('idle');
   const [gpsErrorText, setGpsErrorText] = useState<string | null>(null);
 
   const isRestrictedPersonnel = currentUser ? currentUser.role !== 'ik_yoneticisi' : true;
   const isHRManager = currentUser ? currentUser.role === 'ik_yoneticisi' : false;
 
-  // Actively fetch GPS position from device
+  const geofenceEnabled = Boolean(companyQR.enableGeofence);
+
+  // Actively fetch GPS position from device ONLY when geofence is enabled
   const refreshLocation = useCallback(() => {
+    const latestQR = pdksStorage.getCompanyWallQR();
+    if (!latestQR.enableGeofence) {
+      setGpsStatus('idle');
+      setGpsErrorText(null);
+      return;
+    }
     if (typeof window === 'undefined' || !navigator.geolocation) {
       setGpsStatus('error');
       setGpsErrorText('Tarayıcınız coğrafi konum (GPS) desteği sunmuyor.');
@@ -139,6 +149,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
           const coords = {
             latitude: pos.coords.latitude,
             longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
           };
           setUserLocation(coords);
           setGpsStatus('success');
@@ -159,9 +170,38 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     }
   }, []);
 
-  // Request location on mount and observe position
+  // Sync wall QR from server and listen for live configuration updates
   useEffect(() => {
+    pdksStorage.fetchCompanyWallQRFromServer().then((cfg) => {
+      if (cfg) setCompanyQR(cfg);
+    });
+
+    const handleWallQREvent = (e: any) => {
+      if (e?.detail) setCompanyQR(e.detail);
+      else setCompanyQR(pdksStorage.getCompanyWallQR());
+    };
+    const handleSyncEvent = () => {
+      setCompanyQR(pdksStorage.getCompanyWallQR());
+    };
+    window.addEventListener('pdks-wall-qr-updated', handleWallQREvent);
+    window.addEventListener('pdks-data-synced', handleSyncEvent);
+
+    return () => {
+      window.removeEventListener('pdks-wall-qr-updated', handleWallQREvent);
+      window.removeEventListener('pdks-data-synced', handleSyncEvent);
+    };
+  }, []);
+
+  // Observe device GPS location ONLY while GPS Doğrulaması (enableGeofence) is enabled
+  useEffect(() => {
+    if (!geofenceEnabled) {
+      setGpsStatus('idle');
+      setGpsErrorText(null);
+      return;
+    }
+
     refreshLocation();
+
     let watchId: number | null = null;
     if (typeof window !== 'undefined' && navigator.geolocation) {
       try {
@@ -170,6 +210,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
             const coords = {
               latitude: pos.coords.latitude,
               longitude: pos.coords.longitude,
+              accuracy: pos.coords.accuracy,
             };
             setUserLocation(coords);
             setGpsStatus('success');
@@ -188,7 +229,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
         navigator.geolocation.clearWatch(watchId);
       }
     };
-  }, [refreshLocation]);
+  }, [geofenceEnabled, refreshLocation]);
 
   const loadData = () => {
     const emps = pdksStorage.getEmployees();
@@ -279,26 +320,8 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
       // 3-second debounce lock to prevent duplicate read
       scanLockRef.current = true;
 
-      // STRICT Workplace Geofence Check (Server-authoritative check without leaking coordinates)
-      const verifyInitial = pdksStorage.verifyWorkplaceLocation(userLocation);
-      if (verifyInitial.geofenceEnabled && !verifyInitial.isWithinWorkplace) {
-        playErrorBuzzer();
-        if ('vibrate' in navigator) {
-          try {
-            navigator.vibrate([200, 100, 200, 100, 300]);
-          } catch {
-            // ignore
-          }
-        }
-        setErrorMessage(
-          'GİRİŞ/ÇIKIŞ ENGELLENDİ: İşyeri Sınırları Dışındasınız! Güvenlik kuralı gereğince yalnızca şirket/fabrika çalışma sahası içerisinde QR kod okutulabilir.'
-        );
-        scanLockRef.current = false;
-        return;
-      }
-
       // Execute scan with validated coords
-      const executeScanWithCoords = (locationCoords?: { latitude: number; longitude: number }) => {
+      const executeScanWithCoords = (locationCoords?: { latitude: number; longitude: number; accuracy?: number }) => {
         const result = pdksStorage.processMobileScanWithState({
           employeeId: currentEmp.id,
           scanMode,
@@ -331,9 +354,15 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
           setTimeout(() => {
             setErrorMessage(null);
             scanLockRef.current = false;
-          }, 3500);
+          }, 5000);
         }
       };
+
+      const latestQRConfig = pdksStorage.getCompanyWallQR();
+      if (!latestQRConfig.enableGeofence) {
+        executeScanWithCoords(undefined);
+        return;
+      }
 
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
@@ -341,39 +370,21 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
             const freshCoords = {
               latitude: pos.coords.latitude,
               longitude: pos.coords.longitude,
+              accuracy: pos.coords.accuracy,
             };
             setUserLocation(freshCoords);
-            const freshVerification = pdksStorage.verifyWorkplaceLocation(freshCoords);
-
-            if (freshVerification.geofenceEnabled && !freshVerification.isWithinWorkplace) {
-              playErrorBuzzer();
-              setErrorMessage(
-                'GİRİŞ/ÇIKIŞ ENGELLENDİ: İşyeri Sınırları Dışındasınız! Şirket sınırları dışından QR okutulamaz.'
-              );
-              scanLockRef.current = false;
-              return;
-            }
-
             executeScanWithCoords(freshCoords);
           },
           () => {
-            if (userLocation) {
-              executeScanWithCoords(userLocation);
-            } else {
-              playErrorBuzzer();
-              setErrorMessage(
-                'Konum Doğrulaması Başarısız: GPS bilgisi alınamadı. Güvenlik gereğince işyeri konumu doğrulanmadan QR ile işlem yapılamaz.'
-              );
-              scanLockRef.current = false;
-            }
+            executeScanWithCoords(userLocation || undefined);
           },
-          { timeout: 6000, enableHighAccuracy: true }
+          { timeout: 6000, enableHighAccuracy: true, maximumAge: 10000 }
         );
       } else {
         executeScanWithCoords(userLocation || undefined);
       }
     },
-    [currentEmp, scanMode, companyQR, stopCamera, userLocation]
+    [currentEmp, scanMode, stopCamera, userLocation]
   );
 
   // Attach stream to video whenever element is in DOM or stream updates
@@ -433,7 +444,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
 
     if (!navigator?.mediaDevices?.getUserMedia) {
       setIsCameraLoading(false);
-      setCameraError('Cihazınız veya tarayıcınız doğrudan video akışını desteklemiyor. Aşağıdaki "Duvardaki QR\'ı Doğrula" veya "Fotoğraf Çek" seçeneğini kullanabilirsiniz.');
+      setCameraError('Cihazınız veya tarayıcınız doğrudan video akışını desteklemiyor. Aşağıdaki "Fotoğraf Çek / Kameradan Tara" seçeneğini kullanarak duvardaki QR kodu anında okutabilirsiniz.');
       return;
     }
 
@@ -441,7 +452,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
       let stream: MediaStream | null = null;
       let lastErr: unknown = null;
 
-      // Tier 1: Ideal facingMode & 1280x720 resolution
+      // Tier 1: Try ideal facingMode with preferred dimensions
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
@@ -463,7 +474,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
           });
         } catch (err2) {
           lastErr = err2;
-          // Tier 3: Most permissive generic video: true (works on any laptop, webcam, emulator)
+          // Tier 3: Most permissive generic video: true (universal fallback)
           try {
             stream = await navigator.mediaDevices.getUserMedia({
               video: true,
@@ -481,6 +492,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
         setIsCameraActive(true);
         setIsCameraLoading(false);
         setCameraError(null);
+        setIsPermissionHelpOpen(false);
 
         // Check flashlight/torch capability
         const videoTrack = stream.getVideoTracks()[0];
@@ -493,54 +505,67 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
           }
         }
 
-        // Attach stream to video element on next tick
-        setTimeout(() => {
+        // Attach stream to video element safely across re-renders
+        const attachStreamToVideo = (retries = 4) => {
           if (videoRef.current && streamRef.current) {
             videoRef.current.srcObject = streamRef.current;
             videoRef.current.setAttribute('playsinline', 'true');
             videoRef.current.setAttribute('autoplay', 'true');
             videoRef.current.muted = true;
-            videoRef.current.play().catch((err) => console.warn('Play error:', err));
+            videoRef.current.play().catch((playErr) => {
+              console.debug('Autoplay note (non-fatal):', playErr);
+            });
+          } else if (retries > 0) {
+            setTimeout(() => attachStreamToVideo(retries - 1), 80);
           }
-        }, 100);
+        };
+        setTimeout(() => attachStreamToVideo(4), 50);
       }
     } catch (err: unknown) {
       console.warn('Kamera açma hatası:', err);
       setIsCameraActive(false);
       setIsCameraLoading(false);
       const errorObj = err as Error;
-      if (errorObj.name === 'NotAllowedError' || errorObj.name === 'PermissionDeniedError' || errorObj.name === 'SecurityError') {
-        setCameraError('Kamera izni verilmedi veya engellendi. Duvardaki kodu okutmak için "Fotoğraf Çek" veya "Duvardaki Kodu Doğrula" seçeneğini kullanabilirsiniz.');
+      const isIframe = typeof window !== 'undefined' && window.self !== window.top;
+
+      if (
+        errorObj.name === 'NotAllowedError' ||
+        errorObj.name === 'PermissionDeniedError' ||
+        errorObj.name === 'SecurityError'
+      ) {
+        if (isIframe) {
+          setCameraError(
+            'Geliştirme önizleme çerçevesi (iframe) kamera erişimini kısıtlamış olabilir. Doğrudan taramak için aşağıdaki "Fotoğraf Çek / Kameradan Tara" butonunu kullanabilir veya sayfayı yeni sekmede açabilirsiniz.'
+          );
+        } else {
+          setCameraError(
+            'Kamera izni verilmedi veya engellendi. Adres çubuğundaki kilit (🔒) simgesinden izin verebilir veya "Fotoğraf Çek / Kameradan Tara" seçeneğini kullanabilirsiniz.'
+          );
+        }
         setIsPermissionHelpOpen(true);
       } else if (errorObj.name === 'NotFoundError' || errorObj.name === 'DevicesNotFoundError') {
-        setCameraError('Kullanılabilir kamera donanımı bulunamadı. Lütfen "Duvardaki Kodu Doğrula" butonunu kullanınız.');
+        setCameraError('Kullanılabilir kamera donanımı bulunamadı. Lütfen "Fotoğraf Çek / Yükle" veya "Duvardaki Kodu Doğrula" seçeneğini kullanınız.');
       } else {
         setCameraError(`Kamera başlatılamadı: ${errorObj.message || 'Lütfen kamera izninizi kontrol ediniz.'}`);
+        setIsPermissionHelpOpen(true);
       }
     }
   };
 
   // Open scanner with specified mode
   const handleOpenScanner = (mode: MobileScanMode) => {
-    // Strict Geofence Enforcement: Block opening scanner if outside workplace
-    const verification = userLocation ? pdksStorage.verifyWorkplaceLocation(userLocation) : null;
-    if (verification && verification.geofenceEnabled && !verification.isWithinWorkplace) {
-      playErrorBuzzer();
-      setErrorMessage(
-        'GİRİŞ/ÇIKIŞ ENGELLENDİ: İşyeri Sınırları Dışındasınız! Güvenlik kuralı gereğince şirket/fabrika sınırları dışından QR ile işlem yapılamaz.'
-      );
-      return;
-    }
-
-    if (companyQR.enableGeofence && !userLocation && gpsStatus !== 'loading') {
-      refreshLocation();
-    }
-
     setScanMode(mode);
     setIsScannerOpen(true);
     setIsCameraLoading(true);
     setCameraError(null);
     startCamera();
+
+    // Refresh location non-blockingly without colliding with camera permission prompt
+    if (companyQR.enableGeofence && !userLocation && gpsStatus !== 'loading') {
+      setTimeout(() => {
+        refreshLocation();
+      }, 600);
+    }
   };
 
   // QR Image file upload scanner (alternative if camera stream is blocked in iframe)
@@ -552,15 +577,28 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     const reader = new FileReader();
     reader.onload = () => {
       img.onload = () => {
+        const maxDim = 1280;
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+
         const canvas = canvasRef.current || document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
+        canvas.width = width;
+        canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          ctx.drawImage(img, 0, 0);
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const code = jsQR(imageData.data, imageData.width, imageData.height, {
-            inversionAttempts: 'dontInvert',
+          ctx.drawImage(img, 0, 0, width, height);
+          const imageData = ctx.getImageData(0, 0, width, height);
+          const code = jsQR(imageData.data, width, height, {
+            inversionAttempts: 'attemptBoth',
           });
           if (code && code.data) {
             handleProcessScannedCode(code.data);
@@ -572,6 +610,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
       img.src = reader.result as string;
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   // Toggle Hardware Torch (Fener)
@@ -827,18 +866,18 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
   const isBreak = currentEmp.currentPresence === 'break';
   const isOutside = currentEmp.currentPresence === 'outside';
 
-  const verification = userLocation ? pdksStorage.verifyWorkplaceLocation(userLocation) : null;
-  const isWithinGeofence = verification ? verification.isWithinWorkplace : false;
-  const isOutsideGeofence = verification ? (verification.geofenceEnabled && !verification.isWithinWorkplace) : false;
+  const verification = geofenceEnabled && userLocation ? pdksStorage.verifyWorkplaceLocation(userLocation) : null;
+  const isWithinGeofence = !geofenceEnabled || (verification ? verification.isWithinWorkplace : false);
+  const isOutsideGeofence = geofenceEnabled && verification ? !verification.isWithinWorkplace : false;
 
-  // Calculate today's summary metrics
-  const todayStr = new Date().toISOString().split('T')[0];
+  // Calculate today's summary metrics (local date)
+  const todayStr = getTodayString();
   const todayRecords = recentRecords.filter((r) => r.date === todayStr);
   const firstCheckIn = todayRecords.find((r) => r.type === 'check_in');
   const lastRecord = todayRecords[0];
 
   return (
-    <div className="max-w-md sm:max-w-xl mx-auto px-3 sm:px-4 py-3 sm:py-5 space-y-3.5">
+    <div className="w-full max-w-md sm:max-w-xl mx-auto min-w-0 px-3 sm:px-4 py-3 sm:py-5 space-y-3.5">
       {/* Hidden processing canvas */}
       <canvas ref={canvasRef} className="hidden" />
 
@@ -996,10 +1035,12 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
         </div>
       )}
 
-      {/* CANLI KONUM & İŞYERİ GEOFENCE DOĞRULAMA KARTI (Zorunlu Güvenlik Kuralı) */}
+      {/* CANLI KONUM & İŞYERİ GEOFENCE DOĞRULAMA KARTI (GPS Doğrulaması ayarına göre dinamik) */}
       <div
         className={`rounded-2xl p-4 border transition-all shadow-xs space-y-3 ${
-          isOutsideGeofence
+          !geofenceEnabled
+            ? 'bg-slate-50 border-slate-200'
+            : isOutsideGeofence
             ? 'bg-rose-50/70 border-rose-300'
             : isWithinGeofence
             ? 'bg-emerald-50/70 border-emerald-300'
@@ -1010,14 +1051,18 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
           <div className="flex items-center gap-2">
             <div
               className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
-                isOutsideGeofence
+                !geofenceEnabled
+                  ? 'bg-slate-600 text-white'
+                  : isOutsideGeofence
                   ? 'bg-rose-600 text-white shadow-xs'
                   : isWithinGeofence
                   ? 'bg-emerald-600 text-white shadow-xs'
                   : 'bg-indigo-600 text-white'
               }`}
             >
-              {isOutsideGeofence ? (
+              {!geofenceEnabled ? (
+                <Compass className="w-4 h-4" />
+              ) : isOutsideGeofence ? (
                 <ShieldAlert className="w-4 h-4" />
               ) : isWithinGeofence ? (
                 <Shield className="w-4 h-4" />
@@ -1037,7 +1082,12 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
 
           {/* GPS Status Badge */}
           <div className="shrink-0">
-            {gpsStatus === 'loading' ? (
+            {!geofenceEnabled ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-200 text-slate-700 border border-slate-300">
+                <Check className="w-3 h-3 text-emerald-600" />
+                <span>GPS Doğrulaması Kapalı</span>
+              </span>
+            ) : gpsStatus === 'loading' ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-200">
                 <RefreshCw className="w-3 h-3 animate-spin text-amber-600" />
                 <span>Konum Alınıyor...</span>
@@ -1070,73 +1120,84 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
           </div>
         </div>
 
-        {/* Live Device Location Status (Workplace location parameters are hidden from staff) */}
-        <div className="bg-white/80 p-3 rounded-xl border border-slate-200/80 text-xs flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <MapPin className="w-4 h-4 text-indigo-600 shrink-0" />
-            <div>
-              <span className="font-bold text-slate-800 block text-xs">İşyeri Güvenli Bölge Koruması</span>
-              <span className="text-[11px] text-slate-500 block">
-                {gpsStatus === 'loading'
-                  ? 'Konum servisi doğrulanıyor...'
-                  : gpsStatus === 'denied'
-                  ? 'Konum izni verilmedi (İzin gereklidir)'
-                  : userLocation
-                  ? 'GPS servisi bağlı ve aktif'
-                  : 'Konum bekleniyor'}
-              </span>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={refreshLocation}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${gpsStatus === 'loading' ? 'animate-spin text-indigo-600' : ''}`} />
-            <span>Yenile</span>
-          </button>
-        </div>
-
-        {/* Verdict Banner */}
-        {isOutsideGeofence ? (
-          <div className="p-3 bg-rose-600 text-white rounded-xl text-xs font-bold flex items-start gap-2 shadow-xs animate-fade-in">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <div>
-              <div className="leading-tight">İŞYERİ SINIRLARI DIŞINDASINIZ</div>
-              <p className="text-[11px] font-normal text-rose-100 mt-0.5">
-                Şirket/fabrika sınırları dışındayken taranan QR kodlar KESİNLİKLE reddedilir. Giriş ve çıkış yapabilmek için işyeri alanında olmanız gerekmektedir.
-              </p>
-            </div>
-          </div>
-        ) : isWithinGeofence ? (
-          <div className="p-2.5 bg-emerald-600 text-white rounded-xl text-xs font-bold flex items-center justify-between shadow-xs animate-fade-in">
+        {/* Live Device Location Status */}
+        {geofenceEnabled ? (
+          <div className="bg-white/80 p-3 rounded-xl border border-slate-200/80 text-xs flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <span>İŞYERİ GÜVENLİ BÖLGESİ DOĞRULANDI: QR Okutabilirsiniz</span>
+              <MapPin className="w-4 h-4 text-indigo-600 shrink-0" />
+              <div>
+                <span className="font-bold text-slate-800 block text-xs">İşyeri Güvenli Bölge Koruması</span>
+                <span className="text-[11px] text-slate-500 block">
+                  {gpsStatus === 'loading'
+                    ? 'Konum servisi doğrulanıyor...'
+                    : gpsStatus === 'denied'
+                    ? 'Konum izni verilmedi (İzin gereklidir)'
+                    : userLocation
+                    ? 'GPS servisi bağlı ve aktif'
+                    : 'Konum bekleniyor'}
+                </span>
+              </div>
             </div>
-            <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">Giriş Serbest</span>
+            <button
+              type="button"
+              onClick={refreshLocation}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${gpsStatus === 'loading' ? 'animate-spin text-indigo-600' : ''}`} />
+              <span>Yenile</span>
+            </button>
           </div>
-        ) : gpsStatus === 'denied' ? (
-          <div className="p-2.5 bg-amber-500 text-white rounded-xl text-xs font-semibold flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>
-              Tarayıcı konum izni verilmedi. Güvenlik gereğince işyeri konumu doğrulanmadan QR okutulamaz.
+        ) : (
+          <div className="bg-white/90 p-3 rounded-xl border border-slate-200/80 text-xs flex items-center gap-2.5">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="text-[11px] text-slate-600 leading-relaxed">
+              İK ayarlarında <strong>GPS Doğrulaması kapalı</strong> olduğu için konum izni gerekmez. Doğrudan kamerayla duvar QR kodunu okutabilirsiniz.
             </span>
           </div>
-        ) : null}
+        )}
+
+        {/* Verdict Banner (Only when Geofence is enabled) */}
+        {geofenceEnabled && (
+          isOutsideGeofence ? (
+            <div className="p-3 bg-rose-600 text-white rounded-xl text-xs font-bold flex items-start gap-2 shadow-xs animate-fade-in">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div>
+                <div className="leading-tight">İŞYERİ SINIRLARI DIŞINDASINIZ</div>
+                <p className="text-[11px] font-normal text-rose-100 mt-0.5">
+                  İşyeri sınırları dışındayken taranan QR kodlar KESİNLİKLE reddedilir. Giriş ve çıkış yapabilmek için işyeri alanında olmanız gerekmektedir.
+                </p>
+              </div>
+            </div>
+          ) : isWithinGeofence ? (
+            <div className="p-2.5 bg-emerald-600 text-white rounded-xl text-xs font-bold flex items-center justify-between shadow-xs animate-fade-in">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>İŞYERİ GÜVENLİ BÖLGESİ DOĞRULANDI: QR Okutabilirsiniz</span>
+              </div>
+              <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">Giriş Serbest</span>
+            </div>
+          ) : gpsStatus === 'denied' ? (
+            <div className="p-2.5 bg-amber-500 text-white rounded-xl text-xs font-semibold flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>
+                Tarayıcı konum izni verilmedi. Güvenlik gereğince işyeri konumu doğrulanmadan QR okutulamaz.
+              </span>
+            </div>
+          ) : null
+        )}
       </div>
 
       {/* HERO PRIMARY ACTION CARD (GİRİŞ YAP / ÇIKIŞ YAP DİNAMİK GEÇİŞİ, MİNİMAL VE KOLAY ARAYÜZ) */}
       <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs space-y-3">
         {/* Geofence Status Cue above Main Button */}
-        {isOutsideGeofence && (
+        {geofenceEnabled && isOutsideGeofence && (
           <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-bold flex items-center gap-2 animate-fade-in">
             <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
             <span>İşyeri sınırları dışındasınız. QR ile giriş ve çıkış KESİNLİKLE engellenmiştir.</span>
           </div>
         )}
 
-        {isWithinGeofence && (
+        {geofenceEnabled && isWithinGeofence && (
           <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-semibold flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>İşyeri sınırları içerisindesiniz. QR okutarak işlem yapabilirsiniz.</span>
@@ -1160,7 +1221,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
               </div>
               <div className="text-[11px] font-normal text-emerald-100">
                 {isOutsideGeofence
-                  ? 'Şirket/fabrika sınırları dışındasınız · Sınır dışında QR okutulamaz'
+                  ? 'İşyeri sınırları dışındasınız · Sınır dışında QR okutulamaz'
                   : 'Vardiya Başlangıcı · Duvardaki QR Kodu Oku'}
               </div>
             </div>
@@ -1181,7 +1242,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
               </div>
               <div className="text-[11px] font-normal text-sky-100">
                 {isOutsideGeofence
-                  ? 'Şirket/fabrika sınırları dışındasınız'
+                  ? 'İşyeri sınırları dışındasınız'
                   : 'Mesaiye Devam Et · Duvardaki QR Kodu Oku'}
               </div>
             </div>
@@ -1204,7 +1265,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
                 </div>
                 <div className="text-[11px] font-normal text-rose-100">
                   {isOutsideGeofence
-                    ? 'Şirket/fabrika sınırları dışındasınız'
+                    ? 'İşyeri sınırları dışındasınız'
                     : 'Mesai Bitişi · Duvardaki QR Kodu Oku'}
                 </div>
               </div>
@@ -1224,7 +1285,11 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
         {/* Security Notification */}
         <div className="flex items-center justify-center gap-2 py-2 px-3 text-[11px] font-semibold text-slate-600 bg-slate-50 rounded-xl border border-slate-200">
           <Camera className="w-4 h-4 text-indigo-600 shrink-0" />
-          <span>İşlemler duvardaki sabit şirket QR kodu kamerayla taranarak ve işyeri konumunda tamamlanır</span>
+          <span>
+            {geofenceEnabled
+              ? 'İşlemler duvardaki sabit şirket QR kodu kamerayla taranarak ve işyeri konumunda tamamlanır'
+              : 'İşlemler duvardaki sabit şirket QR kodu kamerayla taranarak anında tamamlanır'}
+          </span>
         </div>
       </div>
 
@@ -1257,12 +1322,22 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
           {companyQR.enableGeofence && (
             <div>
               {isOutsideGeofence ? (
-                <div className="bg-rose-600 text-white px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-between border border-rose-400 animate-pulse">
+                <div className="bg-amber-600 text-white px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center justify-between border border-amber-400">
                   <div className="flex items-center gap-1.5">
-                    <ShieldAlert className="w-4 h-4 shrink-0" />
-                    <span>İŞYERİ DIŞINDASINIZ · Sınır Dışında QR Okutulamaz</span>
+                    <MapPin className="w-3.5 h-3.5 shrink-0 text-amber-200" />
+                    <span>Duvardaki Resmi PDKS QR Kodunu Okutunuz</span>
                   </div>
-                  <span className="text-[10px] bg-black/40 px-2 py-0.5 rounded font-mono">Giriş Engelli</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      refreshLocation();
+                    }}
+                    className="text-[10px] bg-black/30 hover:bg-black/50 px-2 py-0.5 rounded font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>GPS Yenile</span>
+                  </button>
                 </div>
               ) : isWithinGeofence ? (
                 <div className="bg-emerald-600/90 text-white px-3 py-1.5 rounded-xl text-[11px] font-semibold flex items-center justify-between border border-emerald-400">
@@ -1298,11 +1373,11 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
               </div>
 
               {/* Fail-safe interactive options */}
-              <div className="flex flex-col sm:flex-row items-center justify-center gap-2 pt-1">
+              <div className="flex flex-col gap-2 pt-1 max-w-xs mx-auto">
                 {/* 1. Photo upload / native phone camera */}
-                <label className="w-full sm:w-auto px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer flex items-center justify-center gap-1.5">
+                <label className="w-full px-3.5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer flex items-center justify-center gap-2 transition-colors">
                   <Camera className="w-4 h-4" />
-                  <span>Fotoğraf Çek / Yükle</span>
+                  <span>Fotoğraf Çek / Kameradan Tara</span>
                   <input
                     type="file"
                     accept="image/*"
@@ -1312,13 +1387,37 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
                   />
                 </label>
 
-                {/* 3. Retry */}
+                <div className="flex items-center gap-2">
+                  {/* 2. Open in New Tab for Iframe permission bypass */}
+                  <button
+                    type="button"
+                    onClick={() => window.open(window.location.href, '_blank')}
+                    className="flex-1 py-2 px-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-[11px] rounded-xl cursor-pointer flex items-center justify-center gap-1.5 border border-slate-700 transition-colors"
+                    title="Önizleme çerçevesi dışına çıkarak kamera iznini onaylayın"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Yeni Sekmede Aç</span>
+                  </button>
+
+                  {/* 3. Retry */}
+                  <button
+                    type="button"
+                    onClick={() => startCamera()}
+                    className="flex-1 py-2 px-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-[11px] rounded-xl cursor-pointer flex items-center justify-center gap-1.5 border border-slate-700 transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Tekrar Dene</span>
+                  </button>
+                </div>
+
+                {/* 4. Permission Help Trigger */}
                 <button
                   type="button"
-                  onClick={() => startCamera()}
-                  className="w-full sm:w-auto px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-xl cursor-pointer"
+                  onClick={() => setIsPermissionHelpOpen(true)}
+                  className="text-[11px] text-indigo-400 hover:underline pt-1 flex items-center justify-center gap-1"
                 >
-                  Kamerayı Tekrar Dene
+                  <Info className="w-3 h-3" />
+                  <span>Kamera İzni Nasıl Açılır?</span>
                 </button>
               </div>
             </div>
@@ -1921,33 +2020,215 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
         </div>
       )}
 
+      {/* MODAL 4B: FAZLA MESAİ TALEBİ */}
+      {isOvertimeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl border border-slate-200">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                <Timer className="w-4 h-4 text-amber-600" />
+                <span>Fazla Mesai Talebi</span>
+              </h3>
+              <button
+                onClick={() => setIsOvertimeModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {overtimeFeedback ? (
+              <div className="bg-emerald-50 text-emerald-800 p-4 rounded-xl text-xs font-semibold text-center">
+                {overtimeFeedback}
+              </div>
+            ) : (
+              <form onSubmit={handleSubmitOvertime} className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Tarih
+                    </label>
+                    <input
+                      type="date"
+                      value={overtimeDate}
+                      onChange={(e) => setOvertimeDate(e.target.value)}
+                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-white"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Mesai Süresi (Saat)
+                    </label>
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="12"
+                      step="0.5"
+                      value={overtimeHours}
+                      onChange={(e) => setOvertimeHours(Number(e.target.value))}
+                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Başlangıç Saati
+                    </label>
+                    <input
+                      type="time"
+                      value={overtimeStartTime}
+                      onChange={(e) => setOvertimeStartTime(e.target.value)}
+                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Bitiş Saati
+                    </label>
+                    <input
+                      type="time"
+                      value={overtimeEndTime}
+                      onChange={(e) => setOvertimeEndTime(e.target.value)}
+                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Gerekçe / Yapılan İş
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={overtimeReason}
+                    onChange={(e) => setOvertimeReason(e.target.value)}
+                    placeholder="Mesai gerekçesini kısaca açıklayınız (örn. Ay sonu finansal kontroller)..."
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg"
+                    required
+                  />
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsOvertimeModalOpen(false)}
+                    className="flex-1 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold cursor-pointer"
+                  >
+                    Vazgeç
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold cursor-pointer"
+                  >
+                    Talebi İlet
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* MODAL 5: KAMERA İZNİ YARDIMI */}
       {isPermissionHelpOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-sm w-full p-5 space-y-3 shadow-2xl border border-slate-200 text-xs">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 space-y-3.5 shadow-2xl border border-slate-200 text-xs text-slate-800">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <h4 className="font-bold text-slate-900 text-sm">Kamera İzni Gerekli</h4>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                  <Camera className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 text-sm">Kamera İzni Rehberi</h4>
+                  <p className="text-[10px] text-slate-500">PDKS QR Tarama Çözümleri</p>
+                </div>
+              </div>
               <button
                 onClick={() => setIsPermissionHelpOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg cursor-pointer transition-colors"
                 title="Kapat"
                 aria-label="Kapat"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <p className="text-slate-600">
-              Tarayıcı adres çubuğundaki kilit simgesine dokunup <strong>Kamera</strong> iznini aktif ediniz.
-            </p>
-            <button
-              onClick={() => {
-                setIsPermissionHelpOpen(false);
-                startCamera();
-              }}
-              className="w-full py-2 bg-indigo-600 text-white font-bold rounded-xl"
-            >
-              Tekrar Dene
-            </button>
+
+            {/* Quick 1-Tap Alternative that NEVER needs WebRTC permission */}
+            <div className="p-3 bg-indigo-50/80 rounded-xl border border-indigo-100 space-y-2">
+              <div className="font-bold text-xs flex items-center gap-1.5 text-indigo-700">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                <span>İzin Almadan Doğrudan Tarayın:</span>
+              </div>
+              <p className="text-[11px] text-slate-600 leading-relaxed">
+                Kamera izni kısıtlıysa telefonun yerel kamerasını doğrudan açıp QR kodu hemen okutabilirsiniz:
+              </p>
+              <label className="w-full py-2.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-colors text-center">
+                <Camera className="w-4 h-4" />
+                <span>Fotoğraf Çek / Kameradan Tara</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(e) => {
+                    handleQRImageUpload(e);
+                    setIsPermissionHelpOpen(false);
+                  }}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            {/* Step-by-step instructions for Safari and Chrome */}
+            <div className="space-y-2 pt-1 text-slate-600">
+              <div className="font-semibold text-slate-800 text-[11px] uppercase tracking-wider">
+                Tarayıcıda Kamera İznini Açma:
+              </div>
+
+              <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 space-y-1 text-[11px]">
+                <strong className="text-slate-900 block font-semibold">📱 iPhone / iPad (Safari):</strong>
+                <p className="text-slate-600 leading-tight">
+                  1. Adres çubuğunun solundaki <strong>"aA"</strong> veya <strong>"Ayarlar"</strong> simgesine dokunun.<br />
+                  2. <strong>"Web Sitesi Ayarları"</strong> → <strong>Kamera</strong> seçeneğini <strong>"İzin Ver"</strong> yapın.
+                </p>
+              </div>
+
+              <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 space-y-1 text-[11px]">
+                <strong className="text-slate-900 block font-semibold">🤖 Android (Chrome):</strong>
+                <p className="text-slate-600 leading-tight">
+                  1. Adres çubuğundaki <strong>Kilit (🔒)</strong> simgesine dokunun.<br />
+                  2. <strong>"İzinler"</strong> veya <strong>"Site Ayarları"</strong> → <strong>Kamera</strong> iznini <strong>"İzin Ver"</strong> yapın.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => window.open(window.location.href, '_blank')}
+                className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Sayfayı Yeni Sekmede Aç (Harici Tarayıcı)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsPermissionHelpOpen(false);
+                  startCamera();
+                }}
+                className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-xs"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Kamerayı Tekrar Dene</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

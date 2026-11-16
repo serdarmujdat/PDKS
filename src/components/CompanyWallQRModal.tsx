@@ -14,9 +14,10 @@ import {
   Smartphone,
   Compass,
   Info,
+  CheckCircle2,
 } from 'lucide-react';
 import { CompanyWallQRConfig } from '../types/pdks';
-import { pdksStorage } from '../services/storage';
+import { pdksStorage, PDKS_SYSTEM_API_KEY } from '../services/storage';
 import { generateQRDataURL } from '../utils/qr';
 
 interface CompanyWallQRModalProps {
@@ -26,47 +27,110 @@ interface CompanyWallQRModalProps {
 }
 
 export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, onClose, currentUser }) => {
-  const [config, setConfig] = useState<CompanyWallQRConfig>(pdksStorage.getCompanyWallQR());
+  const activeUser = currentUser || pdksStorage.getActiveUser();
+  const canManageWallQR = activeUser.role === 'ik_yoneticisi';
+
+  const [config, setConfig] = useState<CompanyWallQRConfig>(() => pdksStorage.getCompanyWallQR(activeUser));
   const [qrUrl, setQrUrl] = useState<string>('');
   const [copied, setCopied] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [locationNotice, setLocationNotice] = useState<string | null>(null);
   const [isGettingLocation, setIsGettingLocation] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const posterRef = useRef<HTMLDivElement>(null);
-
-  const activeUser = currentUser || pdksStorage.getActiveUser();
-  const canManageWallQR = activeUser.role === 'ik_yoneticisi';
 
   useEffect(() => {
     if (!isOpen) return;
-    const current = pdksStorage.getCompanyWallQR();
-    setConfig(current);
-    generateQRDataURL(current.qrPayload, { width: 360, margin: 1 }).then((url) => {
+    const current = pdksStorage.getCompanyWallQR(activeUser);
+    const isGeo = Boolean(current.enableGeofence);
+    const tokenVal = (current.token || PDKS_SYSTEM_API_KEY).trim();
+    const portable = `ASEM:WALL:${tokenVal}:GEO:${isGeo ? 1 : 0}:${current.latitude || 41.0082}:${current.longitude || 28.9784}:${current.radiusMeters || 250}`;
+    const initialConfig = { ...current, qrPayload: portable };
+    setConfig(initialConfig);
+    generateQRDataURL(portable, { width: 360, margin: 1 }).then((url) => {
       setQrUrl(url);
     });
-  }, [isOpen]);
+  }, [isOpen, activeUser]);
 
   const handleRotateToken = () => {
     if (window.confirm('Şirket sabit QR güvenlik tokenını yenilemek istediğinize emin misiniz? Eski duvardaki çıktılar geçersiz olacaktır.')) {
-      const updated = pdksStorage.rotateCompanyWallQR();
+      try {
+        const updated = pdksStorage.rotateCompanyWallQR(activeUser);
+        const isGeo = Boolean(updated.enableGeofence);
+        const tokenVal = updated.token.trim();
+        const portablePayload = `ASEM:WALL:${tokenVal}:GEO:${isGeo ? 1 : 0}:${updated.latitude}:${updated.longitude}:${updated.radiusMeters}`;
+        const payloadToSave: CompanyWallQRConfig = {
+          ...updated,
+          qrPayload: portablePayload,
+        };
+        const finalSaved = pdksStorage.saveCompanyWallQR(payloadToSave, activeUser);
+        setConfig(finalSaved);
+        generateQRDataURL(finalSaved.qrPayload, { width: 360, margin: 1 }).then((url) => {
+          setQrUrl(url);
+        });
+        setSavedNotice('✅ Güvenlik tokenı yenilendi! Yeni duvar posterini yazdırmayı unutmayın.');
+        setTimeout(() => setSavedNotice(null), 3500);
+        window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: finalSaved }));
+      } catch (err: any) {
+        setLocationNotice(`⚠️ Token yenilenemedi: ${err?.message || 'Yetki hatası'}`);
+        setTimeout(() => setLocationNotice(null), 4000);
+      }
+    }
+  };
+
+  const handleSaveSettings = (e?: React.FormEvent | React.MouseEvent) => {
+    if (e && e.preventDefault) {
+      e.preventDefault();
+    }
+    setIsSaving(true);
+    setLocationNotice(null);
+    try {
+      const rawLat = config.latitude !== undefined && config.latitude !== null ? Number(config.latitude) : NaN;
+      const rawLon = config.longitude !== undefined && config.longitude !== null ? Number(config.longitude) : NaN;
+      const rawRadius = Number(config.radiusMeters) || 250;
+
+      const validLat = Number.isFinite(rawLat) ? Math.max(-90, Math.min(90, rawLat)) : 41.0082;
+      const validLon = Number.isFinite(rawLon) ? Math.max(-180, Math.min(180, rawLon)) : 28.9784;
+      const validRadius = Math.max(10, Math.min(5000, rawRadius));
+      const isGeo = Boolean(config.enableGeofence);
+      const tokenVal = (config.token || PDKS_SYSTEM_API_KEY).trim();
+
+      // Embed factory center and radius directly into portable QR payload
+      const portablePayload = `ASEM:WALL:${tokenVal}:GEO:${isGeo ? 1 : 0}:${validLat}:${validLon}:${validRadius}`;
+
+      const payloadToSave: CompanyWallQRConfig = {
+        ...config,
+        token: tokenVal,
+        qrPayload: portablePayload,
+        companyName: (config.companyName || 'Asem PDKS').trim(),
+        branchName: (config.branchName || 'İşyeri').trim(),
+        installationLocation: (config.installationLocation || 'Ana Giriş Turnikesi').trim(),
+        latitude: validLat,
+        longitude: validLon,
+        radiusMeters: validRadius,
+        enableGeofence: isGeo,
+      };
+
+      const updated = pdksStorage.saveCompanyWallQR(payloadToSave, activeUser);
       setConfig(updated);
       generateQRDataURL(updated.qrPayload, { width: 360, margin: 1 }).then((url) => {
         setQrUrl(url);
       });
-      setSavedNotice('Güvenlik tokenı yenilendi! Yeni duvar posterini yazdırmayı unutmayın.');
-      setTimeout(() => setSavedNotice(null), 3500);
-    }
-  };
+      const successText = '✅ Şirket duvar QR ve GPS İşyeri Merkezi ayarları kaydedildi ve tüm cihazlara uygulandı!';
+      setSavedNotice(successText);
+      setLocationNotice(successText);
+      setTimeout(() => setSavedNotice(null), 5000);
 
-  const handleSaveSettings = (e: React.FormEvent) => {
-    e.preventDefault();
-    const updated = pdksStorage.saveCompanyWallQR(config);
-    setConfig(updated);
-    generateQRDataURL(updated.qrPayload, { width: 360, margin: 1 }).then((url) => {
-      setQrUrl(url);
-    });
-    setSavedNotice('Şirket duvar QR ve Geofence ayarları başarıyla güncellendi.');
-    setTimeout(() => setSavedNotice(null), 3000);
+      window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: updated }));
+      window.dispatchEvent(new CustomEvent('pdks-notification'));
+    } catch (err: any) {
+      console.error('Failed to save wall QR:', err);
+      const errMsg = `⚠️ Kayıt başarısız: ${err?.message || 'Bilinmeyen hata'}`;
+      setLocationNotice(errMsg);
+      setTimeout(() => setLocationNotice(null), 6000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleCopyToken = () => {
@@ -77,31 +141,68 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
 
   const handleGetLocation = () => {
     if (!navigator.geolocation) {
-      setLocationNotice('Tarayıcınız coğrafi konum desteği sunmuyor.');
+      setLocationNotice('⚠️ Tarayıcınız coğrafi konum desteği sunmuyor. Koordinatları elle girebilir veya hazır konumlardan seçebilirsiniz.');
       return;
     }
     setIsGettingLocation(true);
+    setLocationNotice('📡 Cihazınızın GPS konumu alınıyor, lütfen bekleyiniz...');
+
+    const applyCoords = (latitude: number, longitude: number, accuracy?: number) => {
+      const lat = Number(latitude.toFixed(6));
+      const lon = Number(longitude.toFixed(6));
+      const isGeo = true;
+      const rad = Number(config.radiusMeters) || 250;
+      const tokenVal = (config.token || PDKS_SYSTEM_API_KEY).trim();
+      const portable = `ASEM:WALL:${tokenVal}:GEO:${isGeo ? 1 : 0}:${lat}:${lon}:${rad}`;
+
+      setConfig((prev) => ({
+        ...prev,
+        latitude: lat,
+        longitude: lon,
+        enableGeofence: true,
+        qrPayload: portable,
+      }));
+      generateQRDataURL(portable, { width: 360, margin: 1 }).then((url) => setQrUrl(url));
+      setIsGettingLocation(false);
+      const accText = accuracy ? ` (±${Math.round(accuracy)}m hassasiyet)` : '';
+      setLocationNotice(`✅ Cihazınızın GPS konumu alındı: Enlem ${lat}, Boylam ${lon}${accText}. Ayarları kalıcı yapmak için aşağıdaki "Ayarları Kaydet ve QR Kodu Güncelle" butonuna basınız.`);
+    };
+
+    // Try high accuracy GPS first, fallback to standard positioning
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setConfig((prev) => ({
-          ...prev,
-          latitude: parseFloat(pos.coords.latitude.toFixed(6)),
-          longitude: parseFloat(pos.coords.longitude.toFixed(6)),
-        }));
-        setIsGettingLocation(false);
-        setLocationNotice('Mevcut GPS koordinatlarınız fabrika merkezi olarak alındı.');
-        setTimeout(() => setLocationNotice(null), 3000);
+        applyCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
       },
       (err) => {
-        setIsGettingLocation(false);
-        setLocationNotice(`Konum alınamadı: ${err.message}`);
-        setTimeout(() => setLocationNotice(null), 3500);
+        // Fallback retry with low accuracy (ideal for PC/laptop Wi-Fi location)
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            applyCoords(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+          },
+          (fallbackErr) => {
+            setIsGettingLocation(false);
+            let msg = fallbackErr.message;
+            if (fallbackErr.code === 1) {
+              msg = 'Tarayıcı konum izni verilmedi. Adres çubuğundaki kilit/izin simgesinden konumu açabilir veya hazır merkezlerden birini seçebilirsiniz.';
+            } else if (fallbackErr.code === 2) {
+              msg = 'GPS konum sinyali temin edilemedi. Lütfen koordinatları elle giriniz veya aşağıdaki hazır merkezlerden seçiniz.';
+            } else if (fallbackErr.code === 3) {
+              msg = 'Konum alma zaman aşımına uğradı. Koordinatları elle girebilir veya aşağıdaki hazır merkezlerden seçebilirsiniz.';
+            }
+            setLocationNotice(`⚠️ ${msg}`);
+            setTimeout(() => setLocationNotice(null), 8000);
+          },
+          { enableHighAccuracy: false, timeout: 6000 }
+        );
       },
-      { enableHighAccuracy: true, timeout: 8000 }
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 }
     );
   };
 
-  const handlePrint = () => {
+  const handlePrint = (e?: React.MouseEvent) => {
+    if (e && e.preventDefault) {
+      e.preventDefault();
+    }
     window.print();
   };
 
@@ -115,13 +216,29 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
     document.body.removeChild(a);
   };
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen || !canManageWallQR) return null;
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-      <div className="bg-white rounded-2xl max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden my-6 animate-fade-in">
-        {/* Modal Top Bar */}
-        <div className="bg-slate-900 text-white px-4 sm:px-6 py-3.5 sm:py-4 flex items-center justify-between no-print">
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 cursor-pointer"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden my-auto animate-fade-in cursor-default"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Modal Top Bar (Sticky) */}
+        <div className="bg-slate-900 text-white px-4 sm:px-6 py-3.5 sm:py-4 flex items-center justify-between shrink-0 sticky top-0 z-20 no-print">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center shadow-md shrink-0">
               <QrCode className="w-5 h-5 text-white" />
@@ -135,15 +252,16 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            className="p-2 min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            title="Kapat (veya dışarıya tıklayın)"
           >
-            <X className="w-5 h-5" />
+            <X className="w-6 h-6" />
           </button>
         </div>
 
         {/* Saved Alert */}
         {savedNotice && (
-          <div className="bg-emerald-600 text-white px-4 sm:px-6 py-2.5 text-xs font-semibold flex items-center justify-between no-print">
+          <div className="bg-emerald-600 text-white px-4 sm:px-6 py-2.5 text-xs font-semibold flex items-center justify-between shrink-0 no-print">
             <span className="flex items-center gap-2">
               <Check className="w-4 h-4" />
               {savedNotice}
@@ -154,14 +272,16 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
           </div>
         )}
 
-        <div className="p-3.5 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6">
+        {/* Scrollable Content Body */}
+        <div className="overflow-y-auto flex-1 p-3.5 sm:p-6 space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6">
           {/* Col 1: Printable Poster View (7 cols) */}
           <div className="lg:col-span-7 flex flex-col items-center">
             {/* Visual Printable Poster Box */}
             <div
               ref={posterRef}
               id="asem-wall-poster"
-              className="w-full bg-white border-2 sm:border-4 border-slate-900 rounded-2xl p-4 sm:p-8 flex flex-col items-center text-center shadow-lg relative print:border-none print:shadow-none print:p-0"
+              className="print-area wall-poster w-full bg-white border-2 sm:border-4 border-slate-900 rounded-2xl p-4 sm:p-8 flex flex-col items-center text-center shadow-lg relative print:shadow-none print:m-0"
             >
               {/* Header Branding */}
               <div className="flex items-center gap-2 mb-2">
@@ -182,12 +302,12 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
               </p>
 
               {/* The Scannable High-Res QR Code */}
-              <div className="p-4 bg-white border-2 border-slate-900 rounded-2xl shadow-inner my-2">
+              <div className="p-4 bg-white border-2 border-slate-900 rounded-2xl shadow-inner my-2 print:border-2 print:border-slate-900 print:shadow-none print:p-4">
                 {qrUrl ? (
                   <img
                     src={qrUrl}
                     alt="Şirket Sabit QR Kodu"
-                    className="w-56 h-56 sm:w-64 sm:h-64 object-contain"
+                    className="w-56 h-56 sm:w-64 sm:h-64 object-contain print:w-72 print:h-72 print:max-w-none mx-auto block"
                   />
                 ) : (
                   <div className="w-56 h-56 sm:w-64 sm:h-64 bg-slate-100 animate-pulse rounded-xl flex items-center justify-center text-slate-400">
@@ -215,15 +335,29 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
               </div>
 
               {/* Poster Footer Security Info */}
-              <div className="w-full pt-3 border-t border-slate-200 flex items-center justify-between text-[10px] text-slate-500 font-mono">
-                <span>Pano Kodu: {config.token.slice(0, 16)}...</span>
-                <span>Konum: {config.installationLocation}</span>
+              <div className="w-full pt-3 border-t border-slate-200 flex flex-col gap-1.5 text-[10px] text-slate-500 font-mono">
+                <div className="flex items-center justify-between">
+                  <span>Pano Kodu: ASEM-DUVAR-QR</span>
+                  <span>Konum: {config.installationLocation}</span>
+                </div>
+                {config.enableGeofence && (
+                  <div className="flex items-center justify-between text-emerald-800 bg-emerald-50 px-2 py-1 rounded-md text-[9px] font-sans border border-emerald-200">
+                    <span className="font-semibold flex items-center gap-1">
+                      <MapPin className="w-3 h-3 text-emerald-600" />
+                      GPS Doğrulaması Aktif ({config.radiusMeters}m yarıçap)
+                    </span>
+                    <span className="font-mono text-[9px] text-emerald-900 font-bold">
+                      {Number(config.latitude || 0).toFixed(4)}, {Number(config.longitude || 0).toFixed(4)}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
             {/* Poster Action Buttons */}
             <div className="flex flex-wrap items-center justify-center gap-3 mt-4 w-full no-print">
               <button
+                type="button"
                 onClick={handlePrint}
                 className="flex-1 min-w-[140px] py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-2 shadow-sm cursor-pointer"
               >
@@ -232,6 +366,7 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
               </button>
 
               <button
+                type="button"
                 onClick={handleDownloadPNG}
                 className="py-2.5 px-3.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 border border-slate-300 cursor-pointer"
               >
@@ -255,7 +390,7 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
           {/* Col 2: Settings & Configuration Form (5 cols) */}
           <div className="lg:col-span-5 flex flex-col justify-between space-y-4 no-print">
             {canManageWallQR ? (
-              <form onSubmit={handleSaveSettings} className="space-y-4">
+              <form noValidate onSubmit={handleSaveSettings} className="space-y-4">
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <h4 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
@@ -283,7 +418,7 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Şube / Fabrika Adı</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">İşyeri / Şube Adı</label>
                 <input
                   type="text"
                   value={config.branchName}
@@ -312,9 +447,11 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
                   <button
                     type="button"
                     onClick={() => {
-                      const apiToken = 'AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ';
-                      setConfig({ ...config, token: apiToken, qrPayload: apiToken });
-                      generateQRDataURL(apiToken, { width: 360, margin: 1 }).then((url) => setQrUrl(url));
+                      const apiToken = PDKS_SYSTEM_API_KEY;
+                      const isGeo = Boolean(config.enableGeofence);
+                      const portable = `ASEM:WALL:${apiToken}:GEO:${isGeo ? 1 : 0}:${config.latitude || 41.0082}:${config.longitude || 28.9784}:${config.radiusMeters || 250}`;
+                      setConfig({ ...config, token: apiToken, qrPayload: portable });
+                      generateQRDataURL(portable, { width: 360, margin: 1 }).then((url) => setQrUrl(url));
                     }}
                     className="text-[10px] text-indigo-600 font-bold hover:underline cursor-pointer"
                   >
@@ -323,12 +460,14 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
                 </div>
                 <div className="flex items-center gap-1.5">
                   <input
-                    type="text"
+                    type="password"
                     value={config.token}
                     onChange={(e) => {
                       const val = e.target.value;
-                      setConfig({ ...config, token: val, qrPayload: val });
-                      generateQRDataURL(val, { width: 360, margin: 1 }).then((url) => setQrUrl(url));
+                      const isGeo = Boolean(config.enableGeofence);
+                      const portable = `ASEM:WALL:${val.trim()}:GEO:${isGeo ? 1 : 0}:${config.latitude || 41.0082}:${config.longitude || 28.9784}:${config.radiusMeters || 250}`;
+                      setConfig({ ...config, token: val, qrPayload: portable });
+                      generateQRDataURL(portable, { width: 360, margin: 1 }).then((url) => setQrUrl(url));
                     }}
                     className="flex-1 font-mono px-3 py-2 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:ring-2 focus:ring-indigo-500"
                     required
@@ -343,7 +482,7 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
                   </button>
                 </div>
                 <p className="text-[10px] text-slate-500 mt-1">
-                  Aktif API Anahtarı: <code className="bg-slate-100 px-1 py-0.5 rounded text-indigo-700 font-mono">AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ</code>
+                  Güvenlik Anahtarı: <code className="bg-slate-100 px-1 py-0.5 rounded text-indigo-700 font-mono">•••••••••••• (Gizli)</code>
                 </p>
               </div>
 
@@ -360,7 +499,29 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
                     <input
                       type="checkbox"
                       checked={config.enableGeofence}
-                      onChange={(e) => setConfig({ ...config, enableGeofence: e.target.checked })}
+                      onChange={(e) => {
+                        const isGeo = e.target.checked;
+                        const tokenVal = (config.token || PDKS_SYSTEM_API_KEY).trim();
+                        const portable = `ASEM:WALL:${tokenVal}:GEO:${isGeo ? 1 : 0}:${config.latitude || 41.0082}:${config.longitude || 28.9784}:${config.radiusMeters || 250}`;
+                        const nextConfig: CompanyWallQRConfig = {
+                          ...config,
+                          enableGeofence: isGeo,
+                          qrPayload: portable,
+                        };
+                        try {
+                          const saved = pdksStorage.saveCompanyWallQR(nextConfig, activeUser);
+                          setConfig(saved);
+                          setSavedNotice(
+                            isGeo
+                              ? '✅ GPS Doğrulaması aktif edildi ve tüm cihazlara uygulandı.'
+                              : 'ℹ️ GPS Doğrulaması kapatıldı. QR taramalarında konum izni istenmeyecektir.'
+                          );
+                          setTimeout(() => setSavedNotice(null), 4000);
+                        } catch {
+                          setConfig(nextConfig);
+                        }
+                        generateQRDataURL(portable, { width: 360, margin: 1 }).then((url) => setQrUrl(url));
+                      }}
                       className="sr-only peer"
                     />
                     <div className="w-9 h-5 bg-slate-200 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-600"></div>
@@ -376,26 +537,28 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="text-[10px] font-semibold text-slate-600">Fabrika Enlem (Lat)</label>
+                        <label className="text-[10px] font-semibold text-slate-600">İşyeri Enlem (Lat)</label>
                         <input
                           type="number"
-                          step="0.000001"
+                          step="any"
                           value={config.latitude}
-                          onChange={(e) =>
-                            setConfig({ ...config, latitude: parseFloat(e.target.value) || 0 })
-                          }
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setConfig({ ...config, latitude: val === '' ? ('' as any) : parseFloat(val) || 0 });
+                          }}
                           className="w-full px-2 py-1 text-xs border border-slate-200 rounded-md bg-white font-mono"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-semibold text-slate-600">Fabrika Boylam (Lon)</label>
+                        <label className="text-[10px] font-semibold text-slate-600">İşyeri Boylam (Lon)</label>
                         <input
                           type="number"
-                          step="0.000001"
+                          step="any"
                           value={config.longitude}
-                          onChange={(e) =>
-                            setConfig({ ...config, longitude: parseFloat(e.target.value) || 0 })
-                          }
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setConfig({ ...config, longitude: val === '' ? ('' as any) : parseFloat(val) || 0 });
+                          }}
                           className="w-full px-2 py-1 text-xs border border-slate-200 rounded-md bg-white font-mono"
                         />
                       </div>
@@ -408,15 +571,39 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
                       <div className="flex items-center gap-2">
                         <input
                           type="number"
-                          min="50"
-                          max="2000"
+                          step="any"
+                          min="10"
+                          max="5000"
                           value={config.radiusMeters}
-                          onChange={(e) =>
-                            setConfig({ ...config, radiusMeters: parseInt(e.target.value) || 200 })
-                          }
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setConfig({ ...config, radiusMeters: val === '' ? ('' as any) : parseInt(val) || 200 });
+                          }}
                           className="w-24 px-2 py-1 text-xs border border-slate-200 rounded-md bg-white font-mono"
                         />
-                        <span className="text-[11px] text-slate-500">metre yarıçap (Fabrika & Bahçe)</span>
+                        <span className="text-[11px] text-slate-500">metre yarıçap (İşyeri Alanı)</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                        <span className="text-[10px] text-slate-500 font-medium">Hızlı Sınır:</span>
+                        {[
+                          { label: '100m (Giriş)', val: 100 },
+                          { label: '250m (Standart)', val: 250 },
+                          { label: '500m (Büyük Tesis)', val: 500 },
+                          { label: '1000m (OSB / Saha)', val: 1000 },
+                        ].map((r) => (
+                          <button
+                            key={r.val}
+                            type="button"
+                            onClick={() => setConfig({ ...config, radiusMeters: r.val })}
+                            className={`text-[10px] px-2 py-0.5 rounded border transition-colors cursor-pointer ${
+                              config.radiusMeters === r.val
+                                ? 'bg-indigo-600 text-white border-indigo-600 font-bold'
+                                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            {r.label}
+                          </button>
+                        ))}
                       </div>
                     </div>
 
@@ -424,34 +611,54 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
                       type="button"
                       onClick={handleGetLocation}
                       disabled={isGettingLocation}
-                      className="w-full py-1.5 px-2.5 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-semibold text-slate-700 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                      className="w-full py-2 px-3 bg-white hover:bg-slate-100 active:bg-slate-200 border border-slate-300 rounded-lg text-xs font-semibold text-slate-800 flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-xs disabled:opacity-60"
                     >
                       <Compass
-                        className={`w-3.5 h-3.5 text-indigo-600 ${isGettingLocation ? 'animate-spin' : ''}`}
+                        className={`w-4 h-4 text-indigo-600 ${isGettingLocation ? 'animate-spin' : ''}`}
                       />
                       <span>
                         {isGettingLocation
-                          ? 'Konum Alınıyor...'
-                          : 'Cihazımın GPS Konumunu Fabrika Merkezi Yap'}
+                          ? 'Cihaz GPS Konumu Alınıyor...'
+                          : 'Cihazımın GPS Konumunu İşyeri Merkezi Yap'}
                       </span>
                     </button>
 
                     {locationNotice && (
-                      <div className="text-[11px] text-emerald-700 bg-emerald-50 p-1.5 rounded-md font-medium">
-                        {locationNotice}
+                      <div className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 p-2 rounded-lg font-medium animate-fade-in flex items-start gap-1.5">
+                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                        <span>{locationNotice}</span>
                       </div>
                     )}
                   </div>
                 )}
               </div>
 
-              <div className="pt-2">
+              <div className="pt-2 space-y-2">
                 <button
-                  type="submit"
-                  className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                  type="button"
+                  onClick={handleSaveSettings}
+                  disabled={isSaving}
+                  className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 active:bg-slate-950 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md hover:shadow-lg disabled:opacity-60"
                 >
-                  Ayarları Kaydet ve QR Kodu Güncelle
+                  {isSaving ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                      <span>Ayarlar Kaydediliyor ve QR Güncelleniyor...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      <span>Ayarları Kaydet ve QR Kodu Güncelle</span>
+                    </>
+                  )}
                 </button>
+
+                {savedNotice && (
+                  <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-center gap-2 animate-fade-in shadow-xs">
+                    <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{savedNotice}</span>
+                  </div>
+                )}
               </div>
             </form>
           ) : (
@@ -498,6 +705,30 @@ export const CompanyWallQRModal: React.FC<CompanyWallQRModalProps> = ({ isOpen, 
                 asınız.
               </span>
             </div>
+          </div>
+        </div>
+      </div>
+
+        {/* Modal Sticky Bottom Action Bar (Mobile & Desktop) */}
+        <div className="bg-slate-50 border-t border-slate-200 px-4 sm:px-6 py-3 flex items-center justify-between shrink-0 no-print">
+          <div className="text-[11px] text-slate-500 hidden sm:block">
+            İpucu: Pencereyi kapatmak için dışarıdaki boş alana veya <strong>ESC</strong> tuşuna basabilirsiniz.
+          </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+            <button
+              onClick={handlePrint}
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-xs flex-1 sm:flex-initial"
+            >
+              <Printer className="w-4 h-4" />
+              <span>Posteri Yazdır</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl text-xs font-bold transition-colors cursor-pointer flex-1 sm:flex-initial"
+            >
+              <X className="w-4 h-4" />
+              <span>Kapat</span>
+            </button>
           </div>
         </div>
       </div>

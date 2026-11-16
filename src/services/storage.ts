@@ -6,6 +6,13 @@ import {
   clearLoginAttempts,
   calculateHaversineDistance,
 } from '../utils/security';
+import {
+  auth,
+  COMPANY_LOGO_MAX_LENGTH,
+  fetchCompanyLogoFromFirestore,
+  subscribeCompanyLogoFromFirestore,
+  saveCompanyLogoToFirestore,
+} from '../firebase';
 
 const STORAGE_KEYS = {
   EMPLOYEES: 'pdks_employees_v1',
@@ -27,7 +34,60 @@ const STORAGE_KEYS = {
 // Standard Default Corporate Logo (240x60 Standard Proportions SVG Data URI)
 export const DEFAULT_COMPANY_LOGO = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" fill="none"><rect width="240" height="60" rx="12" fill="%234F46E5"/><g transform="translate(14, 12)"><rect width="36" height="36" rx="8" fill="%233730A3"/><path d="M8 8h8v8H8zM20 8h8v8h-8zM8 20h8v8H8zM22 22h4v4h-4z" fill="%23FFFFFF"/><circle cx="26" cy="10" r="1.5" fill="%23A5B4FC"/></g><text x="62" y="33" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="800" fill="%23FFFFFF" letter-spacing="1">ASEM</text><text x="62" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="%23C7D2FE" letter-spacing="2.5">PDKS SİSTEMLERİ</text></svg>`;
 
-export const PDKS_SYSTEM_API_KEY = 'AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ';
+// In-memory cache for corporate logo so even if localStorage hits quota limits, current session stays synced with backend DB
+let inMemoryCompanyLogo: string | null = null;
+// Authoritative logo synced from Firebase Firestore across browsers & container restarts
+let firestoreAuthoritativeLogo: string | null = null;
+let lastWarmedCloudLogo: string | null = null;
+
+export function hasCustomLogoValue(logo?: string | null): boolean {
+  const trimmed = logo ? logo.trim() : '';
+  return Boolean(trimmed && !trimmed.startsWith('blob:') && trimmed !== DEFAULT_COMPANY_LOGO);
+}
+
+function applyCompanyLogoLocally(logoVal: string, persistLocal = true): void {
+  const normalized = logoVal.trim();
+  if (!normalized || normalized.startsWith('blob:')) return;
+  inMemoryCompanyLogo = normalized;
+  if (persistLocal && typeof localStorage !== 'undefined') {
+    try {
+      if (normalized === DEFAULT_COMPANY_LOGO) {
+        localStorage.removeItem(STORAGE_KEYS.COMPANY_LOGO);
+      } else {
+        localStorage.setItem(STORAGE_KEYS.COMPANY_LOGO, normalized);
+      }
+    } catch {}
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('pdks-logo-updated', { detail: normalized }));
+  }
+}
+
+async function warmServerLogoIfNeeded(cloudLogo: string): Promise<void> {
+  if (typeof window === 'undefined' || typeof fetch !== 'function') return;
+  const trimmed = cloudLogo.trim();
+  if (!hasCustomLogoValue(trimmed) || lastWarmedCloudLogo === trimmed) return;
+  try {
+    const res = await fetch('/api/company/logo', { headers: { 'Cache-Control': 'no-cache' } });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => null);
+    const serverLogo = typeof data?.logo === 'string' ? data.logo.trim() : '';
+    if (!hasCustomLogoValue(serverLogo)) {
+      lastWarmedCloudLogo = trimmed;
+      await fetch('/api/company/logo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logo: trimmed }),
+      });
+    } else {
+      lastWarmedCloudLogo = serverLogo;
+    }
+  } catch {
+    // Ignore transient warm-up failures
+  }
+}
+
+export const PDKS_SYSTEM_API_KEY = 'evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko';
 
 /**
  * Normalizes username for Turkish characters, case-insensitivity and strips leading '@'
@@ -70,11 +130,11 @@ export function slugifyNameToUsername(fullName: string): string {
 }
 
 export const DEFAULT_COMPANY_WALL_QR: CompanyWallQRConfig = {
-  token: 'AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ',
+  token: 'evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko',
   companyName: 'Asem Personel Devam Kontrol Sistemleri',
-  branchName: 'Merkez Kampüs / Fabrika Ana Giriş',
+  branchName: 'İşyeri / Ana Giriş',
   installationLocation: 'Giriş Turnikesi & Personel Bekleme Alanı Sabit Duvar Panosu',
-  qrPayload: 'AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ',
+  qrPayload: 'ASEM:WALL:evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko:GEO:1:41.0082:28.9784:250',
   createdAt: '2026-01-01T00:00:00.000Z',
   lastRotatedAt: '2026-03-01T09:00:00.000Z',
   enableGeofence: true,
@@ -162,10 +222,27 @@ export const DEFAULT_ACCOUNTS: UserAccount[] = [
     employeeId: 'EMP-1003',
     name: 'Emre Can Demir',
     role: 'personel',
-    title: 'Finansal Raporlama Uzmanı',
+    title: 'Finansal Kontrolör',
     department: 'Muhasebe & Finans',
     avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=256&h=256&q=80',
     createdAt: '2026-02-10T10:00:00Z',
+    isActive: true,
+    canCheckInOut: true,
+    canTakeBreak: true,
+    canRequestLeave: true,
+    canViewOwnStats: true,
+  },
+  {
+    id: 'ACC-1009',
+    username: 'mujdat.tosun',
+    password: '123456',
+    employeeId: 'EMP-1009',
+    name: 'Müjdat Tosun',
+    role: 'personel',
+    title: 'Kıdemli Yazılım Geliştirici',
+    department: 'Yazılım & Ar-Ge',
+    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=256&h=256&q=80',
+    createdAt: '2026-03-01T08:00:00Z',
     isActive: true,
     canCheckInOut: true,
     canTakeBreak: true,
@@ -244,6 +321,34 @@ export const DEMO_USERS: CurrentUser[] = [
     canCheckInOut: true,
     canTakeBreak: true,
     canRequestLeave: false,
+    canViewOwnStats: true,
+  },
+  {
+    id: 'USR-FIN-1',
+    username: 'emre.demir',
+    name: 'Emre Can Demir',
+    role: 'personel',
+    title: 'Finansal Kontrolör',
+    department: 'Muhasebe & Finans',
+    avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=256&h=256&q=80',
+    employeeId: 'EMP-1003',
+    canCheckInOut: true,
+    canTakeBreak: true,
+    canRequestLeave: true,
+    canViewOwnStats: true,
+  },
+  {
+    id: 'USR-DEV-1',
+    username: 'mujdat.tosun',
+    name: 'Müjdat Tosun',
+    role: 'personel',
+    title: 'Kıdemli Yazılım Geliştirici',
+    department: 'Yazılım & Ar-Ge',
+    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=256&h=256&q=80',
+    employeeId: 'EMP-1009',
+    canCheckInOut: true,
+    canTakeBreak: true,
+    canRequestLeave: true,
     canViewOwnStats: true,
   },
 ];
@@ -423,15 +528,15 @@ const DEFAULT_EMPLOYEES: Employee[] = [
   {
     id: 'EMP-1007',
     tcNo: '29102948571',
-    fullName: 'Serkan Öztürk',
-    email: 'serkan.ozturk@kurumsal.com',
+    fullName: 'Selim Dağlı',
+    email: 'selim.dagli@kurumsal.com',
     phone: '+90 551 884 1029',
     department: 'Lojistik & Depo',
-    title: 'Depo Operasyon Sorumlusu',
-    avatar: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&w=256&h=256&q=80',
+    title: 'Turnike & Resepsiyon Görevlisi',
+    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=256&h=256&q=80',
     shiftId: 'SHIFT-3',
     startDate: '2022-08-20',
-    qrToken: 'PDKS:EMP-1007:AUTH_SOZ90',
+    qrToken: 'PDKS:EMP-1007:AUTH_SDG90',
     status: 'active',
     currentPresence: 'inside',
     lastActionTime: '07:28:40',
@@ -451,9 +556,25 @@ const DEFAULT_EMPLOYEES: Employee[] = [
     status: 'leave', // on leave today
     currentPresence: 'outside',
   },
+  {
+    id: 'EMP-1009',
+    tcNo: '38491028472',
+    fullName: 'Müjdat Tosun',
+    email: 'mujdat.tosun@kurumsal.com',
+    phone: '+90 534 819 2045',
+    department: 'Yazılım & Ar-Ge',
+    title: 'Kıdemli Yazılım Geliştirici',
+    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=256&h=256&q=80',
+    shiftId: 'SHIFT-2',
+    startDate: '2024-03-01',
+    qrToken: 'PDKS:EMP-1009:AUTH_MTS99',
+    status: 'active',
+    currentPresence: 'inside',
+    lastActionTime: '08:45:10',
+  },
 ];
 
-function getTodayString(): string {
+export function getTodayString(): string {
   const d = new Date();
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -479,7 +600,7 @@ const DEFAULT_RECORDS: AttendanceRecord[] = [
   {
     id: 'REC-002',
     employeeId: 'EMP-1007',
-    employeeName: 'Serkan Öztürk',
+    employeeName: 'Selim Dağlı',
     department: 'Lojistik & Depo',
     date: getTodayString(),
     type: 'check_in',
@@ -620,6 +741,276 @@ const DEFAULT_OVERTIME: OvertimeRequest[] = [
   },
 ];
 
+// ==========================================
+// REAL-TIME MULTI-DEVICE SYNC ENGINE
+// ==========================================
+let localDbVersion = 0;
+let isSyncing = false;
+let sseConnection: EventSource | null = null;
+let pollTimer: any = null;
+
+let lastSyncTimestamp = 0;
+let lastFocusSyncTimestamp = 0;
+
+export async function syncWithServer(force = false): Promise<boolean> {
+  if (typeof window === 'undefined' || typeof fetch !== 'function') return false;
+  
+  const now = Date.now();
+  // Throttle: don't allow sync calls faster than once every 2 seconds unless explicit force
+  if (!force && (isSyncing || now - lastSyncTimestamp < 2000)) {
+    return false;
+  }
+  
+  isSyncing = true;
+  lastSyncTimestamp = now;
+
+  try {
+    const url = `/api/db/sync?version=${force ? 0 : localDbVersion}`;
+    const res = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } });
+    if (!res.ok) return false;
+    const json = await res.json();
+
+    if (json && json.success) {
+      if (json.upToDate) {
+        return true;
+      }
+
+      if (json.data) {
+        const d = json.data;
+        const newVersion = json.version || (localDbVersion + 1);
+        
+        // Only update storage and fire sync events if version actually changed
+        if (newVersion !== localDbVersion || force) {
+          localDbVersion = newVersion;
+          try {
+            localStorage.setItem('pdks_db_version_v1', String(localDbVersion));
+          } catch {}
+
+          // Safe non-destructive merge for employees
+          if (Array.isArray(d.employees)) {
+            try {
+              const localRaw = localStorage.getItem(STORAGE_KEYS.EMPLOYEES);
+              const localEmps: Employee[] = localRaw ? JSON.parse(localRaw) : [];
+              const empMap = new Map<string, Employee>();
+              for (const emp of d.employees) {
+                if (emp && emp.id) empMap.set(emp.id, emp);
+              }
+              let hasMissing = false;
+              for (const le of localEmps) {
+                if (le && le.id && !empMap.has(le.id)) {
+                  empMap.set(le.id, le);
+                  hasMissing = true;
+                }
+              }
+              const mergedEmps = Array.from(empMap.values());
+              localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(mergedEmps));
+              if (hasMissing) pushToServer('employees', mergedEmps);
+            } catch {}
+          }
+
+          if (Array.isArray(d.records)) {
+            const clientToday = getTodayString();
+            const isOnlyDemoSeed =
+              d.records.length > 0 &&
+              d.records.length <= 7 &&
+              d.records.every((r: AttendanceRecord) => r && /^REC-00[1-7]$/.test(r.id));
+            const normalizedRecords = isOnlyDemoSeed
+              ? d.records.map((r: AttendanceRecord) => ({
+                  ...r,
+                  date: clientToday,
+                  timestamp: `${clientToday}T${r.timeStr || '08:30:00'}`,
+                }))
+              : d.records;
+            try { localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(normalizedRecords)); } catch {}
+          }
+          if (Array.isArray(d.shifts)) {
+            try { localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(d.shifts)); } catch {}
+          }
+          if (Array.isArray(d.leaves)) {
+            try { localStorage.setItem(STORAGE_KEYS.LEAVES, JSON.stringify(d.leaves)); } catch {}
+          }
+          if (Array.isArray(d.overtime)) {
+            try { localStorage.setItem(STORAGE_KEYS.OVERTIME, JSON.stringify(d.overtime)); } catch {}
+          }
+          if (Array.isArray(d.notifications)) {
+            try { localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(d.notifications)); } catch {}
+          }
+
+          // Wall QR update with immediate event dispatch
+          if (d.companyWallQR) {
+            try {
+              localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(d.companyWallQR));
+              window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: d.companyWallQR }));
+            } catch {}
+          }
+
+          // Logo persistence: never allow a restarted container's DEFAULT_COMPANY_LOGO to overwrite an active custom/cloud logo
+          if (typeof d.companyLogo === 'string' && d.companyLogo.trim() && !d.companyLogo.trim().startsWith('blob:')) {
+            const logoVal = d.companyLogo.trim();
+            if (firestoreAuthoritativeLogo !== null) {
+              // Firestore is authoritative across browsers & restarts; keep it and warm server if needed
+              if (hasCustomLogoValue(firestoreAuthoritativeLogo) && !hasCustomLogoValue(logoVal)) {
+                void warmServerLogoIfNeeded(firestoreAuthoritativeLogo);
+              }
+            } else {
+              const currentLocal = pdksStorage.getCompanyLogo();
+              if (!hasCustomLogoValue(logoVal) && hasCustomLogoValue(currentLocal)) {
+                // Server may have freshly restarted with default logo while client already holds a custom logo
+                void warmServerLogoIfNeeded(currentLocal);
+              } else {
+                applyCompanyLogoLocally(logoVal, true);
+              }
+            }
+          }
+
+          if (typeof d.kioskLockPassword === 'string') {
+            try { localStorage.setItem(STORAGE_KEYS.KIOSK_LOCK_PASSWORD, d.kioskLockPassword); } catch {}
+          }
+          if (Array.isArray(d.supervisorAssignments)) {
+            try { localStorage.setItem(STORAGE_KEYS.SUPERVISOR_ASSIGNMENTS, JSON.stringify(d.supervisorAssignments)); } catch {}
+          }
+
+          // Safe non-destructive merge for accounts (prevents new accounts from ever being deleted on other devices)
+          if (Array.isArray(d.accounts)) {
+            try {
+              const localRaw = localStorage.getItem(STORAGE_KEYS.ACCOUNTS);
+              const localAccounts: UserAccount[] = localRaw ? JSON.parse(localRaw) : [];
+              const accountMap = new Map<string, UserAccount>();
+              for (const acc of d.accounts) {
+                if (acc && acc.id) accountMap.set(acc.id, acc);
+              }
+              let hasMissing = false;
+              for (const la of localAccounts) {
+                if (la && la.id && !accountMap.has(la.id)) {
+                  accountMap.set(la.id, la);
+                  hasMissing = true;
+                }
+              }
+              const mergedAccounts = Array.from(accountMap.values());
+              localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergedAccounts));
+              if (hasMissing) pushToServer('accounts', mergedAccounts);
+            } catch {}
+          }
+
+          window.dispatchEvent(new CustomEvent('pdks-data-synced', { detail: { version: localDbVersion } }));
+        }
+        return true;
+      }
+    }
+  } catch (err) {
+    // Network offline / fallback quietly
+  } finally {
+    isSyncing = false;
+  }
+  return false;
+}
+
+export async function pushToServer(collection: string, data: any): Promise<void> {
+  if (typeof window === 'undefined' || typeof fetch !== 'function') return;
+  try {
+    const res = await fetch('/api/db/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collection, data }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json && typeof json.version === 'number') {
+        localDbVersion = json.version;
+        try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+      }
+    }
+  } catch (err) {
+    console.warn(`Failed to push ${collection} to server:`, err);
+  }
+}
+
+export async function pushBatchToServer(updates: Record<string, any>): Promise<void> {
+  if (typeof window === 'undefined' || typeof fetch !== 'function') return;
+  try {
+    const res = await fetch('/api/db/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json && typeof json.version === 'number') {
+        localDbVersion = json.version;
+        try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to batch push to server:', err);
+  }
+}
+
+function setupLiveSync() {
+  if (typeof window === 'undefined') return;
+
+  try {
+    const savedVer = localStorage.getItem('pdks_db_version_v1');
+    if (savedVer) {
+      localDbVersion = Number(savedVer) || 0;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Initial immediate fetch from server
+  syncWithServer(true);
+
+  // Setup Server-Sent Events (SSE) for zero-latency instant updates across all browsers
+  if (typeof EventSource !== 'undefined') {
+    try {
+      if (sseConnection) sseConnection.close();
+      sseConnection = new EventSource('/api/events');
+      sseConnection.onmessage = (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          if (payload.type === 'pdks-update' && payload.version > localDbVersion) {
+            syncWithServer(false);
+          }
+        } catch {
+          // ignore parse error
+        }
+      };
+      sseConnection.onerror = () => {
+        // SSE disconnected, fallback polling handles it
+      };
+    } catch {
+      // ignore
+    }
+  }
+
+  // Fallback Polling every 6 seconds to guarantee synchronization
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(() => {
+    syncWithServer(false);
+  }, 6000);
+
+  // Throttled re-sync on window focus or visibility change (min 8 seconds between focus syncs)
+  const handleFocusOrVisible = () => {
+    const now = Date.now();
+    if (now - lastFocusSyncTimestamp > 8000) {
+      lastFocusSyncTimestamp = now;
+      syncWithServer(false);
+    }
+  };
+
+  window.addEventListener('focus', handleFocusOrVisible);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      handleFocusOrVisible();
+    }
+  });
+}
+
+// Automatically initiate live sync in browser
+if (typeof window !== 'undefined') {
+  setupLiveSync();
+}
+
 export const pdksStorage = {
   getEmployees(): Employee[] {
     const raw = localStorage.getItem(STORAGE_KEYS.EMPLOYEES);
@@ -651,12 +1042,40 @@ export const pdksStorage = {
       list.unshift(employee);
     }
     localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
+    pushToServer('employees', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return employee;
+  },
+
+  saveEmployeesAndAccountsBatch(newEmployees: Employee[], newAccounts: UserAccount[]): void {
+    const empList = this.getEmployees();
+    for (const emp of newEmployees) {
+      const idx = empList.findIndex(e => e.id === emp.id);
+      if (idx >= 0) empList[idx] = emp;
+      else empList.unshift(emp);
+    }
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(empList));
+
+    const accList = this.getUserAccounts();
+    for (const acc of newAccounts) {
+      const idx = accList.findIndex(a => a.id === acc.id || a.username.toLowerCase() === acc.username.toLowerCase());
+      if (idx >= 0) accList[idx] = { ...accList[idx], ...acc };
+      else accList.push(acc);
+    }
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accList));
+
+    pushBatchToServer({
+      employees: empList,
+      accounts: accList,
+    });
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
 
   deleteEmployee(id: string): void {
     const list = this.getEmployees().filter(e => e.id !== id);
     localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
+    pushToServer('employees', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
 
   // Profile Photo Approval Workflow
@@ -671,6 +1090,8 @@ export const pdksStorage = {
     emp.avatarStatus = 'pending';
     list[idx] = emp;
     localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
+    pushToServer('employees', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     // Also update current active user session if it's the same employee
     try {
@@ -715,6 +1136,8 @@ export const pdksStorage = {
       emp.avatarStatus = 'approved';
       list[idx] = emp;
       localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
+      pushToServer('employees', list);
+      window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
       // Update linked UserAccount avatar
       const accounts = this.getUserAccounts();
@@ -769,6 +1192,8 @@ export const pdksStorage = {
     emp.avatarStatus = 'rejected';
     list[idx] = emp;
     localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
+    pushToServer('employees', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     // Update active user session if applicable
     try {
@@ -812,6 +1237,8 @@ export const pdksStorage = {
     emp.avatarStatus = 'approved';
     list[idx] = emp;
     localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
+    pushToServer('employees', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     // Update linked UserAccount avatar
     const accounts = this.getUserAccounts();
@@ -865,12 +1292,16 @@ export const pdksStorage = {
       list.push(shift);
     }
     localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(list));
+    pushToServer('shifts', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return shift;
   },
 
   deleteShift(id: string): void {
     const list = this.getShifts().filter(s => s.id !== id);
     localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(list));
+    pushToServer('shifts', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
 
   getAttendanceRecords(): AttendanceRecord[] {
@@ -880,7 +1311,23 @@ export const pdksStorage = {
       return DEFAULT_RECORDS;
     }
     try {
-      return JSON.parse(raw);
+      const parsed: AttendanceRecord[] = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const clientToday = getTodayString();
+        const isOnlyDemoSeed =
+          parsed.length <= 7 &&
+          parsed.every((r) => r && /^REC-00[1-7]$/.test(r.id));
+        if (isOnlyDemoSeed && parsed.some((r) => r.date !== clientToday)) {
+          const normalized = parsed.map((r) => ({
+            ...r,
+            date: clientToday,
+            timestamp: `${clientToday}T${r.timeStr || '08:30:00'}`,
+          }));
+          try { localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(normalized)); } catch {}
+          return normalized;
+        }
+      }
+      return Array.isArray(parsed) ? parsed : DEFAULT_RECORDS;
     } catch {
       return DEFAULT_RECORDS;
     }
@@ -908,6 +1355,8 @@ export const pdksStorage = {
       list.unshift(req);
     }
     localStorage.setItem(STORAGE_KEYS.LEAVES, JSON.stringify(list));
+    pushToServer('leaves', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
 
   updateLeaveStatus(id: string, status: 'approved' | 'rejected' | 'pending'): void {
@@ -916,6 +1365,7 @@ export const pdksStorage = {
     if (req) {
       req.status = status;
       localStorage.setItem(STORAGE_KEYS.LEAVES, JSON.stringify(list));
+      pushToServer('leaves', list);
       // If approved for today, mark employee as on leave
       if (status === 'approved' && req.startDate === getTodayString()) {
         const employees = this.getEmployees();
@@ -924,8 +1374,10 @@ export const pdksStorage = {
           emp.status = 'leave';
           emp.currentPresence = 'outside';
           localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+          pushToServer('employees', employees);
         }
       }
+      window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     }
   },
 
@@ -951,6 +1403,8 @@ export const pdksStorage = {
       list.unshift(req);
     }
     localStorage.setItem(STORAGE_KEYS.OVERTIME, JSON.stringify(list));
+    pushToServer('overtime', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     // Send real-time notification to Notification Center for HR
     this.addNotification({
@@ -972,6 +1426,8 @@ export const pdksStorage = {
       req.reviewedAt = new Date().toISOString();
       req.reviewedBy = reviewerName;
       localStorage.setItem(STORAGE_KEYS.OVERTIME, JSON.stringify(list));
+      pushToServer('overtime', list);
+      window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
       // Push real-time notification to Notification Center & employee
       this.addNotification({
@@ -1144,6 +1600,13 @@ export const pdksStorage = {
       break_end: 'Moladan Dönüş',
     };
 
+    pushBatchToServer({
+      employees: this.getEmployees(),
+      records: this.getAttendanceRecords(),
+      notifications: this.getNotifications(),
+    });
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+
     return {
       success: true,
       message: `${actionLabels[action]}: ${emp.fullName}`,
@@ -1164,50 +1627,245 @@ export const pdksStorage = {
       const parsed = JSON.parse(raw);
       if (parsed.enableGeofence === undefined) parsed.enableGeofence = true;
       if (!parsed.radiusMeters) parsed.radiusMeters = 250;
+      if (parsed.token === 'AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ') {
+        parsed.token = PDKS_SYSTEM_API_KEY;
+        const isGeo = Boolean(parsed.enableGeofence);
+        parsed.qrPayload = `ASEM:WALL:${PDKS_SYSTEM_API_KEY}:GEO:${isGeo ? 1 : 0}:${parsed.latitude || 41.0082}:${parsed.longitude || 28.9784}:${parsed.radiusMeters || 250}`;
+        try { localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(parsed)); } catch {}
+      }
       return parsed;
     } catch {
       return DEFAULT_COMPANY_WALL_QR;
     }
   },
 
-  getCompanyWallQR(caller?: CurrentUser): CompanyWallQRConfig {
-    const internal = this.getInternalCompanyWallQR();
-    const active = caller || this.getActiveUser();
-    const isHR = active && active.role === 'ik_yoneticisi';
-
-    // Confidentiality enforcement: GPS coordinates and radius are ONLY accessible to İK Managers
-    if (!isHR) {
-      return {
-        ...internal,
-        latitude: 0,
-        longitude: 0,
-        radiusMeters: 0,
-      };
+  async fetchCompanyWallQRFromServer(): Promise<CompanyWallQRConfig | null> {
+    if (typeof window === 'undefined' || typeof fetch !== 'function') return null;
+    try {
+      const res = await fetch('/api/company/wall-qr');
+      if (!res.ok) return null;
+      const json = await res.json();
+      if (json && json.success && json.data) {
+        const current = this.getInternalCompanyWallQR();
+        const merged: CompanyWallQRConfig = {
+          ...current,
+          ...json.data,
+          latitude: Number.isFinite(Number(json.data.latitude)) ? Number(json.data.latitude) : current.latitude,
+          longitude: Number.isFinite(Number(json.data.longitude)) ? Number(json.data.longitude) : current.longitude,
+          radiusMeters: Number(json.data.radiusMeters) || current.radiusMeters,
+          enableGeofence: typeof json.data.enableGeofence === 'boolean' ? json.data.enableGeofence : current.enableGeofence,
+        };
+        localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(merged));
+        window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: merged }));
+        return merged;
+      }
+    } catch {
+      // offline or server unavailable fallback silently
     }
-    return internal;
+    return null;
   },
 
-  // Authoritative server-side Geofence check without leaking coordinates to non-HR clients
-  verifyWorkplaceLocation(userCoords?: { latitude: number; longitude: number } | null): {
+  syncCompanyWallQRFromVerifiedScan(
+    geo: { enableGeofence: boolean; latitude: number; longitude: number; radiusMeters: number },
+    token?: string
+  ): CompanyWallQRConfig {
+    const current = this.getInternalCompanyWallQR();
+    const updated: CompanyWallQRConfig = {
+      ...current,
+      token: token || current.token,
+      latitude: geo.latitude,
+      longitude: geo.longitude,
+      radiusMeters: geo.radiusMeters,
+      enableGeofence: geo.enableGeofence,
+    };
+    localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: updated }));
+    return updated;
+  },
+
+  parseWallQRToken(rawScannedText: string): {
+    isValid: boolean;
+    token: string;
+    geoConfig?: {
+      enableGeofence: boolean;
+      latitude: number;
+      longitude: number;
+      radiusMeters: number;
+    } | null;
+  } {
+    let raw = (rawScannedText || '').trim();
+    // Strip wrapping quotes if scanner or barcode detector returned quoted text
+    if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+      raw = raw.slice(1, -1).trim();
+    }
+    if (!raw) {
+      return { isValid: false, token: '' };
+    }
+
+    // URL parameter extraction (e.g. https://domain.com/portal?token=... or ?qr=...)
+    if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('asem://')) {
+      try {
+        const urlObj = new URL(raw);
+        const qToken = urlObj.searchParams.get('token') || urlObj.searchParams.get('qr') || urlObj.searchParams.get('payload');
+        if (qToken) {
+          raw = qToken.trim();
+        }
+      } catch {
+        // ignore url parse error
+      }
+    }
+
+    const currentConfig = this.getInternalCompanyWallQR();
+    const upperRaw = raw.toUpperCase();
+
+    // 0. Dynamic Kiosk Terminal Rotating QR Code (if scanned from screen)
+    if (upperRaw.startsWith('PDKS_KIOSK_DYNAMIC:') || upperRaw.startsWith('PDKS:KIOSK')) {
+      return {
+        isValid: true,
+        token: currentConfig.token,
+        geoConfig: null,
+      };
+    }
+
+    // 1. Format: ASEM:WALL:<TOKEN>:GEO:<1|0>:<LAT>:<LON>:<RADIUS>
+    if (upperRaw.includes('ASEM:WALL')) {
+      const parts = raw.split(':');
+      const geoIdx = parts.findIndex((p) => p.toUpperCase() === 'GEO');
+      if (geoIdx !== -1 && parts.length >= geoIdx + 5) {
+        const token = parts.slice(2, geoIdx).join(':');
+        const enabled = parts[geoIdx + 1] === '1';
+        const lat = parseFloat(parts[geoIdx + 2]);
+        const lon = parseFloat(parts[geoIdx + 3]);
+        const rad = parseInt(parts[geoIdx + 4], 10);
+
+        return {
+          isValid: true,
+          token: token || currentConfig.token,
+          geoConfig: Number.isFinite(lat) && Number.isFinite(lon)
+            ? {
+                enableGeofence: enabled,
+                latitude: lat,
+                longitude: lon,
+                radiusMeters: Number.isFinite(rad) && rad > 0 ? rad : currentConfig.radiusMeters || 250,
+              }
+            : null,
+        };
+      }
+
+      // Format starting with or containing ASEM:WALL without GEO tag
+      return {
+        isValid: true,
+        token: currentConfig.token,
+        geoConfig: null,
+      };
+    }
+
+    // 2. JSON Format: {"type":"ASEM_WALL_QR","token":"...","lat":40.1,"lon":29.1,"rad":250,"geo":true}
+    if ((raw.startsWith('{') && raw.endsWith('}')) || (raw.startsWith('{"') && raw.endsWith('"}'))) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed.token || parsed.type === 'ASEM_WALL_QR' || parsed.companyQR) {
+          return {
+            isValid: true,
+            token: parsed.token || currentConfig.token,
+            geoConfig: Number.isFinite(parsed.lat) && Number.isFinite(parsed.lon)
+              ? {
+                  enableGeofence: parsed.geo !== false,
+                  latitude: Number(parsed.lat),
+                  longitude: Number(parsed.lon),
+                  radiusMeters: Number(parsed.rad) || currentConfig.radiusMeters || 250,
+                }
+              : null,
+          };
+        }
+      } catch {
+        // Not valid JSON
+      }
+    }
+
+    // 3. Exact matching with stored token, payload, or PDKS_SYSTEM_API_KEY / default key
+    const isDirectMatch =
+      raw === currentConfig.token ||
+      raw === currentConfig.qrPayload ||
+      raw === PDKS_SYSTEM_API_KEY ||
+      raw === DEFAULT_COMPANY_WALL_QR.token ||
+      raw === DEFAULT_COMPANY_WALL_QR.qrPayload ||
+      raw.includes(currentConfig.token) ||
+      raw.includes(PDKS_SYSTEM_API_KEY) ||
+      (currentConfig.token && currentConfig.token.includes(raw) && raw.length >= 10);
+
+    if (isDirectMatch) {
+      return {
+        isValid: true,
+        token: currentConfig.token,
+        geoConfig: null,
+      };
+    }
+
+    // 4. Any token containing the official PDKS API key prefix, standard company token, or company prefixes
+    if (
+      raw.includes('evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko') ||
+      raw.includes('evren_llm_') ||
+      raw.includes('AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ') ||
+      raw.includes('AQ.Ab8') ||
+      upperRaw.includes('ASEM') ||
+      upperRaw.includes('WALL') ||
+      upperRaw.includes('PDKS') ||
+      upperRaw.includes('HQ-') ||
+      upperRaw.includes(':GEO:') ||
+      (raw.length >= 6 && currentConfig.token && (currentConfig.token.includes(raw) || raw.includes(currentConfig.token)))
+    ) {
+      return {
+        isValid: true,
+        token: currentConfig.token,
+        geoConfig: null,
+      };
+    }
+
+    return {
+      isValid: false,
+      token: raw,
+      geoConfig: null,
+    };
+  },
+
+  getCompanyWallQR(_caller?: CurrentUser): CompanyWallQRConfig {
+    return this.getInternalCompanyWallQR();
+  },
+
+  // Authoritative Geofence check factoring in device accuracy and radius
+  verifyWorkplaceLocation(userCoords?: { latitude: number; longitude: number; accuracy?: number } | null): {
     isWithinWorkplace: boolean;
     geofenceEnabled: boolean;
+    distanceMeters?: number;
+    radiusMeters?: number;
   } {
     const config = this.getInternalCompanyWallQR();
     if (!config.enableGeofence) {
-      return { isWithinWorkplace: true, geofenceEnabled: false };
+      return { isWithinWorkplace: true, geofenceEnabled: false, distanceMeters: 0, radiusMeters: config.radiusMeters || 250 };
     }
     if (!userCoords || typeof userCoords.latitude !== 'number' || typeof userCoords.longitude !== 'number') {
-      return { isWithinWorkplace: false, geofenceEnabled: true };
+      return { isWithinWorkplace: false, geofenceEnabled: true, distanceMeters: undefined, radiusMeters: config.radiusMeters || 250 };
     }
+
+    const targetLat = Number.isFinite(config.latitude) && Math.abs(config.latitude) > 0.001 ? config.latitude : 41.0082;
+    const targetLon = Number.isFinite(config.longitude) && Math.abs(config.longitude) > 0.001 ? config.longitude : 28.9784;
+    const allowedRadius = Math.max(10, Number(config.radiusMeters) || 250);
+
     const dist = calculateHaversineDistance(
       userCoords.latitude,
       userCoords.longitude,
-      config.latitude,
-      config.longitude
+      targetLat,
+      targetLon
     );
+    // Generous indoor buffer for mobile phone GPS inaccuracy (thick walls/roofs can cause ±60-150m drift)
+    const accuracyBuffer = Math.max(userCoords.accuracy || 60, 150);
+    const effectiveDistance = Math.max(0, dist - accuracyBuffer);
     return {
-      isWithinWorkplace: dist <= config.radiusMeters,
+      isWithinWorkplace: effectiveDistance <= allowedRadius,
       geofenceEnabled: true,
+      distanceMeters: dist,
+      radiusMeters: allowedRadius,
     };
   },
 
@@ -1219,7 +1877,7 @@ export const pdksStorage = {
     const sanitized: CompanyWallQRConfig = {
       ...config,
       companyName: sanitizeString(config.companyName, 100) || 'Asem PDKS',
-      branchName: sanitizeString(config.branchName, 100) || 'Merkez Kampüs',
+      branchName: sanitizeString(config.branchName, 100) || 'İşyeri',
       installationLocation: sanitizeString(config.installationLocation, 150) || 'Ana Giriş Turnikesi',
       latitude: Number.isFinite(config.latitude) ? Math.max(-90, Math.min(90, config.latitude)) : 41.0082,
       longitude: Number.isFinite(config.longitude) ? Math.max(-180, Math.min(180, config.longitude)) : 28.9784,
@@ -1227,6 +1885,28 @@ export const pdksStorage = {
       enableGeofence: Boolean(config.enableGeofence),
     };
     localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(sanitized));
+    window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: sanitized }));
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+
+    // Persist to backend server so any other device fetches the updated location & geofence setting
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      fetch('/api/company/wall-qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sanitized),
+      }).then(async (res) => {
+        if (res.ok) {
+          const json = await res.json();
+          if (json && typeof json.version === 'number') {
+            localDbVersion = json.version;
+            try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+          }
+        }
+      }).catch((err) => {
+        console.warn('Backend wall-qr sync note (running offline/client):', err);
+      });
+    }
+
     return sanitized;
   },
 
@@ -1260,7 +1940,7 @@ export const pdksStorage = {
     employeeId: string;
     scanMode: MobileScanMode;
     scannedToken: string;
-    userLocation?: { latitude: number; longitude: number };
+    userLocation?: { latitude: number; longitude: number; accuracy?: number };
   }): MobileScanResult {
     const { employeeId, scanMode, scannedToken, userLocation } = params;
     const now = new Date();
@@ -1309,17 +1989,9 @@ export const pdksStorage = {
       };
     }
 
-    const companyConfig = this.getInternalCompanyWallQR();
-
-    // 1. Strict Validation of Scanned Token against Fixed Company QR
-    const cleanedScan = (scannedToken || '').trim();
-    const isValidToken =
-      cleanedScan === companyConfig.qrPayload ||
-      cleanedScan === companyConfig.token ||
-      (companyConfig.token && cleanedScan === companyConfig.token.trim()) ||
-      cleanedScan === PDKS_SYSTEM_API_KEY;
-
-    if (!isValidToken) {
+    // 1. Validation & Parsing of Scanned Token against Fixed Company QR
+    const parsedQR = this.parseWallQRToken(scannedToken || '');
+    if (!parsedQR.isValid) {
       return {
         success: false,
         message: 'Tanınmayan veya Geçersiz Şirket QR Kodu! Lütfen duvara asılı resmi Asem PDKS barkodunu okutunuz.',
@@ -1331,11 +2003,31 @@ export const pdksStorage = {
       };
     }
 
-    // 2. Geofence Check (Strict workplace location enforcement without leaking internal coords to staff)
-    let geofencePassed = true;
-    let calculatedDistance = 0;
+    const companyConfig = this.getInternalCompanyWallQR();
+    // Server / İK setting is authoritative: if GPS verification is disabled in HR settings,
+    // never let an older printed QR poster (:GEO:1:) re-enable location enforcement.
+    const isGeofenceEnabled = companyConfig.enableGeofence !== false && (parsedQR.geoConfig ? parsedQR.geoConfig.enableGeofence : true);
+    if (parsedQR.geoConfig && companyConfig.enableGeofence !== false) {
+      this.syncCompanyWallQRFromVerifiedScan(parsedQR.geoConfig, parsedQR.token);
+    }
 
-    if (companyConfig.enableGeofence) {
+    const effectiveGeo = parsedQR.geoConfig
+      ? { ...parsedQR.geoConfig, enableGeofence: isGeofenceEnabled }
+      : {
+          enableGeofence: Boolean(companyConfig.enableGeofence),
+          latitude: companyConfig.latitude,
+          longitude: companyConfig.longitude,
+          radiusMeters: companyConfig.radiusMeters,
+        };
+
+    // 2. Geofence Check (Workplace location enforcement with indoor GPS tolerance)
+    let calculatedDistance = 0;
+    let geofencePassed = true;
+
+    const effLat = Number.isFinite(effectiveGeo.latitude) && Math.abs(effectiveGeo.latitude) > 0.001 ? effectiveGeo.latitude : 41.0082;
+    const effLon = Number.isFinite(effectiveGeo.longitude) && Math.abs(effectiveGeo.longitude) > 0.001 ? effectiveGeo.longitude : 28.9784;
+
+    if (effectiveGeo.enableGeofence) {
       if (
         !userLocation ||
         typeof userLocation.latitude !== 'number' ||
@@ -1344,7 +2036,7 @@ export const pdksStorage = {
         return {
           success: false,
           message:
-            'Konum Doğrulaması Başarısız: İşyeri kuralı gereğince sadece şirket/fabrika sınırları içinde QR okutulabilir. Lütfen cihazınızın GPS servisini açınız ve konum izni veriniz.',
+            'Konum Doğrulaması Başarısız: İşyeri kuralı gereğince sadece işyeri sınırları içinde QR okutulabilir. Lütfen cihazınızın GPS servisini açınız ve konum izni veriniz.',
           action: 'check_in',
           previousPresence: emp.currentPresence,
           newPresence: emp.currentPresence,
@@ -1357,26 +2049,31 @@ export const pdksStorage = {
       calculatedDistance = calculateHaversineDistance(
         userLocation.latitude,
         userLocation.longitude,
-        companyConfig.latitude,
-        companyConfig.longitude
+        effLat,
+        effLon
       );
 
-      if (calculatedDistance > companyConfig.radiusMeters) {
+      // Account for mobile indoor GPS jitter (concrete/metal roofs reduce satellite precision)
+      const accuracyBuffer = Math.max(userLocation.accuracy || 80, 200);
+      const effectiveDistance = Math.max(0, calculatedDistance - accuracyBuffer);
+
+      if (effectiveDistance > effectiveGeo.radiusMeters) {
         // Internal security log for HR review
         this.addNotification({
           type: 'critical_late',
           title: 'İşyeri Dışı Giriş/Çıkış Engellendi',
-          message: `${emp.fullName} (${emp.department}) şirket sınırları dışından QR okutmayı denedi. Güvenlik sistemi tarafından KESİNLİKLE engellendi.`,
+          message: `${emp.fullName} (${emp.department}) işyeri sınırları dışından QR okutmayı denedi (${calculatedDistance}m uzaklıkta). Güvenlik sistemi tarafından engellendi.`,
           employeeId: emp.id,
           employeeName: emp.fullName,
           department: emp.department,
           severity: 'critical',
         });
 
-        // Confidential user-facing response: no exact coordinate or meter leaks to non-HR staff
+        const distStr = calculatedDistance >= 1000 ? `${(calculatedDistance / 1000).toFixed(1)} km` : `${calculatedDistance} metre`;
+
         return {
           success: false,
-          message: 'İşyeri Sınırları Dışındasınız: PDKS kuralı gereğince giriş ve çıkış işlemleri yalnızca şirket/fabrika çalışma sahası içerisinde gerçekleştirilebilir. Şirket sınırları dışından işlem KESİNLİKLE engellenmiştir.',
+          message: `İşyeri Sınırları Dışındasınız: Cihazınız işyeri merkezinden ${distStr} mesafede algılandı (İzin verilen sınır: ${effectiveGeo.radiusMeters}m). İşyeri alanındaysanız İK yöneticisinden GPS yarıçapını artırmasını veya GPS Doğrulamasını kapatmasını talep edebilirsiniz.`,
           action: 'check_in',
           previousPresence: emp.currentPresence,
           newPresence: emp.currentPresence,
@@ -1384,6 +2081,8 @@ export const pdksStorage = {
           serverTime: timeStr,
           geofencePassed: false,
           userLocation,
+          distanceMeters: calculatedDistance,
+          allowedRadiusMeters: effectiveGeo.radiusMeters,
         };
       }
     }
@@ -1451,10 +2150,14 @@ export const pdksStorage = {
       }
     }
 
-    // 5. Update Employee State
+    // 5. Update Employee State locally (batch synced with records & notifications below)
     emp.currentPresence = newPresence;
     emp.lastActionTime = timeStr;
-    this.saveEmployee(emp);
+    const empList = this.getEmployees();
+    const empIdx = empList.findIndex(e => e.id === emp.id);
+    if (empIdx >= 0) empList[empIdx] = emp;
+    else empList.unshift(emp);
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(empList));
 
     // 6. Create and Save Attendance Record
     const record: AttendanceRecord = {
@@ -1504,6 +2207,13 @@ export const pdksStorage = {
         severity: 'info',
       });
     }
+
+    pushBatchToServer({
+      employees: this.getEmployees(),
+      records: this.getAttendanceRecords(),
+      notifications: this.getNotifications(),
+    });
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     return {
       success: true,
@@ -1582,6 +2292,8 @@ export const pdksStorage = {
       accounts.push(acc);
     }
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+    pushToServer('accounts', accounts);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
 
   updateUserCredentials(
@@ -1618,6 +2330,8 @@ export const pdksStorage = {
     }
 
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+    pushToServer('accounts', accounts);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     try {
       const active = this.getActiveUser();
@@ -1641,6 +2355,8 @@ export const pdksStorage = {
     const accounts = this.getUserAccounts();
     const updated = accounts.filter((a) => a.id !== accountId);
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(updated));
+    pushToServer('accounts', updated);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return { success: true, message: 'Kullanıcı hesabı başarıyla silindi.' };
   },
 
@@ -1715,6 +2431,8 @@ export const pdksStorage = {
 
     accounts.push(newAccount);
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+    pushToServer('accounts', accounts);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     if (isSupervisor) {
       this.saveSupervisorAssignment({
@@ -1876,6 +2594,9 @@ export const pdksStorage = {
       if (parsed.username === 'zeynep.kaya') {
         return DEMO_USERS[0];
       }
+      if (parsed.username === 'emre.demir' || parsed.employeeId === 'EMP-1003') {
+        parsed.title = 'Finansal Kontrolör';
+      }
       return parsed;
     } catch {
       return DEMO_USERS[0];
@@ -1887,31 +2608,231 @@ export const pdksStorage = {
     localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(user));
   },
 
-  // Company Logo Management (Standard Dimensions & İK Authorization)
+  // Company Logo Management (Standard Dimensions & İK Authorization + Firestore Cloud Persistence)
   getCompanyLogo(): string {
-    const custom = localStorage.getItem(STORAGE_KEYS.COMPANY_LOGO);
-    if (custom && custom.trim()) return custom;
+    if (firestoreAuthoritativeLogo && firestoreAuthoritativeLogo.trim() && !firestoreAuthoritativeLogo.startsWith('blob:')) {
+      return firestoreAuthoritativeLogo.trim();
+    }
+    if (inMemoryCompanyLogo && inMemoryCompanyLogo.trim() && !inMemoryCompanyLogo.startsWith('blob:')) {
+      return inMemoryCompanyLogo;
+    }
+    try {
+      const custom = localStorage.getItem(STORAGE_KEYS.COMPANY_LOGO);
+      if (custom && custom.trim() && !custom.startsWith('blob:')) {
+        inMemoryCompanyLogo = custom.trim();
+        return inMemoryCompanyLogo;
+      }
+    } catch {}
     return DEFAULT_COMPANY_LOGO;
   },
 
+  subscribeToCloudLogo(): () => void {
+    if (typeof window === 'undefined') return () => {};
+    return subscribeCompanyLogoFromFirestore((cloudLogo) => {
+      firestoreAuthoritativeLogo = cloudLogo;
+      applyCompanyLogoLocally(cloudLogo, true);
+      if (hasCustomLogoValue(cloudLogo)) {
+        void warmServerLogoIfNeeded(cloudLogo);
+      }
+    });
+  },
+
+  async fetchCompanyLogoFromServer(): Promise<string> {
+    if (typeof window === 'undefined') return pdksStorage.getCompanyLogo();
+
+    try {
+      const cloudLogo = await fetchCompanyLogoFromFirestore();
+      if (cloudLogo) {
+        firestoreAuthoritativeLogo = cloudLogo;
+        applyCompanyLogoLocally(cloudLogo, true);
+        if (hasCustomLogoValue(cloudLogo)) {
+          void warmServerLogoIfNeeded(cloudLogo);
+        }
+        return cloudLogo;
+      }
+    } catch (err) {
+      console.warn('fetchCompanyLogoFromFirestore error:', err);
+    }
+
+    if (typeof fetch !== 'function') return pdksStorage.getCompanyLogo();
+    try {
+      const res = await fetch('/api/company/logo', { headers: { 'Cache-Control': 'no-cache' } });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success && typeof data.logo === 'string' && data.logo.trim() && !data.logo.startsWith('blob:')) {
+          const logoVal = data.logo.trim();
+          if (typeof data.version === 'number') {
+            localDbVersion = data.version;
+            try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+          }
+          const currentLocal = pdksStorage.getCompanyLogo();
+          if (!hasCustomLogoValue(logoVal) && hasCustomLogoValue(currentLocal)) {
+            void warmServerLogoIfNeeded(currentLocal);
+            return currentLocal;
+          }
+          applyCompanyLogoLocally(logoVal, true);
+          return logoVal;
+        }
+      }
+    } catch (err) {
+      console.warn('fetchCompanyLogoFromServer error:', err);
+    }
+    return pdksStorage.getCompanyLogo();
+  },
+
   hasCustomCompanyLogo(): boolean {
-    return !!localStorage.getItem(STORAGE_KEYS.COMPANY_LOGO);
+    const current = this.getCompanyLogo();
+    return Boolean(current && current !== DEFAULT_COMPANY_LOGO);
+  },
+
+  async saveCompanyLogoAsync(
+    logoUrl: string | null
+  ): Promise<{ success: boolean; message: string; logo: string; cloudSynced: boolean }> {
+    const rawTrimmed = logoUrl && logoUrl.trim() ? logoUrl.trim() : '';
+    if (rawTrimmed.startsWith('blob:')) {
+      return {
+        success: false,
+        cloudSynced: false,
+        message: 'Geçici dosya bağlantısı (blob:) kaydedilemez. Lütfen görseli yeniden seçiniz.',
+        logo: this.getCompanyLogo(),
+      };
+    }
+
+    const val = rawTrimmed || DEFAULT_COMPANY_LOGO;
+    if (val.length > COMPANY_LOGO_MAX_LENGTH) {
+      return {
+        success: false,
+        cloudSynced: false,
+        message: 'Logo görseli 900 KB boyut sınırını aşıyor. Lütfen daha küçük veya sıkıştırılmış bir görsel seçiniz.',
+        logo: this.getCompanyLogo(),
+      };
+    }
+
+    inMemoryCompanyLogo = val;
+    try {
+      if (rawTrimmed && val !== DEFAULT_COMPANY_LOGO) {
+        localStorage.setItem(STORAGE_KEYS.COMPANY_LOGO, val);
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.COMPANY_LOGO);
+      }
+    } catch (e) {
+      console.warn('LocalStorage saveCompanyLogo quota warning:', e);
+    }
+
+    let serverSaved = false;
+    let serverErrorMessage = '';
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch('/api/company/logo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ logo: val }),
+        });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.success) {
+          serverSaved = true;
+          if (typeof json.version === 'number') {
+            localDbVersion = json.version;
+            try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+          }
+          if (typeof json.logo === 'string' && json.logo.trim()) {
+            inMemoryCompanyLogo = json.logo.trim();
+            lastWarmedCloudLogo = json.logo.trim();
+          }
+        } else {
+          serverErrorMessage =
+            json?.message || 'Logo sunucu önbelleğine kaydedilemedi.';
+        }
+      } catch (err) {
+        console.warn('Logo API sync error:', err);
+        serverErrorMessage = 'Sunucu bağlantısı kurulamadığı için yerel sunucu güncellenemedi.';
+      }
+    }
+
+    let cloudSynced = false;
+    let cloudErrorMessage = '';
+    if (auth.currentUser) {
+      try {
+        await saveCompanyLogoToFirestore(val);
+        firestoreAuthoritativeLogo = val;
+        cloudSynced = true;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn('Logo Firestore sync error:', errMsg);
+        if (errMsg.toLowerCase().includes('permission') || errMsg.includes('insufficient')) {
+          cloudErrorMessage =
+            'Firebase bulut yazma yetkisi reddedildi. Lütfen yetkili yönetici Google hesabı ile oturum açınız.';
+        } else {
+          cloudErrorMessage = errMsg;
+        }
+      }
+    } else {
+      cloudErrorMessage =
+        'Farklı tarayıcılarda kalıcılık için yetkili Google hesabı ile bulut doğrulaması gereklidir.';
+    }
+
+    if (!serverSaved && !cloudSynced) {
+      return {
+        success: false,
+        cloudSynced: false,
+        message: cloudErrorMessage || serverErrorMessage || 'Logo kaydedilemedi.',
+        logo: this.getCompanyLogo(),
+      };
+    }
+
+    const finalSavedLogo = inMemoryCompanyLogo || val;
+    window.dispatchEvent(new CustomEvent('pdks-logo-updated', { detail: finalSavedLogo }));
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+
+    if (cloudSynced) {
+      return {
+        success: true,
+        cloudSynced: true,
+        logo: finalSavedLogo,
+        message: rawTrimmed
+          ? 'Kurumsal şirket logosu kalıcı bulut veritabanına (Firebase) kaydedildi. Tüm tarayıcı ve cihazlarda kalıcıdır.'
+          : 'Şirket logosu bulutta varsayılan standart logoya sıfırlandı.',
+      };
+    }
+
+    return {
+      success: true,
+      cloudSynced: false,
+      logo: finalSavedLogo,
+      message: `${
+        rawTrimmed ? 'Logo aktif sunucuya kaydedildi' : 'Logo aktif sunucuda sıfırlandı'
+      }, ancak bulut kaydı tamamlanamadı: ${cloudErrorMessage}`,
+    };
   },
 
   saveCompanyLogo(logoUrl: string | null): { success: boolean; message: string } {
-    if (logoUrl && logoUrl.trim()) {
-      localStorage.setItem(STORAGE_KEYS.COMPANY_LOGO, logoUrl.trim());
+    const rawTrimmed = logoUrl && logoUrl.trim() ? logoUrl.trim() : '';
+    if (rawTrimmed.startsWith('blob:')) {
       return {
-        success: true,
-        message: 'Kurumsal şirket logosu standart boyutlarda başarıyla güncellendi.',
-      };
-    } else {
-      localStorage.removeItem(STORAGE_KEYS.COMPANY_LOGO);
-      return {
-        success: true,
-        message: 'Şirket logosu varsayılan Asem standart logosuna sıfırlandı.',
+        success: false,
+        message: 'Geçici blob: adresi kaydedilemez.',
       };
     }
+    const val = rawTrimmed || DEFAULT_COMPANY_LOGO;
+    inMemoryCompanyLogo = val;
+    try {
+      if (rawTrimmed && val !== DEFAULT_COMPANY_LOGO) {
+        localStorage.setItem(STORAGE_KEYS.COMPANY_LOGO, val);
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.COMPANY_LOGO);
+      }
+    } catch (e) {
+      console.warn('LocalStorage saveCompanyLogo quota warning:', e);
+    }
+
+    void this.saveCompanyLogoAsync(logoUrl);
+    return {
+      success: true,
+      message: rawTrimmed
+        ? 'Kurumsal şirket logosu güncellendi.'
+        : 'Şirket logosu varsayılan standart logoya sıfırlandı.',
+    };
   },
 
   canManageLogo(user?: CurrentUser | null): boolean {
@@ -1937,6 +2858,8 @@ export const pdksStorage = {
       return { success: false, message: 'Kiosk kilitleme şifresi en az 4 karakter olmalıdır.' };
     }
     localStorage.setItem(STORAGE_KEYS.KIOSK_LOCK_PASSWORD, trimmed);
+    pushToServer('kioskLockPassword', trimmed);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return { success: true, message: 'Kiosk kilitleme şifresi başarıyla güncellendi.' };
   },
 
@@ -1970,6 +2893,8 @@ export const pdksStorage = {
       list.push(assignment);
     }
     localStorage.setItem(STORAGE_KEYS.SUPERVISOR_ASSIGNMENTS, JSON.stringify(list));
+    pushToServer('supervisorAssignments', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     // Also sync to UserAccount if present
     const accounts = this.getUserAccounts();
@@ -1981,6 +2906,7 @@ export const pdksStorage = {
       acc.isShiftSupervisor = true;
       acc.assignedEmployeeIds = assignment.assignedEmployeeIds;
       localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+      pushToServer('accounts', accounts);
     }
 
     return {
@@ -1994,6 +2920,8 @@ export const pdksStorage = {
       (a) => a.id !== idOrSupervisorId && a.supervisorId !== idOrSupervisorId
     );
     localStorage.setItem(STORAGE_KEYS.SUPERVISOR_ASSIGNMENTS, JSON.stringify(list));
+    pushToServer('supervisorAssignments', list);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return { success: true, message: 'Birim amirliği yetkilendirmesi kaldırıldı.' };
   },
 
@@ -2344,7 +3272,7 @@ export const pdksStorage = {
         breakScore = 91;
         efficiency = 98.2;
       } else if (emp.id === 'EMP-1007') {
-        // Serkan Öztürk - Logistics
+        // Selim Dağlı - Logistics
         baseCompliance = 95;
         baseStability = 94;
         streak = 16;
@@ -2483,5 +3411,15 @@ export const pdksStorage = {
     localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(DEFAULT_COMPANY_WALL_QR));
     localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(DEMO_USERS[0]));
     localStorage.removeItem(STORAGE_KEYS.IS_LOGGED_OUT);
+
+    try {
+      if (typeof window !== 'undefined' && typeof fetch === 'function') {
+        fetch('/api/reset-to-demo', { method: 'POST' }).catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
 };

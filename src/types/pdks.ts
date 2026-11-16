@@ -211,6 +211,9 @@ export interface LeaveRequest {
   reason: string;
   status: 'approved' | 'pending' | 'rejected';
   appliedAt: string;
+  approvedAt?: string;
+  approvedBy?: string;
+  rejectionReason?: string;
 }
 
 export interface OvertimeRequest {
@@ -227,6 +230,8 @@ export interface OvertimeRequest {
   appliedAt: string;
   reviewedAt?: string;
   reviewedBy?: string;
+  approvedAt?: string;
+  approvedBy?: string;
 }
 
 export interface KioskScanResult {
@@ -266,6 +271,7 @@ export interface MobileScanResult {
   serverTime: string;
   geofencePassed?: boolean;
   distanceMeters?: number;
-  userLocation?: { latitude: number; longitude: number };
+  allowedRadiusMeters?: number;
+  userLocation?: { latitude: number; longitude: number; accuracy?: number };
 }
 

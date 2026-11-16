@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { QrCode, Users, Clock, ShieldCheck, CalendarCheck, Smartphone, Maximize2, BarChart3, User, ChevronDown, Shield, TrendingUp, Key, LogOut, Lock, LogIn, LayoutDashboard, Printer, Image as ImageIcon } from 'lucide-react';
 import { CurrentUser } from '../types/pdks';
-import { pdksStorage, DEMO_USERS } from '../services/storage';
+import { pdksStorage } from '../services/storage';
 import { NotificationCenter } from './NotificationCenter';
+import { CompanyLogoImage } from './CompanyLogoImage';
 
 export type ActiveTab = 'kiosk' | 'dashboard' | 'performance' | 'employees' | 'records' | 'shifts' | 'portal' | 'reports' | 'supervisor';
 
@@ -15,8 +16,8 @@ interface NavbarProps {
   onOpenLogin: () => void;
   onLogout: () => void;
   onOpenWallQR?: () => void;
-  onOpenArchitecture?: () => void;
   onOpenLogoManager?: () => void;
+  companyLogo?: string;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -28,15 +29,35 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenLogin,
   onLogout,
   onOpenWallQR,
-  onOpenArchitecture,
   onOpenLogoManager,
+  companyLogo: propCompanyLogo,
 }) => {
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
   const [restrictedNotice, setRestrictedNotice] = useState<string | null>(null);
+  const [companyLogo, setCompanyLogo] = useState<string>(() => propCompanyLogo || pdksStorage.getCompanyLogo());
+
+  useEffect(() => {
+    if (propCompanyLogo) setCompanyLogo(propCompanyLogo);
+  }, [propCompanyLogo]);
+
+  useEffect(() => {
+    const syncLogo = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') {
+        setCompanyLogo(e.detail);
+      } else {
+        setCompanyLogo(pdksStorage.getCompanyLogo());
+      }
+    };
+    window.addEventListener('pdks-logo-updated', syncLogo);
+    window.addEventListener('pdks-data-synced', syncLogo);
+    return () => {
+      window.removeEventListener('pdks-logo-updated', syncLogo);
+      window.removeEventListener('pdks-data-synced', syncLogo);
+    };
+  }, []);
 
   const isHRManager = currentUser.role === 'ik_yoneticisi';
   const isSupervisor = pdksStorage.canUserAccessShiftManagement(currentUser);
-  const companyLogo = pdksStorage.getCompanyLogo();
   const accounts = pdksStorage.getUserAccounts();
 
   const getRoleBadgeStyle = (role: string) => {
@@ -113,10 +134,11 @@ export const Navbar: React.FC<NavbarProps> = ({
               className="text-left group flex items-center gap-2.5 focus:outline-none cursor-pointer"
             >
               <div className="h-9 max-w-[160px] flex items-center shrink-0">
-                <img
+                <CompanyLogoImage
                   src={companyLogo}
                   alt="Kurumsal Logo"
                   className="max-h-8 max-w-[150px] w-auto h-auto object-contain"
+                  variant="light"
                 />
               </div>
               <div className="hidden sm:block border-l border-slate-200 pl-2.5">
@@ -336,7 +358,10 @@ export const Navbar: React.FC<NavbarProps> = ({
 
 
             {/* Notification Center */}
-            <NotificationCenter />
+            <NotificationCenter
+              currentUser={currentUser}
+              filterEmployeeId={currentUser.role !== 'ik_yoneticisi' ? currentUser.employeeId : undefined}
+            />
 
             {/* Role Switcher & Account Profile Dropdown */}
             <div className="relative">
@@ -450,66 +475,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                       </div>
                     </div>
 
-                    {/* Quick Demo Role Switcher */}
-                    <div className="mb-2 p-2 bg-slate-50 rounded-xl border border-slate-100">
-                      <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5 px-1 flex items-center justify-between">
-                        <span>Hızlı Hesap Değiştir (Demo)</span>
-                        <User className="w-3 h-3 text-slate-400" />
-                      </div>
-                      <div className="space-y-1">
-                        {DEMO_USERS.map((demo) => {
-                          const isCurrent = currentUser.username === demo.username;
-                          return (
-                            <button
-                              key={demo.id}
-                              onClick={() => {
-                                onSwitchUser(demo);
-                                setIsRoleDropdownOpen(false);
-                              }}
-                              className={`w-full text-left p-1.5 rounded-lg flex items-center justify-between text-xs transition-colors cursor-pointer ${
-                                isCurrent
-                                  ? 'bg-indigo-100/70 text-indigo-900 font-bold'
-                                  : 'hover:bg-slate-100 text-slate-700'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2 min-w-0">
-                                <img
-                                  src={demo.avatar}
-                                  alt={demo.name}
-                                  className="w-5 h-5 rounded-full object-cover shrink-0"
-                                  referrerPolicy="no-referrer"
-                                />
-                                <div className="truncate">
-                                  <div className="text-[11px] font-semibold truncate leading-tight">
-                                    {demo.name}
-                                  </div>
-                                  <div className="text-[9px] text-slate-500 font-mono truncate leading-tight">
-                                    @{demo.username}
-                                  </div>
-                                </div>
-                              </div>
-                              <span
-                                className={`text-[9px] px-1.5 py-0.5 rounded shrink-0 font-medium ${
-                                  demo.role === 'ik_yoneticisi'
-                                    ? 'bg-purple-100 text-purple-700 font-bold'
-                                    : demo.role === 'birim_amiri'
-                                    ? 'bg-amber-100 text-amber-800 font-bold'
-                                    : 'bg-slate-200 text-slate-700'
-                                }`}
-                              >
-                                {demo.role === 'ik_yoneticisi'
-                                  ? 'İK'
-                                  : demo.role === 'birim_amiri'
-                                  ? 'Birim Amiri'
-                                  : demo.role === 'guvenlik'
-                                  ? 'Güvenlik'
-                                  : 'Personel'}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
 
                     {/* Quick Login with Different Username */}
                     <button

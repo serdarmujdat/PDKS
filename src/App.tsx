@@ -12,10 +12,9 @@ import { LandingLoginPage } from './components/LandingLoginPage';
 import { CompanyLogoModal } from './components/CompanyLogoModal';
 import { LoginModal } from './components/LoginModal';
 import { CompanyWallQRModal } from './components/CompanyWallQRModal';
-import { SystemArchitectureModal } from './components/SystemArchitectureModal';
 import { CurrentUser } from './types/pdks';
 import { pdksStorage } from './services/storage';
-import { RotateCcw, Key, Printer, Code2, Image as ImageIcon, AlertTriangle, RefreshCw } from 'lucide-react';
+import { RotateCcw, Key, Printer, Image as ImageIcon, AlertTriangle, RefreshCw } from 'lucide-react';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -84,7 +83,6 @@ export default function App() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isLogoModalOpen, setIsLogoModalOpen] = useState(false);
   const [isWallQRModalOpen, setIsWallQRModalOpen] = useState(false);
-  const [isArchitectureModalOpen, setIsArchitectureModalOpen] = useState(false);
 
   // If active user is not ik_yoneticisi, ensure restricted access (Birim Amirleri can access shifts, portal, kiosk)
   useEffect(() => {
@@ -96,6 +94,39 @@ export default function App() {
       }
     }
   }, [currentUser, activeTab]);
+
+  // Listen for real-time live synchronization events across devices / tabs (Debounced)
+  useEffect(() => {
+    // Immediately pull the canonical corporate logo from cloud (Firestore) & server database
+    pdksStorage.fetchCompanyLogoFromServer().then((srvLogo) => {
+      if (srvLogo) setCompanyLogo(srvLogo);
+    });
+    const unsubscribeCloudLogo = pdksStorage.subscribeToCloudLogo();
+
+    let debounceTimer: any = null;
+    const handleSync = () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        setCompanyLogo(pdksStorage.getCompanyLogo());
+      }, 300);
+    };
+
+    const handleLogoUpdate = (e: any) => {
+      if (e.detail && typeof e.detail === 'string') {
+        setCompanyLogo(e.detail);
+      }
+    };
+
+    window.addEventListener('pdks-data-synced', handleSync);
+    window.addEventListener('pdks-logo-updated', handleLogoUpdate);
+
+    return () => {
+      clearTimeout(debounceTimer);
+      unsubscribeCloudLogo();
+      window.removeEventListener('pdks-data-synced', handleSync);
+      window.removeEventListener('pdks-logo-updated', handleLogoUpdate);
+    };
+  }, []);
 
   const handleScanComplete = () => {
     // Triggers dashboard state refresh
@@ -177,60 +208,58 @@ export default function App() {
           onOpenLogin={() => setIsLoginModalOpen(true)}
           onLogout={handleLogout}
           onOpenWallQR={currentUser.role === 'ik_yoneticisi' ? () => setIsWallQRModalOpen(true) : undefined}
-          onOpenArchitecture={() => setIsArchitectureModalOpen(true)}
           onOpenLogoManager={() => setIsLogoModalOpen(true)}
+          companyLogo={companyLogo}
         />
       )}
 
       {/* Main Content Area Protected by ErrorBoundary */}
       <ErrorBoundary>
-        <main className="flex-1 flex flex-col">
+        <main className="flex-1 flex flex-col w-full max-w-full min-w-0">
           {activeTab === 'kiosk' && (
             <KioskTerminal
-              key={refreshKey}
               currentUser={currentUser}
               onScanComplete={handleScanComplete}
               isFullscreen={isFullscreenKiosk}
               onToggleFullscreen={() => setIsFullscreenKiosk(!isFullscreenKiosk)}
+              companyLogo={companyLogo}
             />
           )}
 
           {activeTab === 'dashboard' && (
             <DashboardOverview
-              key={refreshKey}
               currentUser={currentUser}
               onNavigateToKiosk={() => setActiveTab('kiosk')}
               onNavigateToEmployees={() => setActiveTab('employees')}
               onNavigateToRecords={() => setActiveTab('records')}
               onNavigateToPerformance={() => setActiveTab('performance')}
               onOpenWallQR={currentUser.role === 'ik_yoneticisi' ? () => setIsWallQRModalOpen(true) : undefined}
-              onOpenArchitecture={() => setIsArchitectureModalOpen(true)}
               onOpenLogoManager={() => setIsLogoModalOpen(true)}
+              companyLogo={companyLogo}
             />
           )}
 
           {activeTab === 'performance' && (
-            <PerformanceDashboard key={refreshKey} />
+            <PerformanceDashboard />
           )}
 
           {activeTab === 'employees' && (
             <EmployeeManagement
-              key={refreshKey}
               currentUser={currentUser}
               onOpenWallQR={currentUser.role === 'ik_yoneticisi' ? () => setIsWallQRModalOpen(true) : undefined}
             />
           )}
 
-          {activeTab === 'records' && <AttendanceLogs key={refreshKey} />}
+          {activeTab === 'records' && <AttendanceLogs />}
 
-          {activeTab === 'reports' && <AnalyticsReports key={refreshKey} />}
+          {activeTab === 'reports' && <AnalyticsReports />}
 
           {activeTab === 'shifts' && (
-            <ShiftAndLeaveManagement key={refreshKey} currentUser={currentUser} />
+            <ShiftAndLeaveManagement currentUser={currentUser} />
           )}
 
           {activeTab === 'portal' && (
-            <EmployeeMobilePortal key={refreshKey} currentUser={currentUser} />
+            <EmployeeMobilePortal currentUser={currentUser} />
           )}
         </main>
       </ErrorBoundary>
@@ -271,14 +300,6 @@ export default function App() {
                 <span className="text-slate-300">|</span>
               </>
             )}
-            <button
-              onClick={() => setIsArchitectureModalOpen(true)}
-              className="text-slate-600 hover:text-slate-900 flex items-center gap-1 font-semibold transition-colors text-xs cursor-pointer"
-            >
-              <Code2 className="w-3.5 h-3.5" />
-              <span>Mimari & API</span>
-            </button>
-            <span className="text-slate-300">|</span>
             <button
               onClick={handleLogout}
               className="text-rose-600 hover:text-rose-800 flex items-center gap-1 font-bold transition-colors text-xs cursor-pointer"
@@ -324,12 +345,6 @@ export default function App() {
           currentUser={currentUser}
         />
       )}
-
-      {/* System Architecture, SQL Schemas and API Guide Modal */}
-      <SystemArchitectureModal
-        isOpen={isArchitectureModalOpen}
-        onClose={() => setIsArchitectureModalOpen(false)}
-      />
     </div>
   );
 }

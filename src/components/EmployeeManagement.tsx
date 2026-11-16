@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Search, Filter, QrCode, Printer, Trash2, Edit2, Download, Check, X, Shield, User, Building2, Phone, Mail, Lock, ShieldAlert, Key, Camera, CheckCircle2, AlertCircle, Clock, Image as ImageIcon, MapPin, FileSpreadsheet } from 'lucide-react';
 import { Employee, Department, Shift, CurrentUser, UserAccount } from '../types/pdks';
-import { pdksStorage, slugifyNameToUsername, normalizeUsername } from '../services/storage';
+import { pdksStorage, slugifyNameToUsername, normalizeUsername, getTodayString } from '../services/storage';
 import { generateQRDataURL } from '../utils/qr';
 import { UserAccountsModal } from './UserAccountsModal';
 import { ExcelEmployeeImportModal } from './ExcelEmployeeImportModal';
@@ -39,6 +39,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
   const [photoChangeEmp, setPhotoChangeEmp] = useState<Employee | null>(null);
   const [directPhotoInput, setDirectPhotoInput] = useState<string>('');
   const [photoNotice, setPhotoNotice] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -70,6 +71,9 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
 
   useEffect(() => {
     loadData();
+    const handleSync = () => loadData();
+    window.addEventListener('pdks-data-synced', handleSync);
+    return () => window.removeEventListener('pdks-data-synced', handleSync);
   }, []);
 
   // Filter employees
@@ -93,6 +97,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
 
   // Open Edit Modal
   const handleOpenEdit = (emp: Employee) => {
+    setFormError(null);
     setEditingEmployee(emp);
     setFormData({
       fullName: emp.fullName,
@@ -110,31 +115,69 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
   // Save (Create or Update)
   const handleSaveEmployee = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.fullName || !formData.title) return;
+    setFormError(null);
+    if (!formData.fullName.trim() || !formData.title.trim()) {
+      setFormError('Lütfen Ad Soyad ve Unvan/Pozisyon alanlarını doldurunuz.');
+      return;
+    }
 
     if (editingEmployee) {
       const updated: Employee = {
         ...editingEmployee,
         ...formData,
+        fullName: formData.fullName.trim(),
+        title: formData.title.trim(),
       };
       pdksStorage.saveEmployee(updated);
+      setPhotoNotice(`${updated.fullName} bilgileri başarıyla güncellendi.`);
+      setTimeout(() => setPhotoNotice(null), 4000);
     } else {
-      const nextNum = employees.length + 1001;
+      let maxNum = 1000;
+      employees.forEach((emp) => {
+        const match = emp.id.match(/EMP-(\d+)/);
+        if (match) {
+          const parsedNum = parseInt(match[1], 10);
+          if (parsedNum > maxNum) maxNum = parsedNum;
+        }
+      });
+      const nextNum = maxNum + 1;
       const newId = `EMP-${nextNum}`;
+
+      // Validate linked username availability BEFORE saving employee so state stays consistent
+      let desiredUsername = '';
+      if (createAccountWithEmp) {
+        const rawCandidate = accountUsername.trim()
+          ? normalizeUsername(accountUsername)
+          : slugifyNameToUsername(formData.fullName);
+        desiredUsername = rawCandidate || `user.${nextNum}`;
+        const existingAccounts = pdksStorage.getUserAccounts();
+        const isTaken = existingAccounts.some(
+          (a) => normalizeUsername(a.username) === desiredUsername || a.username.toLowerCase().replace(/^@+/, '') === desiredUsername
+        );
+        if (isTaken) {
+          if (accountUsername.trim()) {
+            setFormError(`'@${desiredUsername}' kullanıcı adı zaten kullanımda. Lütfen farklı bir kullanıcı adı giriniz.`);
+            return;
+          }
+          desiredUsername = `${desiredUsername}.${nextNum}`;
+        }
+      }
+
       const randomSecret = Math.random().toString(36).substring(2, 7).toUpperCase();
+      const cleanNameSlug = slugifyNameToUsername(formData.fullName) || `personel.${nextNum}`;
       const newEmp: Employee = {
         id: newId,
-        fullName: formData.fullName,
-        tcNo: formData.tcNo || '10000000000',
+        fullName: formData.fullName.trim(),
+        tcNo: formData.tcNo.trim() || String(10000000000 + nextNum),
         department: formData.department,
-        title: formData.title,
-        email: formData.email || `${formData.fullName.toLowerCase().replace(/\s+/g, '.')}@kurumsal.com`,
-        phone: formData.phone || '+90 530 000 0000',
+        title: formData.title.trim(),
+        email: formData.email.trim() || `${cleanNameSlug}@kurumsal.com`,
+        phone: formData.phone.trim() || '+90 530 000 0000',
         avatar:
-          formData.avatar ||
+          formData.avatar.trim() ||
           'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=256&h=256&q=80',
-        shiftId: formData.shiftId,
-        startDate: new Date().toISOString().split('T')[0],
+        shiftId: formData.shiftId || shifts[0]?.id || 'SHIFT-1',
+        startDate: getTodayString(),
         qrToken: `PDKS:${newId}:SEC_${randomSecret}`,
         status: 'active',
         currentPresence: 'outside',
@@ -143,13 +186,10 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
 
       // Create linked user login account if checked
       if (createAccountWithEmp) {
-        const cleanUser = accountUsername.trim()
-          ? normalizeUsername(accountUsername)
-          : slugifyNameToUsername(formData.fullName);
         const finalPass = accountPassword.trim() || '123456';
-        pdksStorage.createUserAccount({
+        const accResult = pdksStorage.createUserAccount({
           employeeId: newId,
-          username: cleanUser || `user.${nextNum}`,
+          username: desiredUsername,
           password: finalPass,
           role: 'personel',
           canCheckInOut: true,
@@ -157,11 +197,18 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
           canRequestLeave: true,
           canViewOwnStats: true,
         });
+        if (!accResult.success) {
+          setFormError(accResult.message);
+        }
       }
+
+      setPhotoNotice(`${newEmp.fullName} (${newEmp.id}) için yeni personel kartı ve QR kimliği oluşturuldu.`);
+      setTimeout(() => setPhotoNotice(null), 4000);
     }
 
     setIsAddModalOpen(false);
     setEditingEmployee(null);
+    setFormError(null);
     setAccountUsername('');
     setAccountPassword('123456');
     setCreateAccountWithEmp(true);
@@ -172,7 +219,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
       title: '',
       email: '',
       phone: '',
-      shiftId: 'SHIFT-1',
+      shiftId: shifts[0]?.id || 'SHIFT-1',
       avatar: '',
     });
     loadData();
@@ -252,7 +299,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+    <div className="w-full max-w-7xl mx-auto min-w-0 px-3 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-4 sm:space-y-6">
       {/* Top Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
@@ -278,6 +325,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
         {canCreate ? (
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
             <button
+              type="button"
               onClick={() => {
                 setAccountModalEmpId(undefined);
                 setIsAccountsModalOpen(true);
@@ -291,6 +339,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
 
             {onOpenWallQR && (
               <button
+                type="button"
                 onClick={onOpenWallQR}
                 className="inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg shadow-xs transition-colors whitespace-nowrap cursor-pointer"
                 title="Şirket işyeri GPS koordinatlarını, Geofence yarıçapını belirleyin ve Duvar QR kodunu yazdırın (Yalnızca İK)"
@@ -301,6 +350,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
             )}
 
             <button
+              type="button"
               onClick={() => setIsExcelModalOpen(true)}
               className="inline-flex items-center justify-center gap-2 px-3.5 py-2 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg shadow-xs transition-colors whitespace-nowrap cursor-pointer"
               title="Personel listesini Excel (.xlsx) veya CSV formatında toplu aktarın"
@@ -310,8 +360,10 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 setEditingEmployee(null);
+                setFormError(null);
                 setFormData({
                   fullName: '',
                   tcNo: '',
@@ -319,11 +371,12 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                   title: '',
                   email: '',
                   phone: '',
-                  shiftId: 'SHIFT-1',
+                  shiftId: shifts[0]?.id || 'SHIFT-1',
                   avatar: '',
                 });
                 setAccountUsername('');
                 setAccountPassword('123456');
+                setCreateAccountWithEmp(true);
                 setIsAddModalOpen(true);
               }}
               className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-sm transition-colors whitespace-nowrap cursor-pointer"
@@ -983,21 +1036,35 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
 
       {/* MODAL: Yeni Personel Ekle / Düzenle */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden border border-slate-200">
-            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
+          onClick={() => setIsAddModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden border border-slate-200 flex flex-col max-h-[92vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50 shrink-0">
               <h3 className="font-bold text-base text-slate-900">
                 {editingEmployee ? 'Personel Bilgilerini Güncelle' : 'Yeni Personel Kartı Oluştur'}
               </h3>
               <button
+                type="button"
                 onClick={() => setIsAddModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
+                aria-label="Kapat"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveEmployee} className="p-6 space-y-4">
+            <form onSubmit={handleSaveEmployee} className="p-6 space-y-4 overflow-y-auto flex-1">
+              {formError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{formError}</span>
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Ad Soyad *

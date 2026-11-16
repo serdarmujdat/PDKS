@@ -45,6 +45,10 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   title,
   currentUser,
 }) => {
+  const effectiveUser = currentUser || pdksStorage.getActiveUser();
+  const isRestrictedUser = effectiveUser && effectiveUser.role !== 'ik_yoneticisi';
+  const effectiveFilterId = filterEmployeeId || (isRestrictedUser ? effectiveUser.employeeId : undefined);
+
   const [notifications, setNotifications] = useState<PDKSNotification[]>([]);
   const [internalIsOpen, setInternalIsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -79,7 +83,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
         loadNotifications();
 
         // Only show toast if relevant to this view
-        if (!filterEmployeeId || notif.employeeId === filterEmployeeId || notif.employeeId === 'all') {
+        if (!effectiveFilterId || notif.employeeId === effectiveFilterId || notif.employeeId === 'all') {
           setActiveToast(notif);
 
           // Sound effect
@@ -103,18 +107,18 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
     return () => {
       window.removeEventListener('pdks-notification', handleLiveEvent);
     };
-  }, [settings.soundEnabled, filterEmployeeId]);
+  }, [settings.soundEnabled, effectiveFilterId]);
 
   // Filtered notifications
   const relevantNotifications = useMemo(() => {
     let list = notifications;
-    if (filterEmployeeId) {
+    if (effectiveFilterId) {
       list = list.filter(
-        (n) => n.employeeId === filterEmployeeId || n.employeeId === 'all' || !n.employeeId
+        (n) => n.employeeId === effectiveFilterId || n.employeeId === 'all'
       );
     }
     return list;
-  }, [notifications, filterEmployeeId]);
+  }, [notifications, effectiveFilterId]);
 
   const filteredNotifications = useMemo(() => {
     return relevantNotifications.filter((n) => {

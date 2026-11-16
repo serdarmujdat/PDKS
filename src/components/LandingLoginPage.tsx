@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { CurrentUser } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
+import { CompanyLogoImage } from './CompanyLogoImage';
 
 interface LandingLoginPageProps {
   onLoginSuccess: (user: CurrentUser) => void;
@@ -74,10 +75,11 @@ export const LandingLoginPage: React.FC<LandingLoginPageProps> = ({
           {/* Brand & Standard Company Logo */}
           <div className="flex items-center gap-3">
             <div className="h-10 max-w-[220px] flex items-center shrink-0">
-              <img
+              <CompanyLogoImage
                 src={companyLogo}
                 alt="Asem Kurumsal Logo"
                 className="max-h-9 max-w-[200px] w-auto h-auto object-contain"
+                variant="light"
               />
             </div>
             <div className="hidden sm:block border-l border-slate-200 pl-3">
@@ -190,10 +192,11 @@ export const LandingLoginPage: React.FC<LandingLoginPageProps> = ({
               {/* Card Header with Standard Corporate Logo */}
               <div className="p-5 sm:p-6 bg-linear-to-b from-slate-50 to-white border-b border-slate-100 text-center space-y-2.5 sm:space-y-3">
                 <div className="w-full h-14 max-w-[240px] mx-auto rounded-xl border border-slate-200/80 bg-white p-2 shadow-xs flex items-center justify-center">
-                  <img
+                  <CompanyLogoImage
                     src={companyLogo}
                     alt="Şirket Kurumsal Logosu"
                     className="max-h-11 max-w-[210px] w-auto h-auto object-contain"
+                    variant="light"
                   />
                 </div>
                 <div>

@@ -40,6 +40,16 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
   const [editPasswordValue, setEditPasswordValue] = useState<string>('');
   const [editingPasswordAccId, setEditingPasswordAccId] = useState<string | null>(null);
   const [newPasswordValue, setNewPasswordValue] = useState<string>('');
+  const [revealedPasswordAccIds, setRevealedPasswordAccIds] = useState<Set<string>>(new Set());
+
+  const togglePasswordVisibility = (id: string) => {
+    setRevealedPasswordAccIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   if (!isOpen) return null;
 
@@ -405,16 +415,24 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                             </div>
                           ) : (
                             <div className="flex items-center gap-1.5">
-                              <span className="bg-white px-2 py-0.5 rounded text-slate-800 font-bold border border-slate-200 tracking-wider">
-                                {acc.password}
+                              <span className="bg-white px-2 py-0.5 rounded text-slate-800 font-bold border border-slate-200 tracking-wider font-mono text-xs">
+                                {revealedPasswordAccIds.has(acc.id) ? acc.password : '••••••••'}
                               </span>
+                              <button
+                                type="button"
+                                onClick={() => togglePasswordVisibility(acc.id)}
+                                className="p-1 text-slate-400 hover:text-slate-600 rounded transition-colors"
+                                title={revealedPasswordAccIds.has(acc.id) ? 'Şifreyi Gizle' : 'Şifreyi Göster'}
+                              >
+                                {revealedPasswordAccIds.has(acc.id) ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                              </button>
                               {canManage && (
                                 <button
                                   onClick={() => {
                                     setEditingPasswordAccId(acc.id);
                                     setNewPasswordValue(acc.password);
                                   }}
-                                  className="text-[10px] text-indigo-600 hover:text-indigo-800 font-sans font-semibold underline"
+                                  className="text-[10px] text-indigo-600 hover:text-indigo-800 font-sans font-semibold underline ml-0.5"
                                 >
                                   Değiştir
                                 </button>
@@ -558,16 +576,24 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                               </div>
                             ) : (
                               <div className="flex items-center gap-1.5">
-                                <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-700 font-bold tracking-wider">
-                                  {acc.password}
+                                <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-700 font-bold tracking-wider font-mono text-xs">
+                                  {revealedPasswordAccIds.has(acc.id) ? acc.password : '••••••••'}
                                 </span>
+                                <button
+                                  type="button"
+                                  onClick={() => togglePasswordVisibility(acc.id)}
+                                  className="p-1 text-slate-400 hover:text-slate-600 rounded transition-colors"
+                                  title={revealedPasswordAccIds.has(acc.id) ? 'Şifreyi Gizle' : 'Şifreyi Göster'}
+                                >
+                                  {revealedPasswordAccIds.has(acc.id) ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                </button>
                                 {canManage && (
                                   <button
                                     onClick={() => {
                                       setEditingPasswordAccId(acc.id);
                                       setNewPasswordValue(acc.password);
                                     }}
-                                    className="text-[10px] text-indigo-600 hover:text-indigo-800 underline ml-1"
+                                    className="text-[10px] text-indigo-600 hover:text-indigo-800 underline ml-0.5"
                                     title="Şifreyi Değiştir"
                                   >
                                     Değiştir

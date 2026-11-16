@@ -13,7 +13,6 @@ import {
   QrCode,
   TrendingUp,
   Printer,
-  Code2,
   Search,
   Filter,
   CheckCircle2,
@@ -27,8 +26,9 @@ import {
   FileCheck2,
 } from 'lucide-react';
 import { Employee, AttendanceRecord, Department, OvertimeRequest, LeaveRequest } from '../types/pdks';
-import { pdksStorage } from '../services/storage';
+import { pdksStorage, getTodayString } from '../services/storage';
 import { NotificationCenter } from './NotificationCenter';
+import { CompanyLogoImage } from './CompanyLogoImage';
 
 interface DashboardOverviewProps {
   onNavigateToKiosk: () => void;
@@ -36,9 +36,9 @@ interface DashboardOverviewProps {
   onNavigateToRecords: () => void;
   onNavigateToPerformance?: () => void;
   onOpenWallQR?: () => void;
-  onOpenArchitecture?: () => void;
   onOpenLogoManager?: () => void;
   currentUser?: import('../types/pdks').CurrentUser;
+  companyLogo?: string;
 }
 
 export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
@@ -47,9 +47,9 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   onNavigateToRecords,
   onNavigateToPerformance,
   onOpenWallQR,
-  onOpenArchitecture,
   onOpenLogoManager,
   currentUser,
+  companyLogo: propCompanyLogo,
 }) => {
   const activeUser = currentUser || pdksStorage.getActiveUser();
   const isHRManager = activeUser.role === 'ik_yoneticisi';
@@ -63,13 +63,18 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
   const [unreadAlertCount, setUnreadAlertCount] = useState(0);
   const [approvalFeedback, setApprovalFeedback] = useState<string | null>(null);
-  const companyLogo = pdksStorage.getCompanyLogo();
+  const [companyLogo, setCompanyLogo] = useState<string>(() => propCompanyLogo || pdksStorage.getCompanyLogo());
+
+  useEffect(() => {
+    if (propCompanyLogo) setCompanyLogo(propCompanyLogo);
+  }, [propCompanyLogo]);
 
   const loadData = () => {
     setEmployees(pdksStorage.getEmployees());
     setRecords(pdksStorage.getAttendanceRecords());
     setOvertimeRequests(pdksStorage.getOvertimeRequests());
     setLeaveRequests(pdksStorage.getLeaveRequests());
+    setCompanyLogo(pdksStorage.getCompanyLogo());
     const notifs = pdksStorage.getNotifications().filter((n) => !n.read);
     setUnreadAlertCount(notifs.length);
   };
@@ -80,8 +85,21 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
     const handleLiveEvent = () => {
       loadData();
     };
+    const handleLogoEvent = (e: any) => {
+      if (e?.detail && typeof e.detail === 'string') {
+        setCompanyLogo(e.detail);
+      } else {
+        setCompanyLogo(pdksStorage.getCompanyLogo());
+      }
+    };
     window.addEventListener('pdks-notification', handleLiveEvent);
-    return () => window.removeEventListener('pdks-notification', handleLiveEvent);
+    window.addEventListener('pdks-data-synced', handleLiveEvent);
+    window.addEventListener('pdks-logo-updated', handleLogoEvent);
+    return () => {
+      window.removeEventListener('pdks-notification', handleLiveEvent);
+      window.removeEventListener('pdks-data-synced', handleLiveEvent);
+      window.removeEventListener('pdks-logo-updated', handleLogoEvent);
+    };
   }, []);
 
   // Handlers for Overtime Approval
@@ -123,24 +141,31 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   const insideEmployees = employees.filter((e) => e.currentPresence === 'inside');
   const breakEmployees = employees.filter((e) => e.currentPresence === 'break');
   const leaveEmployees = employees.filter((e) => e.status === 'leave');
+  const outsideEmployees = employees.filter((e) => e.currentPresence === 'outside' && e.status !== 'leave');
 
   // Pending Approvals (Fazla Mesai ve İzin Talepleri)
   const pendingOvertimes = overtimeRequests.filter((r) => r.status === 'pending');
   const pendingLeaves = leaveRequests.filter((l) => l.status === 'pending');
   const totalPendingApprovals = pendingOvertimes.length + pendingLeaves.length;
   
-  // Late today check
-  const todayStr = new Date().toISOString().split('T')[0];
-  const todayRecords = records.filter((r) => r.date === todayStr);
+  // Late today check (local date matching storage & server /api/scan)
+  const todayStr = getTodayString();
+  const todayRecords = records
+    .filter((r) => r.date === todayStr)
+    .sort((a, b) => {
+      const timeCompare = (b.timeStr || '').localeCompare(a.timeStr || '');
+      if (timeCompare !== 0) return timeCompare;
+      return (b.timestamp || '').localeCompare(a.timestamp || '');
+    });
   const lateRecords = todayRecords.filter((r) => r.type === 'check_in' && r.status === 'late');
   
-  // Employees who haven't arrived yet (not leave, and outside with no check-in today)
-  const checkedInIds = new Set(todayRecords.filter((r) => r.type === 'check_in').map((r) => r.employeeId));
-  const notArrivedEmployees = employees.filter((e) => e.status === 'active' && !checkedInIds.has(e.id));
+  // Employees who haven't arrived yet (not in office, not on break, not on leave)
+  const notArrivedEmployees = outsideEmployees;
 
-  // Attendance percentage
+  // Attendance & Participation percentage: active staff currently present (inside or on break)
   const activeCount = employees.filter((e) => e.status !== 'inactive').length;
-  const attendanceRate = activeCount > 0 ? Math.round((checkedInIds.size / activeCount) * 100) : 0;
+  const presentCount = insideEmployees.length + breakEmployees.length;
+  const attendanceRate = activeCount > 0 ? Math.round((presentCount / activeCount) * 100) : 0;
 
   // Department breakdown
   const departments: Department[] = [
@@ -193,7 +218,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-5 sm:space-y-8">
+    <div className="w-full max-w-7xl mx-auto min-w-0 px-3 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-5 sm:space-y-8">
       {/* Top Banner & Quick Actions */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 pb-3 sm:pb-4 border-b border-slate-200">
         <div>
@@ -289,10 +314,11 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-center gap-4">
           {/* 240x60 Standart Boyutlu Logo Çerçevesi */}
           <div className="w-[240px] h-[60px] max-w-full rounded-xl border-2 border-dashed border-indigo-200 bg-slate-50 flex items-center justify-center p-2 shrink-0 self-center sm:self-auto shadow-2xs">
-            <img
+            <CompanyLogoImage
               src={companyLogo}
               alt="Kurumsal Standart Şirket Logosu"
               className="max-h-[48px] max-w-[220px] w-auto h-auto object-contain"
+              variant="light"
             />
           </div>
 
@@ -380,7 +406,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             {notArrivedEmployees.length}
           </div>
           <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 sm:mt-1 truncate">
-            Giriş kaydı yok
+            Dışarıda / Gelmedi
           </div>
         </div>
 
@@ -408,7 +434,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             %{attendanceRate}
           </div>
           <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 sm:mt-1 truncate">
-            {checkedInIds.size} / {activeCount} çalışan
+            {presentCount} / {activeCount} çalışan
           </div>
         </div>
       </div>
@@ -678,63 +704,69 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
           {/* Mobile Optimized View: Live Feed Card List (sm:hidden) */}
           <div className="sm:hidden space-y-2">
-            {todayRecords.slice(0, 6).map((rec) => {
-              const isCheckIn = rec.type === 'check_in';
-              const isCheckOut = rec.type === 'check_out';
-              const isBreak = rec.type.startsWith('break');
+            {todayRecords.length === 0 ? (
+              <div className="p-6 text-center text-xs text-slate-500 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                Bugün ({todayStr}) için henüz giriş-çıkış hareketi kaydedilmedi.
+              </div>
+            ) : (
+              todayRecords.slice(0, 10).map((rec) => {
+                const isCheckIn = rec.type === 'check_in';
+                const isCheckOut = rec.type === 'check_out';
+                const isBreak = rec.type.startsWith('break');
 
-              return (
-                <div
-                  key={rec.id}
-                  className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between gap-2.5"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 mb-0.5">
-                      <span className="font-mono font-bold text-slate-900 text-xs tabular-nums">
-                        {rec.timeStr}
-                      </span>
-                      <span className="text-[10px] text-slate-400">·</span>
-                      <span className="text-[10px] text-slate-500 font-mono">{rec.employeeId}</span>
+                return (
+                  <div
+                    key={rec.id}
+                    className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between gap-2.5"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <span className="font-mono font-bold text-slate-900 text-xs tabular-nums">
+                          {rec.timeStr}
+                        </span>
+                        <span className="text-[10px] text-slate-400">·</span>
+                        <span className="text-[10px] text-slate-500 font-mono">{rec.employeeId}</span>
+                      </div>
+                      <div className="font-semibold text-xs text-slate-900 truncate">
+                        {rec.employeeName}
+                      </div>
+                      <div className="text-[10px] text-slate-500 truncate">{rec.department}</div>
                     </div>
-                    <div className="font-semibold text-xs text-slate-900 truncate">
-                      {rec.employeeName}
-                    </div>
-                    <div className="text-[10px] text-slate-500 truncate">{rec.department}</div>
-                  </div>
 
-                  <div className="flex flex-col items-end gap-1 shrink-0">
-                    {isCheckIn && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100/80 text-emerald-800">
-                        <ArrowDownRight className="w-3 h-3 text-emerald-600" /> Giriş
-                      </span>
-                    )}
-                    {isCheckOut && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100/80 text-rose-800">
-                        <ArrowUpRight className="w-3 h-3 text-rose-600" /> Çıkış
-                      </span>
-                    )}
-                    {isBreak && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100/80 text-amber-800">
-                        <Coffee className="w-3 h-3 text-amber-600" />
-                        {rec.type === 'break_start' ? 'Mola Başla' : 'Mola Bitir'}
-                      </span>
-                    )}
-
-                    <span className="text-[10px]">
-                      {rec.status === 'late' ? (
-                        <span className="text-amber-700 font-semibold">Geç (+{rec.lateMinutes} dk)</span>
-                      ) : rec.status === 'on_time' ? (
-                        <span className="text-emerald-700 font-medium">Zamanında</span>
-                      ) : rec.status === 'early_leave' ? (
-                        <span className="text-orange-700 font-medium">Erken Çıkış</span>
-                      ) : (
-                        <span className="text-slate-500">Normal</span>
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      {isCheckIn && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100/80 text-emerald-800">
+                          <ArrowDownRight className="w-3 h-3 text-emerald-600" /> Giriş
+                        </span>
                       )}
-                    </span>
+                      {isCheckOut && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100/80 text-rose-800">
+                          <ArrowUpRight className="w-3 h-3 text-rose-600" /> Çıkış
+                        </span>
+                      )}
+                      {isBreak && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100/80 text-amber-800">
+                          <Coffee className="w-3 h-3 text-amber-600" />
+                          {rec.type === 'break_start' ? 'Mola Başla' : 'Mola Bitir'}
+                        </span>
+                      )}
+
+                      <span className="text-[10px]">
+                        {rec.status === 'late' ? (
+                          <span className="text-amber-700 font-semibold">Geç (+{rec.lateMinutes} dk)</span>
+                        ) : rec.status === 'on_time' ? (
+                          <span className="text-emerald-700 font-medium">Zamanında</span>
+                        ) : rec.status === 'early_leave' ? (
+                          <span className="text-orange-700 font-medium">Erken Çıkış</span>
+                        ) : (
+                          <span className="text-slate-500">Normal</span>
+                        )}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
 
           {/* Desktop Table View (hidden sm:block) */}
@@ -751,61 +783,69 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {todayRecords.slice(0, 6).map((rec) => {
-                  const isCheckIn = rec.type === 'check_in';
-                  const isCheckOut = rec.type === 'check_out';
-                  const isBreak = rec.type.startsWith('break');
+                {todayRecords.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 px-3 text-center text-xs text-slate-500">
+                      Bugün ({todayStr}) için henüz giriş-çıkış hareketi kaydedilmedi.
+                    </td>
+                  </tr>
+                ) : (
+                  todayRecords.slice(0, 12).map((rec) => {
+                    const isCheckIn = rec.type === 'check_in';
+                    const isCheckOut = rec.type === 'check_out';
+                    const isBreak = rec.type.startsWith('break');
 
-                  return (
-                    <tr key={rec.id} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="py-2.5 px-3 font-mono font-medium text-slate-900 tabular-nums">
-                        {rec.timeStr}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <div className="font-semibold text-slate-900">{rec.employeeName}</div>
-                        <div className="text-[11px] text-slate-500 font-mono">{rec.employeeId}</div>
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-600">
-                        {rec.department}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <span className="flex items-center gap-1 font-medium">
-                          {isCheckIn && (
-                            <span className="text-emerald-700 flex items-center gap-1">
-                              <ArrowDownRight className="w-3 h-3" /> Giriş
-                            </span>
-                          )}
-                          {isCheckOut && (
-                            <span className="text-rose-700 flex items-center gap-1">
-                              <ArrowUpRight className="w-3 h-3" /> Çıkış
-                            </span>
-                          )}
-                          {isBreak && (
-                            <span className="text-amber-700 flex items-center gap-1">
-                              <Coffee className="w-3 h-3" /> {rec.type === 'break_start' ? 'Mola Başlangıç' : 'Mola Bitiş'}
-                            </span>
-                          )}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <span className="text-slate-600 font-medium">
-                          {rec.status === 'late' ? (
-                            <span className="text-amber-700">Geç ({rec.lateMinutes} dk)</span>
-                          ) : rec.status === 'on_time' ? (
-                            <span className="text-emerald-700">Zamanında</span>
-                          ) : rec.status === 'early_leave' ? (
-                            <span className="text-orange-700">Erken Çıkış</span>
-                          ) : (
-                            <span>Normal</span>
-                          )}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-500 text-[11px]">
-                        {rec.terminal || 'Kiosk Giriş'}
-                      </td>
-                    </tr>
-                  );
-                })}
+                    return (
+                      <tr key={rec.id} className="hover:bg-slate-50/70 transition-colors">
+                        <td className="py-2.5 px-3 font-mono font-medium text-slate-900 tabular-nums">
+                          {rec.timeStr}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className="font-semibold text-slate-900">{rec.employeeName}</div>
+                          <div className="text-[11px] text-slate-500 font-mono">{rec.employeeId}</div>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-600">
+                          {rec.department}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className="flex items-center gap-1 font-medium">
+                            {isCheckIn && (
+                              <span className="text-emerald-700 flex items-center gap-1">
+                                <ArrowDownRight className="w-3 h-3" /> Giriş
+                              </span>
+                            )}
+                            {isCheckOut && (
+                              <span className="text-rose-700 flex items-center gap-1">
+                                <ArrowUpRight className="w-3 h-3" /> Çıkış
+                              </span>
+                            )}
+                            {isBreak && (
+                              <span className="text-amber-700 flex items-center gap-1">
+                                <Coffee className="w-3 h-3" /> {rec.type === 'break_start' ? 'Mola Başlangıç' : 'Mola Bitiş'}
+                              </span>
+                            )}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className="text-slate-600 font-medium">
+                            {rec.status === 'late' ? (
+                              <span className="text-amber-700">Geç ({rec.lateMinutes} dk)</span>
+                            ) : rec.status === 'on_time' ? (
+                              <span className="text-emerald-700">Zamanında</span>
+                            ) : rec.status === 'early_leave' ? (
+                              <span className="text-orange-700">Erken Çıkış</span>
+                            ) : (
+                              <span>Normal</span>
+                            )}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-500 text-[11px]">
+                          {rec.terminal || 'Kiosk Giriş'}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
@@ -858,7 +898,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         </div>
       </div>
 
-      {/* CANLI PERSONEL DURUM TABLOSU (Kim Fabrikada/Ofiste, Kim Molada, Kim Çıkış Yapmış?) */}
+      {/* CANLI PERSONEL DURUM TABLOSU (Kim İşyerinde/Ofiste, Kim Molada, Kim Çıkış Yapmış?) */}
       <div className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-xs space-y-5">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
           <div>
@@ -872,7 +912,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Anlık olarak kim işletmede/fabrikada çalışıyor, kim molada, kim çıkış yapmış veya izinli?
+              Anlık olarak kim işyerinde çalışıyor, kim molada, kim çıkış yapmış veya izinli?
             </p>
           </div>
 
@@ -913,7 +953,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-emerald-400" />
-            <span>Fabrikada / Ofiste ({insideEmployees.length})</span>
+            <span>İşyerinde / Ofiste ({insideEmployees.length})</span>
           </button>
 
           <button

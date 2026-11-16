@@ -910,7 +910,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    <div className="w-full max-w-7xl mx-auto min-w-0 px-3 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-5 sm:space-y-8">
       {/* Page Title & HR Export Toolbar */}
       <div className="pb-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -1464,18 +1464,27 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
               </div>
             )}
 
+            {/* Mobile horizontal scroll guidance */}
+            <div className="flex sm:hidden items-center justify-between text-[11px] text-slate-600 bg-indigo-50/80 border border-indigo-200 px-3 py-2 rounded-xl">
+              <span className="flex items-center gap-1.5 font-medium">
+                <span className="text-sm">👉</span>
+                <span>Tüm günleri görmek için tabloyu sağa kaydırın</span>
+              </span>
+              <span className="font-bold text-[10px] text-indigo-700 bg-white px-2 py-0.5 rounded-full border border-indigo-200">7 Gün</span>
+            </div>
+
             {/* Interactive Grid Table */}
-            <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-2xs">
-              <table className="w-full border-collapse text-left text-xs min-w-[950px]">
+            <div className="overflow-x-auto w-full max-w-full rounded-xl border border-slate-200 shadow-2xs touch-pan-x" style={{ WebkitOverflowScrolling: 'touch' }}>
+              <table className="w-full border-collapse text-left text-xs min-w-[720px] sm:min-w-[950px]">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-700">
-                    <th className="py-3 px-3.5 font-bold text-xs sticky left-0 bg-slate-50 z-10 w-60 border-r border-slate-200 shadow-2xs">
+                    <th className="py-2.5 sm:py-3 px-2 sm:px-3.5 font-bold text-xs sticky left-0 bg-slate-50 z-10 w-32 sm:w-60 border-r border-slate-200 shadow-2xs">
                       Personel ({calendarEmployees.length})
                     </th>
                     {weekDays.map((day) => (
                       <th
                         key={day.dateStr}
-                        className={`py-2.5 px-3 text-center border-r border-slate-200 last:border-r-0 min-w-[110px] ${
+                        className={`py-2 sm:py-2.5 px-2 sm:px-3 text-center border-r border-slate-200 last:border-r-0 min-w-[95px] sm:min-w-[110px] ${
                           day.isToday ? 'bg-indigo-50/70 border-b-2 border-b-indigo-600' : ''
                         }`}
                       >
@@ -1507,12 +1516,12 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                       return (
                         <tr key={emp.id} className="hover:bg-slate-50/60 transition-colors">
                           {/* Sticky Employee Identity Column */}
-                          <td className="py-3 px-3.5 sticky left-0 bg-white hover:bg-slate-50/60 z-10 border-r border-slate-200 shadow-2xs">
-                            <div className="flex items-center gap-2.5 min-w-0">
+                          <td className="py-2 sm:py-3 px-2 sm:px-3.5 sticky left-0 bg-white hover:bg-slate-50/60 z-10 w-32 sm:w-60 border-r border-slate-200 shadow-2xs">
+                            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
                               <img
                                 src={emp.avatar}
                                 alt={emp.fullName}
-                                className="w-8 h-8 rounded-xl object-cover border border-slate-200 shrink-0"
+                                className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl object-cover border border-slate-200 shrink-0"
                               />
                               <div className="min-w-0 flex-1">
                                 <div className="font-bold text-xs text-slate-900 truncate leading-tight">
@@ -2254,8 +2263,87 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
           </div>
 
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+            {/* Mobile Overtime Request Cards (md:hidden) */}
+            <div className="md:hidden divide-y divide-slate-100">
+              {overtimes
+                .filter((ot) => {
+                  if (overtimeFilter === 'all') return true;
+                  return ot.status === overtimeFilter;
+                })
+                .length === 0 ? (
+                <div className="py-8 text-center text-slate-400 text-xs">
+                  Bu filtreye uygun fazla mesai talebi bulunamadı.
+                </div>
+              ) : (
+                overtimes
+                  .filter((ot) => {
+                    if (overtimeFilter === 'all') return true;
+                    return ot.status === overtimeFilter;
+                  })
+                  .map((ot) => (
+                    <div key={ot.id} className="p-3.5 space-y-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="font-bold text-xs text-slate-900">{ot.employeeName}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            {ot.employeeId} · {ot.department}
+                          </div>
+                        </div>
+                        <div>
+                          {ot.status === 'approved' ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full text-[10px] border border-emerald-200">
+                              <CheckCircle2 className="w-3 h-3" /> Onaylandı
+                            </span>
+                          ) : ot.status === 'rejected' ? (
+                            <span className="inline-flex items-center gap-1 text-rose-700 font-bold bg-rose-50 px-2 py-0.5 rounded-full text-[10px] border border-rose-200">
+                              <AlertCircle className="w-3 h-3" /> Reddedildi
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded-full text-[10px] border border-amber-200">
+                              <Clock className="w-3 h-3" /> Onay Bekliyor
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs bg-slate-50 p-2 rounded-lg border border-slate-100">
+                        <span className="font-mono font-medium text-slate-700">{ot.date}</span>
+                        <span className="font-mono font-bold text-amber-800">
+                          {ot.startTime} - {ot.endTime} ({ot.hours} Saat)
+                        </span>
+                      </div>
+
+                      {ot.reason && (
+                        <div className="text-[11px] text-slate-600 bg-white p-2 rounded-lg border border-slate-100">
+                          <span className="font-semibold text-slate-700">Gerekçe: </span>
+                          <span className="italic">{ot.reason}</span>
+                        </div>
+                      )}
+
+                      {ot.status === 'pending' && isHRManager && (
+                        <div className="flex items-center gap-2 pt-1.5 border-t border-slate-100">
+                          <button
+                            onClick={() => handleApproveOvertime(ot.id)}
+                            className="flex-1 py-1.5 px-3 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-xs transition-colors cursor-pointer text-center"
+                          >
+                            Onayla
+                          </button>
+                          <button
+                            onClick={() => handleRejectOvertime(ot.id)}
+                            className="flex-1 py-1.5 px-3 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors cursor-pointer text-center"
+                          >
+                            Reddet
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))
+              )}
+            </div>
+
+            {/* Desktop Overtime Table (hidden md:block) */}
+            <div className="hidden md:block overflow-x-auto w-full max-w-full touch-pan-x">
+              <table className="w-full text-left text-xs min-w-[700px]">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider">
                     <th className="py-3 px-4">Personel Bilgisi</th>
@@ -2612,18 +2700,26 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                   Çalışma Günleri
                 </label>
                 <div className="flex flex-wrap gap-1.5">
-                  {['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'].map((day) => {
-                    const isSelected = (shiftForm.workDays || []).includes(day);
+                  {[
+                    { full: 'Pazartesi', label: 'Pzt' },
+                    { full: 'Salı', label: 'Sal' },
+                    { full: 'Çarşamba', label: 'Çar' },
+                    { full: 'Perşembe', label: 'Per' },
+                    { full: 'Cuma', label: 'Cum' },
+                    { full: 'Cumartesi', label: 'Cts' },
+                    { full: 'Pazar', label: 'Paz' },
+                  ].map(({ full, label }) => {
+                    const isSelected = (shiftForm.workDays || []).includes(full);
                     return (
                       <button
                         type="button"
-                        key={day}
+                        key={full}
                         onClick={() => {
                           const currentDays = shiftForm.workDays || [];
                           if (isSelected) {
-                            setShiftForm({ ...shiftForm, workDays: currentDays.filter((d) => d !== day) });
+                            setShiftForm({ ...shiftForm, workDays: currentDays.filter((d) => d !== full) });
                           } else {
-                            setShiftForm({ ...shiftForm, workDays: [...currentDays, day] });
+                            setShiftForm({ ...shiftForm, workDays: [...currentDays, full] });
                           }
                         }}
                         className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
@@ -2632,7 +2728,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                             : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                         }`}
                       >
-                        {day.slice(0, 3)}
+                        {label}
                       </button>
                     );
                   })}

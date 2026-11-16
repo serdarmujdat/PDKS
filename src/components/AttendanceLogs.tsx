@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Download, Search, Filter, Plus, ArrowDownRight, ArrowUpRight, Coffee, Calendar, Shield, Clock, X, Check } from 'lucide-react';
 import { AttendanceRecord, Employee, Department, ActionType } from '../types/pdks';
-import { pdksStorage } from '../services/storage';
+import { pdksStorage, getTodayString } from '../services/storage';
 
 export const AttendanceLogs: React.FC = () => {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
@@ -18,7 +18,7 @@ export const AttendanceLogs: React.FC = () => {
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [manualForm, setManualForm] = useState({
     employeeId: '',
-    date: new Date().toISOString().split('T')[0],
+    date: getTodayString(),
     timeStr: '08:30:00',
     type: 'check_in' as ActionType,
     note: 'Kart unutuldu - İK onaylı manuel kayıt',
@@ -31,6 +31,13 @@ export const AttendanceLogs: React.FC = () => {
 
   useEffect(() => {
     loadData();
+    const handleSync = () => loadData();
+    window.addEventListener('pdks-data-synced', handleSync);
+    window.addEventListener('pdks-notification', handleSync);
+    return () => {
+      window.removeEventListener('pdks-data-synced', handleSync);
+      window.removeEventListener('pdks-notification', handleSync);
+    };
   }, []);
 
   const filteredRecords = records.filter((rec) => {
@@ -115,7 +122,7 @@ export const AttendanceLogs: React.FC = () => {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `PDKS_Giris_Cikis_Kayitlari_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `PDKS_Giris_Cikis_Kayitlari_${getTodayString()}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

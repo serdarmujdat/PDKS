@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import {
   FileSpreadsheet,
@@ -15,7 +15,7 @@ import {
   Info
 } from 'lucide-react';
 import { Employee, Department, Shift, UserAccount } from '../types/pdks';
-import { pdksStorage, slugifyNameToUsername } from '../services/storage';
+import { pdksStorage, slugifyNameToUsername, getTodayString } from '../services/storage';
 
 interface ExcelEmployeeImportModalProps {
   isOpen: boolean;
@@ -59,6 +59,15 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
   const [createAccounts, setCreateAccounts] = useState(true);
   const [defaultShiftId, setDefaultShiftId] = useState<string>(shifts[0]?.id || 'SHIFT-1');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setErrorMessage(null);
+      if (shifts.length > 0 && !shifts.some((s) => s.id === defaultShiftId)) {
+        setDefaultShiftId(shifts[0].id);
+      }
+    }
+  }, [isOpen, shifts, defaultShiftId]);
 
   if (!isOpen) return null;
 
@@ -236,6 +245,7 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
     }
 
     const existingEmployees = pdksStorage.getEmployees();
+    const existingAccounts = pdksStorage.getUserAccounts();
     let currentMaxNumber = 1000;
     existingEmployees.forEach((e) => {
       const match = e.id.match(/EMP-(\d+)/);
@@ -245,15 +255,21 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
       }
     });
 
-    let importedCount = 0;
+    const newEmployees: Employee[] = [];
+    const newAccounts: UserAccount[] = [];
+    const usedUsernames = new Set(existingAccounts.map((a) => a.username.toLowerCase()));
+    const todayDate = getTodayString();
 
     validRows.forEach((row, i) => {
-      const empId = `EMP-${currentMaxNumber + i + 1}`;
-      const cleanUsername = slugifyNameToUsername(row.fullName);
+      const nextNum = currentMaxNumber + i + 1;
+      const empId = `EMP-${nextNum}`;
+      const baseSlug = slugifyNameToUsername(row.fullName) || `personel.${nextNum}`;
+      const cleanUsername = usedUsernames.has(baseSlug.toLowerCase()) ? `${baseSlug}.${nextNum}` : baseSlug;
+      usedUsernames.add(cleanUsername.toLowerCase());
       const qrToken = `PDKS-${empId}-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
       const avatarUrl = `https://images.unsplash.com/photo-${1534528741775 + ((i * 12345) % 100000)}?w=150&auto=format&fit=crop&q=80`;
 
-      const newEmp: Employee = {
+      newEmployees.push({
         id: empId,
         fullName: row.fullName,
         tcNo: row.tcNo,
@@ -262,19 +278,16 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
         email: row.email,
         phone: row.phone,
         shiftId: row.shiftId,
-        startDate: new Date().toISOString().split('T')[0],
+        startDate: todayDate,
         qrToken,
         avatar: avatarUrl,
         status: 'active',
         currentPresence: 'outside',
         avatarStatus: 'approved',
-      };
+      });
 
-      pdksStorage.saveEmployee(newEmp);
-
-      // Create login account if enabled
       if (createAccounts) {
-        const account: UserAccount = {
+        newAccounts.push({
           id: `ACC-${Date.now().toString().slice(-5)}-${i}`,
           employeeId: empId,
           username: cleanUsername,
@@ -291,12 +304,12 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
           canRequestLeave: true,
           canViewOwnStats: true,
           createdAt: new Date().toISOString(),
-        };
-        pdksStorage.saveUserAccount(account);
+        });
       }
-
-      importedCount++;
     });
+
+    const importedCount = newEmployees.length;
+    pdksStorage.saveEmployeesAndAccountsBatch(newEmployees, newAccounts);
 
     // Add in-system PDKS notification
     pdksStorage.addNotification({
@@ -309,6 +322,8 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
       severity: 'info',
     });
 
+    setFile(null);
+    setParsedRows([]);
     onSuccess(importedCount);
     onClose();
   };
@@ -317,8 +332,14 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
   const invalidCount = parsedRows.filter((r) => !r.isValid).length;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 animate-fade-in">
-      <div className="bg-white rounded-2xl max-w-4xl w-full shadow-2xl overflow-hidden border border-slate-200 flex flex-col max-h-[90vh]">
+    <div
+      className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl max-w-4xl w-full shadow-2xl overflow-hidden border border-slate-200 flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="px-5 py-4 bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-700 text-white flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -336,8 +357,10 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition-colors"
+            className="p-1.5 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+            aria-label="Kapat"
           >
             <X className="w-5 h-5" />
           </button>
@@ -360,6 +383,7 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
             </div>
 
             <button
+              type="button"
               onClick={handleDownloadTemplate}
               className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg shadow-xs transition-colors shrink-0 cursor-pointer"
             >
@@ -521,6 +545,7 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
 
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={onClose}
               className="px-4 py-2 font-semibold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
             >
@@ -528,6 +553,7 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
             </button>
 
             <button
+              type="button"
               disabled={validCount === 0 || isProcessing}
               onClick={handleExecuteImport}
               className="inline-flex items-center gap-2 px-5 py-2 font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-xl shadow-xs transition-colors cursor-pointer"

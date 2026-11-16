@@ -1,7 +1,10 @@
-import React, { useState } from 'react';
-import { Image as ImageIcon, Upload, Check, X, Shield, Lock, RefreshCw, AlertCircle, CheckCircle2, Eye, Sparkles } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Image as ImageIcon, Upload, Check, X, Shield, Lock, RefreshCw, AlertCircle, CheckCircle2, Sparkles, Cloud } from 'lucide-react';
+import { onAuthStateChanged, User } from 'firebase/auth';
 import { CurrentUser } from '../types/pdks';
 import { pdksStorage, DEFAULT_COMPANY_LOGO } from '../services/storage';
+import { CompanyLogoImage } from './CompanyLogoImage';
+import { auth, signInWithGoogleForCloudSync, COMPANY_LOGO_MAX_LENGTH } from '../firebase';
 
 interface CompanyLogoModalProps {
   isOpen: boolean;
@@ -10,7 +13,7 @@ interface CompanyLogoModalProps {
   onLogoUpdated: (newLogoUrl: string) => void;
 }
 
-// 5 Curated Standard Corporate Logo Presets (240x60 Standard Dimensions)
+// 5 Curated Standard Corporate Logo Presets (240x60 Standard Proportions)
 const PRESET_LOGOS = [
   {
     id: 'preset-indigo-tech',
@@ -20,8 +23,8 @@ const PRESET_LOGOS = [
   },
   {
     id: 'preset-navy-industrial',
-    name: 'Nordik Mavi · Sanayi & Fabrika',
-    category: 'Üretim & Sanayi',
+    name: 'Nordik Mavi · Sanayi & İşyeri',
+    category: 'Üretim & İşyeri',
     dataUrl: `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" fill="none"><rect width="240" height="60" rx="12" fill="%230F172A"/><g transform="translate(14, 12)"><rect width="36" height="36" rx="8" fill="%231E293B" stroke="%2338BDF8" stroke-width="1.5"/><path d="M10 18h16M18 10v16M12 24l12-12" stroke="%2338BDF8" stroke-width="2" stroke-linecap="round"/><circle cx="18" cy="18" r="3" fill="%23FFFFFF"/></g><text x="62" y="33" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="800" fill="%23FFFFFF" letter-spacing="1.2">KÜRESEL</text><text x="62" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" font-weight="600" fill="%2338BDF8" letter-spacing="2">ENDÜSTRİYEL SİSTEMLER</text></svg>`,
   },
   {
@@ -50,16 +53,37 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
   currentUser,
   onLogoUpdated,
 }) => {
-  const currentLogo = pdksStorage.getCompanyLogo();
-  const [previewLogo, setPreviewLogo] = useState<string>(currentLogo);
+  const [previewLogo, setPreviewLogo] = useState<string>(() => pdksStorage.getCompanyLogo());
   const [urlInput, setUrlInput] = useState<string>('');
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [cloudUser, setCloudUser] = useState<User | null>(() => auth.currentUser);
+  const [isConnectingCloud, setIsConnectingCloud] = useState(false);
 
   // İK Verification state for users who open the modal while not logged in as HR
   const isDirectHR = currentUser?.role === 'ik_yoneticisi';
   const [hrPassword, setHrPassword] = useState('');
   const [isHrVerified, setIsHrVerified] = useState(isDirectHR);
   const [authError, setAuthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCloudUser(user);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setPreviewLogo(pdksStorage.getCompanyLogo());
+    setUrlInput('');
+    setFeedback(null);
+    setAuthError(null);
+    setHrPassword('');
+    setIsHrVerified(currentUser?.role === 'ik_yoneticisi');
+    setIsSaving(false);
+    setCloudUser(auth.currentUser);
+  }, [isOpen, currentUser?.role]);
 
   if (!isOpen) return null;
 
@@ -78,6 +102,29 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
     }
   };
 
+  const handleConnectCloud = async () => {
+    setIsConnectingCloud(true);
+    setFeedback(null);
+    try {
+      const signedUser = await signInWithGoogleForCloudSync();
+      setCloudUser(signedUser);
+      setFeedback({
+        type: 'success',
+        message: `Bulut senkronizasyonu bağlandı (${signedUser.email || 'Google Hesabı'}). Logoyu kaydettiğinizde tüm tarayıcılarda kalıcı olacaktır.`,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setFeedback({
+        type: 'error',
+        message: msg.includes('popup-closed')
+          ? 'Google oturum açma penceresi kapatıldı. Kalıcı bulut kaydı için Google hesabınızla onay vermeniz gerekir.'
+          : 'Google bulut doğrulaması tamamlanamadı. Lütfen pop-up izinlerini kontrol edip tekrar deneyin.',
+      });
+    } finally {
+      setIsConnectingCloud(false);
+    }
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -87,20 +134,92 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
       return;
     }
 
-    if (file.size > 2 * 1024 * 1024) {
-      setFeedback({ type: 'error', message: 'Dosya boyutu standart sınır olan 2 MB\'ı aşamaz.' });
+    if (file.size > 8 * 1024 * 1024) {
+      setFeedback({ type: 'error', message: 'Dosya boyutu sınır olan 8 MB\'ı aşamaz.' });
       return;
     }
 
+    // Direct SVG handling
+    if (file.type === 'image/svg+xml') {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          if (reader.result.length > COMPANY_LOGO_MAX_LENGTH) {
+            setFeedback({
+              type: 'error',
+              message: 'SVG dosyası 900 KB bulut sınırını aşıyor. Lütfen daha küçük veya optimize edilmiş bir SVG seçiniz.',
+            });
+            return;
+          }
+          setPreviewLogo(reader.result);
+          setFeedback({
+            type: 'success',
+            message: 'Vektörel logo (SVG) yüklendi. Kaydetmek için "Logoyu Onayla & Kaydet" butonuna basınız.',
+          });
+        }
+      };
+      reader.readAsDataURL(file);
+      e.target.value = '';
+      return;
+    }
+
+    // Raster image: resize to max 480x160 px via canvas to prevent storage quota issues and fit Firestore 900KB limit
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setPreviewLogo(reader.result);
-        setFeedback({
-          type: 'success',
-          message: `Görsel yüklendi. Standart kurumsal boyuta normalize edildi. Kaydetmek için 'Logoyu Onayla & Kaydet' butonuna basınız.`,
-        });
-      }
+      const rawData = reader.result as string;
+      const img = new Image();
+      img.onload = () => {
+        const maxWidth = 480;
+        const maxHeight = 160;
+        let w = img.width;
+        let h = img.height;
+        if (w > maxWidth || h > maxHeight) {
+          const ratio = Math.min(maxWidth / w, maxHeight / h);
+          w = Math.round(w * ratio);
+          h = Math.round(h * ratio);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, w, h);
+          let compressed = canvas.toDataURL('image/png');
+          if (compressed.length > 750000) {
+            compressed = canvas.toDataURL('image/webp', 0.85);
+          }
+          if (compressed.length > COMPANY_LOGO_MAX_LENGTH) {
+            compressed = canvas.toDataURL('image/jpeg', 0.82);
+          }
+          if (compressed.length > COMPANY_LOGO_MAX_LENGTH) {
+            setFeedback({
+              type: 'error',
+              message: 'Görsel sıkıştırmaya rağmen 900 KB bulut sınırını aşıyor. Lütfen daha sade veya küçük boyutlu bir görsel seçiniz.',
+            });
+            return;
+          }
+          setPreviewLogo(compressed);
+          setFeedback({
+            type: 'success',
+            message: 'Görsel optimize edildi ve standart kurumsal boyuta normalize edildi. Kaydetmek için onaylayınız.',
+          });
+        } else if (rawData.length <= COMPANY_LOGO_MAX_LENGTH) {
+          setPreviewLogo(rawData);
+        } else {
+          setFeedback({
+            type: 'error',
+            message: 'Görsel boyutu 900 KB sınırını aşıyor.',
+          });
+        }
+      };
+      img.onerror = () => {
+        if (rawData.length <= COMPANY_LOGO_MAX_LENGTH) {
+          setPreviewLogo(rawData);
+        } else {
+          setFeedback({ type: 'error', message: 'Görsel işlenemedi veya boyut sınırını aşıyor.' });
+        }
+      };
+      img.src = rawData;
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -109,6 +228,10 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
   const handleUrlSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!urlInput.trim()) return;
+    if (urlInput.trim().length > COMPANY_LOGO_MAX_LENGTH) {
+      setFeedback({ type: 'error', message: 'Logo bağlantısı izin verilen uzunluk sınırını aşıyor.' });
+      return;
+    }
     setPreviewLogo(urlInput.trim());
     setFeedback({
       type: 'success',
@@ -117,27 +240,75 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
     setUrlInput('');
   };
 
-  const handleSaveLogo = () => {
-    const res = pdksStorage.saveCompanyLogo(previewLogo);
+  const ensureCloudAuthBeforeSave = async () => {
+    if (auth.currentUser) return;
+    try {
+      const signedUser = await signInWithGoogleForCloudSync();
+      setCloudUser(signedUser);
+    } catch {
+      // Allow fallback local/server save and surface clear cloud sync guidance
+    }
+  };
+
+  const handleSaveLogo = async () => {
+    setIsSaving(true);
+    setFeedback(null);
+    let finalLogo = urlInput.trim() ? urlInput.trim() : previewLogo;
+    if (finalLogo.startsWith('blob:')) {
+      try {
+        const resp = await fetch(finalLogo);
+        const blob = await resp.blob();
+        finalLogo = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error('Dosya okunamadı'));
+          reader.readAsDataURL(blob);
+        });
+      } catch (err) {
+        console.warn('Failed converting blob to base64', err);
+        setIsSaving(false);
+        setFeedback({ type: 'error', message: 'Görsel verisi dönüştürülemedi. Lütfen dosyayı tekrar yükleyin.' });
+        return;
+      }
+    }
+
+    await ensureCloudAuthBeforeSave();
+
+    const res = await pdksStorage.saveCompanyLogoAsync(finalLogo);
+    setIsSaving(false);
     if (res.success) {
-      onLogoUpdated(previewLogo);
-      setFeedback({ type: 'success', message: res.message });
-      setTimeout(() => {
-        onClose();
-      }, 700);
+      setPreviewLogo(res.logo);
+      setUrlInput('');
+      onLogoUpdated(res.logo);
+      setFeedback({ type: res.cloudSynced ? 'success' : 'error', message: res.message });
+      if (res.cloudSynced) {
+        setTimeout(() => {
+          onClose();
+        }, 750);
+      }
     } else {
       setFeedback({ type: 'error', message: res.message });
     }
   };
 
-  const handleResetDefault = () => {
+  const handleResetDefault = async () => {
+    setIsSaving(true);
+    setFeedback(null);
     setPreviewLogo(DEFAULT_COMPANY_LOGO);
-    const res = pdksStorage.saveCompanyLogo(null);
-    onLogoUpdated(DEFAULT_COMPANY_LOGO);
-    setFeedback({ type: 'success', message: res.message });
-    setTimeout(() => {
-      onClose();
-    }, 700);
+    await ensureCloudAuthBeforeSave();
+    const res = await pdksStorage.saveCompanyLogoAsync(null);
+    setIsSaving(false);
+    if (res.success) {
+      onLogoUpdated(res.logo || DEFAULT_COMPANY_LOGO);
+      setFeedback({ type: res.cloudSynced ? 'success' : 'error', message: res.message });
+      if (res.cloudSynced) {
+        setTimeout(() => {
+          onClose();
+        }, 750);
+      }
+    } else {
+      setFeedback({ type: 'error', message: res.message });
+    }
   };
 
   return (
@@ -258,6 +429,57 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
             </div>
           ) : (
             <>
+              {/* Firebase Cloud Sync Durum Kartı */}
+              <div
+                className={`p-3 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2.5 ${
+                  cloudUser
+                    ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
+                    : 'bg-amber-50/80 border-amber-200 text-amber-950'
+                }`}
+              >
+                <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                  <Cloud
+                    className={`w-4 h-4 shrink-0 mt-0.5 ${
+                      cloudUser ? 'text-emerald-600' : 'text-amber-600'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="font-bold flex items-center gap-1.5 flex-wrap">
+                      <span>
+                        {cloudUser
+                          ? 'Kalıcı Bulut Depolama Aktif (Firebase)'
+                          : 'Kalıcı Bulut Senkronizasyonu Bekleniyor'}
+                      </span>
+                      {cloudUser?.email && (
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 truncate max-w-[220px]">
+                          {cloudUser.email}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] opacity-85 mt-0.5">
+                      {cloudUser
+                        ? 'Kaydedilen logo tüm tarayıcılarda, gizli sekmelerde ve sunucu yenilemelerinde otomatik korunur.'
+                        : 'Farklı tarayıcılardan girildiğinde logonun silinmemesi için kaydetme sırasında Google yönetici hesabınızla doğrulama yapılır.'}
+                    </p>
+                  </div>
+                </div>
+                {!cloudUser && (
+                  <button
+                    type="button"
+                    disabled={isConnectingCloud || isSaving}
+                    onClick={handleConnectCloud}
+                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[11px] font-semibold shadow-xs flex items-center gap-1.5 shrink-0 cursor-pointer disabled:opacity-50"
+                  >
+                    {isConnectingCloud ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Cloud className="w-3.5 h-3.5" />
+                    )}
+                    <span>Google Hesabını Bağla</span>
+                  </button>
+                )}
+              </div>
+
               {/* Standart Boyut Kuralı Bilgilendirmesi */}
               <div className="p-3.5 bg-indigo-50/70 border border-indigo-200 rounded-xl text-xs text-indigo-950 flex items-start gap-2.5">
                 <Shield className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
@@ -266,7 +488,7 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
                   <ul className="text-[11px] text-indigo-800 list-disc list-inside space-y-0.5">
                     <li><strong>Standart Yatay Logo Boyutu:</strong> 240 × 60 piksel (4:1 En/Boy oranı)</li>
                     <li><strong>Kare Logo / Amblem:</strong> 60 × 60 veya 80 × 80 piksel</li>
-                    <li><strong>Önerilen Format:</strong> Şeffaf arka planlı PNG veya Vektörel SVG (Maks. 2 MB)</li>
+                    <li><strong>Önerilen Format:</strong> Şeffaf arka planlı PNG veya Vektörel SVG (Maks. 900 KB bulut limiti)</li>
                     <li>Yüklenen logo üst menüde, giriş sayfasında ve turnikede orantısı bozulmadan standart çerçevede gösterilir.</li>
                   </ul>
                 </div>
@@ -284,15 +506,12 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
                       Açık Zemin (Üst Menü / Giriş Ekranı)
                     </span>
                     <div className="w-[240px] h-[60px] max-w-full rounded-lg border-2 border-dashed border-slate-300 flex items-center justify-center p-2 bg-slate-50/50">
-                      {previewLogo ? (
-                        <img
-                          src={previewLogo}
-                          alt="Standart Logo Önizleme"
-                          className="max-h-[48px] max-w-[220px] w-auto h-auto object-contain"
-                        />
-                      ) : (
-                        <span className="text-xs text-slate-400">Logo Bulunmuyor</span>
-                      )}
+                      <CompanyLogoImage
+                        src={previewLogo}
+                        alt="Standart Logo Önizleme"
+                        className="max-h-[48px] max-w-[220px] w-auto h-auto object-contain"
+                        variant="light"
+                      />
                     </div>
                     <span className="text-[10px] font-mono text-slate-500">
                       Standart Boyut: 240×60 px
@@ -305,15 +524,12 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
                       Koyu Zemin (Kiosk & Turnike Ekranı)
                     </span>
                     <div className="w-[240px] h-[60px] max-w-full rounded-lg border-2 border-dashed border-slate-700 flex items-center justify-center p-2 bg-slate-900/60">
-                      {previewLogo ? (
-                        <img
-                          src={previewLogo}
-                          alt="Koyu Zemin Logo Önizleme"
-                          className="max-h-[48px] max-w-[220px] w-auto h-auto object-contain"
-                        />
-                      ) : (
-                        <span className="text-xs text-slate-500">Logo Bulunmuyor</span>
-                      )}
+                      <CompanyLogoImage
+                        src={previewLogo}
+                        alt="Koyu Zemin Logo Önizleme"
+                        className="max-h-[48px] max-w-[220px] w-auto h-auto object-contain"
+                        variant="dark"
+                      />
                     </div>
                     <span className="text-[10px] font-mono text-slate-400">
                       Kontrast Uyum Testi
@@ -428,11 +644,12 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
           {isHrVerified && (
             <button
               type="button"
+              disabled={isSaving}
               onClick={handleResetDefault}
-              className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+              className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
               title="Asem varsayılan kurumsal logosuna dön"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
+              <RefreshCw className={`w-3.5 h-3.5 ${isSaving ? 'animate-spin' : ''}`} />
               <span>Varsayılana Sıfırla</span>
             </button>
           )}
@@ -440,8 +657,9 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
           <div className="flex items-center gap-2 ml-auto">
             <button
               type="button"
+              disabled={isSaving}
               onClick={onClose}
-              className="px-4 py-2 border border-slate-300 text-slate-700 rounded-xl text-xs font-semibold hover:bg-white cursor-pointer"
+              className="px-4 py-2 border border-slate-300 text-slate-700 rounded-xl text-xs font-semibold hover:bg-white cursor-pointer disabled:opacity-50"
             >
               Kapat
             </button>
@@ -449,11 +667,16 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
             {isHrVerified && (
               <button
                 type="button"
+                disabled={isSaving}
                 onClick={handleSaveLogo}
-                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-md flex items-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-md flex items-center gap-1.5 cursor-pointer active:scale-95 transition-all disabled:opacity-60"
               >
-                <Check className="w-4 h-4" />
-                <span>Logoyu Onayla & Kaydet</span>
+                {isSaving ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Check className="w-4 h-4" />
+                )}
+                <span>{isSaving ? 'Kaydediliyor...' : 'Logoyu Onayla & Kaydet'}</span>
               </button>
             )}
           </div>

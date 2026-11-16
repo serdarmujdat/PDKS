@@ -2,9 +2,8 @@
 
 @layer base {
   html, body {
-    overflow-x: hidden;
-    max-width: 100vw;
     width: 100%;
+    min-height: 100%;
     margin: 0;
     padding: 0;
     -webkit-overflow-scrolling: touch;
@@ -12,10 +11,10 @@
   }
 
   #root {
-    overflow-x: hidden;
-    max-width: 100vw;
     width: 100%;
     min-height: 100vh;
+    display: flex;
+    flex-direction: column;
   }
   
   code, pre, .font-mono {
@@ -23,30 +22,66 @@
   }
 }
 
-/* Print layout for ID Badges */
+/* Print layout for ID Badges and Wall Posters */
 @media print {
-  body {
-    background: white !important;
+  @page {
+    size: auto;
+    margin: 10mm;
   }
+
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  /* Hide everything when printing, except .print-area elements and their children */
   body * {
     visibility: hidden !important;
   }
-  .print-area, .print-area * {
+
+  .print-area,
+  .print-area * {
     visibility: visible !important;
   }
+
+  /* Scoped print positioning */
   .print-area {
     position: absolute !important;
     left: 50% !important;
     top: 20px !important;
     transform: translateX(-50%) !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  /* Poster specific sizing and styling */
+  .print-area.wall-poster {
+    width: 90% !important;
+    max-width: 680px !important;
+    border: 3px solid #0f172a !important;
+    border-radius: 16px !important;
+    padding: 24px !important;
+  }
+
+  .print-area.wall-poster img {
+    max-width: 280px !important;
+    height: auto !important;
+    display: block !important;
+    margin: 0 auto !important;
+  }
+
+  /* Default badge print styling (when not a poster) */
+  .print-area:not(.wall-poster) {
     width: auto !important;
     max-width: 400px !important;
-    margin: 0 !important;
     padding: 0 !important;
-    box-shadow: none !important;
     border: 1px solid #cbd5e1 !important;
   }
+
   .no-print {
     display: none !important;
   }
 }
+

@@ -140,10 +140,10 @@ CREATE INDEX idx_emp_presence ON employees (current_presence);`;
    - Amaç: Duvardaki şirket QR kodunu okutup personelin durumunu güncelleme
    - Headers: 
        Authorization: Bearer <user_jwt_token>
-       x-api-key: AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ
+       x-api-key: <GİZLİ_API_ANAHTARI>
    - Body: {
        "employeeId": "EMP-1001",
-       "scannedToken": "AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ",
+       "scannedToken": "<GİZLİ_API_ANAHTARI>",
        "scanMode": "normal", // "normal" | "break"
        "userLocation": { "latitude": 41.0082, "longitude": 28.9784 } // opsiyonel GPS
      }
@@ -159,11 +159,11 @@ CREATE INDEX idx_emp_presence ON employees (current_presence);`;
 
 3. GET /api/company/wall-qr
    - Amaç: Şirket duvarına asılacak güncel sabit QR verisini ve Geofence parametrelerini getirme
-   - Headers: x-api-key: AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ
+   - Headers: x-api-key: <GİZLİ_API_ANAHTARI>
    - Yanıt: {
-       "token": "AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ",
+       "token": "<GİZLİ_API_ANAHTARI>",
        "companyName": "Asem Personel Devam Kontrol Sistemleri",
-       "branchName": "Merkez Kampüs",
+       "branchName": "İşyeri",
        "enableGeofence": true,
        "radiusMeters": 200
      }
@@ -197,7 +197,7 @@ CREATE INDEX idx_emp_presence ON employees (current_presence);`;
 
 5. İŞLETME İÇİ KURULUM ADIMLARI:
    Adım A: Yönetici paneline girin ("Şirket Duvarı QR Kodu Oluşturucu" butonuna tıklayın).
-   Adım B: "Yazdır (A4 Poster)" butonuna basarak poster çıktısını alın ve fabrika/ofis giriş turnikesine asın.
+   Adım B: "Yazdır (A4 Poster)" butonuna basarak poster çıktısını alın ve işyeri giriş turnikesine asın.
    Adım C: Personel telefonundan tarayıcıyı açarak Asem'e girer, kullanıcı adı/şifresiyle oturum açar.
    Adım D: "Kamerayı Aç" penceresinden duvardaki QR'ı okuttuğunda PDKS akıllı durum makinesi otomatik çalışır!`;
 
@@ -403,7 +403,7 @@ CREATE INDEX idx_emp_presence ON employees (current_presence);`;
                     <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                     <span>
                       <strong>Opsiyonel Geolocation (GPS Doğrulaması):</strong> QR kodun fotoğrafının
-                      çekilip şirket dışından okutulmasını engellemek için Haversine formülüyle fabrika
+                      çekilip şirket dışından okutulmasını engellemek için Haversine formülüyle işyeri
                       yarıçapı (örn. 200m) kontrol edilir.
                     </span>
                   </li>

@@ -1,0 +1,11 @@
+{
+  "token": "evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko",
+  "companyName": "Asem Personel Devam Kontrol Sistemleri",
+  "branchName": "Merkez Kampüs / Fabrika Ana Giriş",
+  "installationLocation": "Giriş Turnikesi & Personel Bekleme Alanı Duvarı",
+  "qrPayload": "ASEM:WALL:evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko:GEO:1:41.0082:28.9784:250",
+  "enableGeofence": true,
+  "latitude": 41.0082,
+  "longitude": 28.9784,
+  "radiusMeters": 250
+}

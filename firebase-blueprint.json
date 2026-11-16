@@ -1,0 +1,59 @@
+{
+  "entities": {
+    "CompanyBrandingLogo": {
+      "title": "CompanyBrandingLogo",
+      "description": "Stores the persistent corporate logo image (Data URI or HTTPS URL) shared across all browsers, sessions, and server restarts.",
+      "type": "object",
+      "properties": {
+        "logoUrl": {
+          "type": "string",
+          "description": "Base64 Data URI, SVG Data URI, or HTTPS URL of the corporate logo (blob: URLs disallowed)",
+          "minLength": 1,
+          "maxLength": 900000
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last logo update"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the verified administrator who saved the logo",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": ["logoUrl", "updatedAt", "updatedByUid"]
+    },
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Authorized system administrator document keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified administrator email address",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "grantedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin role was granted"
+        }
+      },
+      "required": ["email", "grantedAt"]
+    }
+  },
+  "firestore": {
+    "/company_branding/{brandingId}": {
+      "schema": { "$ref": "#/entities/CompanyBrandingLogo" },
+      "description": "Persistent corporate branding configuration documents (e.g. 'logo')"
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminRole" },
+      "description": "Verified administrator registry keyed by Firebase Auth UID"
+    }
+  }
+}
