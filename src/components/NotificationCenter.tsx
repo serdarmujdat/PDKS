@@ -47,8 +47,9 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   currentUser,
 }) => {
   const effectiveUser = currentUser || pdksStorage.getActiveUser();
-  const isRestrictedUser = effectiveUser && effectiveUser.role !== 'ik_yoneticisi';
-  const effectiveFilterId = filterEmployeeId || (isRestrictedUser ? effectiveUser.employeeId : undefined);
+  const canSeeAllAlerts = pdksStorage.isHRorSuperAdmin(effectiveUser) || pdksStorage.canAccessPage(effectiveUser, 'dashboard');
+  const canApproveDevice = pdksStorage.canApproveRequests(effectiveUser);
+  const effectiveFilterId = filterEmployeeId || (!canSeeAllAlerts ? effectiveUser.employeeId : undefined);
 
   const [notifications, setNotifications] = useState<PDKSNotification[]>([]);
   const [internalIsOpen, setInternalIsOpen] = useState(false);
@@ -83,7 +84,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
         const notif = customEvent.detail;
         loadNotifications();
 
-        const roleAllowed = !notif.targetRole || notif.targetRole === effectiveUser?.role;
+        const roleAllowed = !notif.targetRole || notif.targetRole === effectiveUser?.role || pdksStorage.isHRorSuperAdmin(effectiveUser) || canApproveDevice;
         // Only show toast if relevant to this view and allowed for this role
         if (roleAllowed && (!effectiveFilterId || notif.employeeId === effectiveFilterId || notif.employeeId === 'all')) {
           setActiveToast(notif);
@@ -115,12 +116,12 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       window.removeEventListener('pdks-notification', handleLiveEvent);
       window.removeEventListener('pdks-data-synced', handleSync);
     };
-  }, [settings.soundEnabled, effectiveFilterId, effectiveUser?.role]);
+  }, [settings.soundEnabled, effectiveFilterId, effectiveUser?.role, canApproveDevice]);
 
   // Filtered notifications
   const relevantNotifications = useMemo(() => {
     let list = notifications.filter(
-      (n) => !n.targetRole || n.targetRole === effectiveUser?.role
+      (n) => !n.targetRole || n.targetRole === effectiveUser?.role || pdksStorage.isHRorSuperAdmin(effectiveUser) || canApproveDevice
     );
     if (effectiveFilterId) {
       list = list.filter(
@@ -128,7 +129,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       );
     }
     return list;
-  }, [notifications, effectiveFilterId, effectiveUser?.role]);
+  }, [notifications, effectiveFilterId, effectiveUser?.role, canApproveDevice]);
 
   const filteredNotifications = useMemo(() => {
     return relevantNotifications.filter((n) => {
@@ -439,7 +440,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                     </div>
                   )}
 
-                  {!isRestrictedUser && notif.type === 'device_alert' && notif.metadata?.deviceApprovalId && (() => {
+                  {canApproveDevice && notif.type === 'device_alert' && notif.metadata?.deviceApprovalId && (() => {
                     const matchedApproval = pdksStorage
                       .getDeviceEntryApprovals()
                       .find((d) => d.id === notif.metadata?.deviceApprovalId);

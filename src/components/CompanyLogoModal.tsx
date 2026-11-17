@@ -1,10 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Image as ImageIcon, Upload, Check, X, Shield, Lock, RefreshCw, AlertCircle, CheckCircle2, Sparkles, Cloud } from 'lucide-react';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import type { User } from 'firebase/auth';
 import { CurrentUser } from '../types/pdks';
-import { pdksStorage, DEFAULT_COMPANY_LOGO } from '../services/storage';
+import { pdksStorage, DEFAULT_COMPANY_LOGO, DEFAULT_ADMIN_PASSWORD } from '../services/storage';
 import { CompanyLogoImage } from './CompanyLogoImage';
-import { auth, signInWithGoogleForCloudSync, COMPANY_LOGO_MAX_LENGTH } from '../firebase';
+import {
+  isFirebaseConfigured,
+  getCurrentFirebaseUser,
+  subscribeFirebaseAuth,
+  signInWithGoogleForCloudSync,
+  COMPANY_LOGO_MAX_LENGTH,
+} from '../firebase';
 
 interface CompanyLogoModalProps {
   isOpen: boolean;
@@ -17,7 +23,7 @@ interface CompanyLogoModalProps {
 const PRESET_LOGOS = [
   {
     id: 'preset-indigo-tech',
-    name: 'Asem İndigo (Varsayılan)',
+    name: 'Kurumsal İndigo (Varsayılan)',
     category: 'Teknoloji & PDKS',
     dataUrl: DEFAULT_COMPANY_LOGO,
   },
@@ -57,40 +63,61 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
   const [urlInput, setUrlInput] = useState<string>('');
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [cloudUser, setCloudUser] = useState<User | null>(() => auth.currentUser);
+  const [isProcessingFile, setIsProcessingFile] = useState(false);
+  const [cloudUser, setCloudUser] = useState<User | null>(() => getCurrentFirebaseUser());
   const [isConnectingCloud, setIsConnectingCloud] = useState(false);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // İK Verification state for users who open the modal while not logged in as HR
-  const isDirectHR = currentUser?.role === 'ik_yoneticisi';
+  // İK / Süper Yönetici Verification state
+  const isDirectHR = pdksStorage.canAccessSettings(currentUser || pdksStorage.getActiveUser());
   const [hrPassword, setHrPassword] = useState('');
   const [isHrVerified, setIsHrVerified] = useState(isDirectHR);
   const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    return subscribeFirebaseAuth((user) => {
       setCloudUser(user);
     });
-    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
-    if (!isOpen) return;
+    return () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) {
+      if (closeTimerRef.current) {
+        clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+      return;
+    }
     setPreviewLogo(pdksStorage.getCompanyLogo());
     setUrlInput('');
     setFeedback(null);
     setAuthError(null);
     setHrPassword('');
-    setIsHrVerified(currentUser?.role === 'ik_yoneticisi');
+    setIsHrVerified(pdksStorage.canAccessSettings(currentUser || pdksStorage.getActiveUser()));
     setIsSaving(false);
-    setCloudUser(auth.currentUser);
-  }, [isOpen, currentUser?.role]);
+    setIsProcessingFile(false);
+    setCloudUser(getCurrentFirebaseUser());
+  }, [isOpen, currentUser]);
 
   if (!isOpen) return null;
 
   const handleVerifyHr = (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
-    if (hrPassword === 'Maxipluas5') {
+    const hrAccounts = pdksStorage
+      .getUserAccounts()
+      .filter((a) => a.isActive && a.role === 'ik_yoneticisi');
+    const isValidHrPassword =
+      hrAccounts.some((a) => a.password === hrPassword) ||
+      (hrPassword.length > 0 && hrPassword === DEFAULT_ADMIN_PASSWORD);
+
+    if (isValidHrPassword) {
       setIsHrVerified(true);
       setFeedback({
         type: 'success',
@@ -141,13 +168,15 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
 
     // Direct SVG handling
     if (file.type === 'image/svg+xml') {
+      setIsProcessingFile(true);
       const reader = new FileReader();
       reader.onload = () => {
+        setIsProcessingFile(false);
         if (typeof reader.result === 'string') {
           if (reader.result.length > COMPANY_LOGO_MAX_LENGTH) {
             setFeedback({
               type: 'error',
-              message: 'SVG dosyası 900 KB bulut sınırını aşıyor. Lütfen daha küçük veya optimize edilmiş bir SVG seçiniz.',
+              message: 'SVG dosyası 900 KB boyut sınırını aşıyor. Lütfen daha küçük veya optimize edilmiş bir SVG seçiniz.',
             });
             return;
           }
@@ -158,68 +187,95 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
           });
         }
       };
+      reader.onerror = () => {
+        setIsProcessingFile(false);
+        setFeedback({ type: 'error', message: 'SVG dosyası okunamadı. Lütfen başka bir dosya deneyin.' });
+      };
       reader.readAsDataURL(file);
       e.target.value = '';
       return;
     }
 
     // Raster image: resize to max 480x160 px via canvas to prevent storage quota issues and fit Firestore 900KB limit
+    setIsProcessingFile(true);
     const reader = new FileReader();
     reader.onload = () => {
-      const rawData = reader.result as string;
+      const rawData = typeof reader.result === 'string' ? reader.result : '';
+      if (!rawData) {
+        setIsProcessingFile(false);
+        setFeedback({ type: 'error', message: 'Görsel dosyası okunamadı.' });
+        return;
+      }
       const img = new Image();
       img.onload = () => {
-        const maxWidth = 480;
-        const maxHeight = 160;
-        let w = img.width;
-        let h = img.height;
-        if (w > maxWidth || h > maxHeight) {
-          const ratio = Math.min(maxWidth / w, maxHeight / h);
-          w = Math.round(w * ratio);
-          h = Math.round(h * ratio);
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, w, h);
-          let compressed = canvas.toDataURL('image/png');
-          if (compressed.length > 750000) {
-            compressed = canvas.toDataURL('image/webp', 0.85);
+        try {
+          const maxWidth = 480;
+          const maxHeight = 160;
+          let w = img.naturalWidth || img.width || 240;
+          let h = img.naturalHeight || img.height || 60;
+          if (w > maxWidth || h > maxHeight) {
+            const ratio = Math.min(maxWidth / w, maxHeight / h);
+            w = Math.max(1, Math.round(w * ratio));
+            h = Math.max(1, Math.round(h * ratio));
           }
-          if (compressed.length > COMPANY_LOGO_MAX_LENGTH) {
-            compressed = canvas.toDataURL('image/jpeg', 0.82);
-          }
-          if (compressed.length > COMPANY_LOGO_MAX_LENGTH) {
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, w, h);
+            let compressed = canvas.toDataURL('image/png');
+            if (compressed.length > 750000) {
+              compressed = canvas.toDataURL('image/webp', 0.85);
+            }
+            if (compressed.length > COMPANY_LOGO_MAX_LENGTH) {
+              compressed = canvas.toDataURL('image/jpeg', 0.82);
+            }
+            if (compressed.length > COMPANY_LOGO_MAX_LENGTH) {
+              setFeedback({
+                type: 'error',
+                message: 'Görsel sıkıştırmaya rağmen 900 KB sınırını aşıyor. Lütfen daha küçük boyutlu bir görsel seçiniz.',
+              });
+              return;
+            }
+            setPreviewLogo(compressed);
+            setFeedback({
+              type: 'success',
+              message: 'Görsel optimize edildi ve standart kurumsal boyuta normalize edildi. Kaydetmek için onaylayınız.',
+            });
+          } else if (rawData.length <= COMPANY_LOGO_MAX_LENGTH) {
+            setPreviewLogo(rawData);
+            setFeedback({
+              type: 'success',
+              message: 'Görsel yüklendi. Kaydetmek için "Logoyu Onayla & Kaydet" butonuna basınız.',
+            });
+          } else {
             setFeedback({
               type: 'error',
-              message: 'Görsel sıkıştırmaya rağmen 900 KB bulut sınırını aşıyor. Lütfen daha sade veya küçük boyutlu bir görsel seçiniz.',
+              message: 'Görsel boyutu 900 KB sınırını aşıyor.',
             });
-            return;
           }
-          setPreviewLogo(compressed);
-          setFeedback({
-            type: 'success',
-            message: 'Görsel optimize edildi ve standart kurumsal boyuta normalize edildi. Kaydetmek için onaylayınız.',
-          });
-        } else if (rawData.length <= COMPANY_LOGO_MAX_LENGTH) {
-          setPreviewLogo(rawData);
-        } else {
-          setFeedback({
-            type: 'error',
-            message: 'Görsel boyutu 900 KB sınırını aşıyor.',
-          });
+        } finally {
+          setIsProcessingFile(false);
         }
       };
       img.onerror = () => {
+        setIsProcessingFile(false);
         if (rawData.length <= COMPANY_LOGO_MAX_LENGTH) {
           setPreviewLogo(rawData);
+          setFeedback({
+            type: 'success',
+            message: 'Görsel yüklendi. Kaydetmek için "Logoyu Onayla & Kaydet" butonuna basınız.',
+          });
         } else {
           setFeedback({ type: 'error', message: 'Görsel işlenemedi veya boyut sınırını aşıyor.' });
         }
       };
       img.src = rawData;
+    };
+    reader.onerror = () => {
+      setIsProcessingFile(false);
+      setFeedback({ type: 'error', message: 'Görsel dosyası cihazdan okunamadı.' });
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -240,74 +296,78 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
     setUrlInput('');
   };
 
-  const ensureCloudAuthBeforeSave = async () => {
-    if (auth.currentUser) return;
-    try {
-      const signedUser = await signInWithGoogleForCloudSync();
-      setCloudUser(signedUser);
-    } catch {
-      // Allow fallback local/server save and surface clear cloud sync guidance
-    }
-  };
-
   const handleSaveLogo = async () => {
+    if (isSaving || isProcessingFile) return;
     setIsSaving(true);
     setFeedback(null);
-    let finalLogo = urlInput.trim() ? urlInput.trim() : previewLogo;
-    if (finalLogo.startsWith('blob:')) {
-      try {
-        const resp = await fetch(finalLogo);
-        const blob = await resp.blob();
-        finalLogo = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.onerror = () => reject(new Error('Dosya okunamadı'));
-          reader.readAsDataURL(blob);
-        });
-      } catch (err) {
-        console.warn('Failed converting blob to base64', err);
-        setIsSaving(false);
-        setFeedback({ type: 'error', message: 'Görsel verisi dönüştürülemedi. Lütfen dosyayı tekrar yükleyin.' });
-        return;
-      }
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
     }
-
-    await ensureCloudAuthBeforeSave();
-
-    const res = await pdksStorage.saveCompanyLogoAsync(finalLogo);
-    setIsSaving(false);
-    if (res.success) {
-      setPreviewLogo(res.logo);
-      setUrlInput('');
-      onLogoUpdated(res.logo);
-      setFeedback({ type: res.cloudSynced ? 'success' : 'error', message: res.message });
-      if (res.cloudSynced) {
-        setTimeout(() => {
-          onClose();
-        }, 750);
+    try {
+      let finalLogo = urlInput.trim() ? urlInput.trim() : previewLogo;
+      if (finalLogo.startsWith('blob:')) {
+        try {
+          const resp = await fetch(finalLogo);
+          const blob = await resp.blob();
+          finalLogo = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = () => reject(new Error('Dosya okunamadı'));
+            reader.readAsDataURL(blob);
+          });
+        } catch (err) {
+          console.warn('Failed converting blob to base64', err);
+          setFeedback({ type: 'error', message: 'Görsel verisi dönüştürülemedi. Lütfen dosyayı tekrar yükleyin.' });
+          return;
+        }
       }
-    } else {
-      setFeedback({ type: 'error', message: res.message });
+
+      const res = await pdksStorage.saveCompanyLogoAsync(finalLogo);
+      if (res.success) {
+        setPreviewLogo(res.logo);
+        setUrlInput('');
+        onLogoUpdated(res.logo);
+        setFeedback({ type: 'success', message: res.message });
+        closeTimerRef.current = setTimeout(() => {
+          onClose();
+        }, 800);
+      } else {
+        setFeedback({ type: 'error', message: res.message });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Logo kaydedilirken beklenmeyen bir hata oluştu.';
+      setFeedback({ type: 'error', message: msg });
+    } finally {
+      setIsSaving(false);
     }
   };
 
   const handleResetDefault = async () => {
+    if (isSaving || isProcessingFile) return;
     setIsSaving(true);
     setFeedback(null);
-    setPreviewLogo(DEFAULT_COMPANY_LOGO);
-    await ensureCloudAuthBeforeSave();
-    const res = await pdksStorage.saveCompanyLogoAsync(null);
-    setIsSaving(false);
-    if (res.success) {
-      onLogoUpdated(res.logo || DEFAULT_COMPANY_LOGO);
-      setFeedback({ type: res.cloudSynced ? 'success' : 'error', message: res.message });
-      if (res.cloudSynced) {
-        setTimeout(() => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    try {
+      setPreviewLogo(DEFAULT_COMPANY_LOGO);
+      const res = await pdksStorage.saveCompanyLogoAsync(null);
+      if (res.success) {
+        onLogoUpdated(res.logo || DEFAULT_COMPANY_LOGO);
+        setFeedback({ type: 'success', message: res.message });
+        closeTimerRef.current = setTimeout(() => {
           onClose();
-        }, 750);
+        }, 800);
+      } else {
+        setFeedback({ type: 'error', message: res.message });
       }
-    } else {
-      setFeedback({ type: 'error', message: res.message });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Logo sıfırlanırken beklenmeyen bir hata oluştu.';
+      setFeedback({ type: 'error', message: msg });
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -408,14 +468,14 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
                     type="password"
                     value={hrPassword}
                     onChange={(e) => setHrPassword(e.target.value)}
-                    placeholder="İK şifresini giriniz (Maxipluas5)"
+                    placeholder="İK şifresini giriniz"
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 font-mono"
                     autoFocus
                   />
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] text-slate-500">
-                    İK Sorumlusu: <strong>Merve Özer</strong> (@merve.ozer)
+                    Yetkili: <strong>İK Yöneticisi</strong> (@admin)
                   </span>
                   <button
                     type="submit"
@@ -429,56 +489,58 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
             </div>
           ) : (
             <>
-              {/* Firebase Cloud Sync Durum Kartı */}
-              <div
-                className={`p-3 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2.5 ${
-                  cloudUser
-                    ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
-                    : 'bg-amber-50/80 border-amber-200 text-amber-950'
-                }`}
-              >
-                <div className="flex items-start gap-2.5 min-w-0 flex-1">
-                  <Cloud
-                    className={`w-4 h-4 shrink-0 mt-0.5 ${
-                      cloudUser ? 'text-emerald-600' : 'text-amber-600'
-                    }`}
-                  />
-                  <div className="min-w-0">
-                    <div className="font-bold flex items-center gap-1.5 flex-wrap">
-                      <span>
-                        {cloudUser
-                          ? 'Kalıcı Bulut Depolama Aktif (Firebase)'
-                          : 'Kalıcı Bulut Senkronizasyonu Bekleniyor'}
-                      </span>
-                      {cloudUser?.email && (
-                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 truncate max-w-[220px]">
-                          {cloudUser.email}
+              {/* Firebase Cloud Sync Durum Kartı (Yalnızca Firebase yapılandırıldığında gösterilir) */}
+              {isFirebaseConfigured && (
+                <div
+                  className={`p-3 rounded-xl border text-xs flex flex-wrap items-center justify-between gap-2.5 ${
+                    cloudUser
+                      ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
+                      : 'bg-slate-50 border-slate-200 text-slate-800'
+                  }`}
+                >
+                  <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                    <Cloud
+                      className={`w-4 h-4 shrink-0 mt-0.5 ${
+                        cloudUser ? 'text-emerald-600' : 'text-indigo-600'
+                      }`}
+                    />
+                    <div className="min-w-0">
+                      <div className="font-bold flex items-center gap-1.5 flex-wrap">
+                        <span>
+                          {cloudUser
+                            ? 'Kalıcı Bulut Depolama Aktif (Firebase)'
+                            : 'İsteğe Bağlı Bulut Yedeği (Firebase)'}
                         </span>
-                      )}
+                        {cloudUser?.email && (
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 truncate max-w-[220px]">
+                            {cloudUser.email}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] opacity-85 mt-0.5">
+                        {cloudUser
+                          ? 'Kaydedilen logo hem sunucuda hem de Firebase bulutunda tüm tarayıcılarda otomatik korunur.'
+                          : 'Logo kaydedildiğinde sunucuda kalıcı olarak saklanır. İsterseniz Google hesabınızı bağlayarak Firebase bulut yedeğini de etkinleştirebilirsiniz.'}
+                      </p>
                     </div>
-                    <p className="text-[11px] opacity-85 mt-0.5">
-                      {cloudUser
-                        ? 'Kaydedilen logo tüm tarayıcılarda, gizli sekmelerde ve sunucu yenilemelerinde otomatik korunur.'
-                        : 'Farklı tarayıcılardan girildiğinde logonun silinmemesi için kaydetme sırasında Google yönetici hesabınızla doğrulama yapılır.'}
-                    </p>
                   </div>
+                  {!cloudUser && (
+                    <button
+                      type="button"
+                      disabled={isConnectingCloud || isSaving}
+                      onClick={handleConnectCloud}
+                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-semibold shadow-xs flex items-center gap-1.5 shrink-0 cursor-pointer disabled:opacity-50"
+                    >
+                      {isConnectingCloud ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Cloud className="w-3.5 h-3.5" />
+                      )}
+                      <span>Google Hesabını Bağla</span>
+                    </button>
+                  )}
                 </div>
-                {!cloudUser && (
-                  <button
-                    type="button"
-                    disabled={isConnectingCloud || isSaving}
-                    onClick={handleConnectCloud}
-                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[11px] font-semibold shadow-xs flex items-center gap-1.5 shrink-0 cursor-pointer disabled:opacity-50"
-                  >
-                    {isConnectingCloud ? (
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Cloud className="w-3.5 h-3.5" />
-                    )}
-                    <span>Google Hesabını Bağla</span>
-                  </button>
-                )}
-              </div>
+              )}
 
               {/* Standart Boyut Kuralı Bilgilendirmesi */}
               <div className="p-3.5 bg-indigo-50/70 border border-indigo-200 rounded-xl text-xs text-indigo-950 flex items-start gap-2.5">
@@ -650,7 +712,7 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
               disabled={isSaving}
               onClick={handleResetDefault}
               className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
-              title="Asem varsayılan kurumsal logosuna dön"
+              title="Varsayılan kurumsal logoya dön"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isSaving ? 'animate-spin' : ''}`} />
               <span>Varsayılana Sıfırla</span>
@@ -670,16 +732,22 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
             {isHrVerified && (
               <button
                 type="button"
-                disabled={isSaving}
+                disabled={isSaving || isProcessingFile}
                 onClick={handleSaveLogo}
                 className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-md flex items-center gap-1.5 cursor-pointer active:scale-95 transition-all disabled:opacity-60"
               >
-                {isSaving ? (
+                {isSaving || isProcessingFile ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
                 ) : (
                   <Check className="w-4 h-4" />
                 )}
-                <span>{isSaving ? 'Kaydediliyor...' : 'Logoyu Onayla & Kaydet'}</span>
+                <span>
+                  {isProcessingFile
+                    ? 'Görsel Hazırlanıyor...'
+                    : isSaving
+                    ? 'Kaydediliyor...'
+                    : 'Logoyu Onayla & Kaydet'}
+                </span>
               </button>
             )}
           </div>

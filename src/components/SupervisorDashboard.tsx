@@ -47,7 +47,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
   onNavigateToShifts,
   onNavigateToKiosk,
 }) => {
-  const isHRManager = currentUser.role === 'ik_yoneticisi';
+  const isHRManager = pdksStorage.isHRorSuperAdmin(currentUser);
 
   // State
   const [employees, setEmployees] = useState<Employee[]>([]);

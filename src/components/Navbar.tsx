@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { QrCode, Users, Clock, ShieldCheck, CalendarCheck, Smartphone, Maximize2, BarChart3, User, ChevronDown, Shield, TrendingUp, Key, LogOut, Lock, LogIn, LayoutDashboard, Printer, Image as ImageIcon, Sun, Moon, Palette } from 'lucide-react';
-import { CurrentUser, ThemeId } from '../types/pdks';
+import { QrCode, Users, Clock, ShieldCheck, CalendarCheck, Smartphone, Maximize2, BarChart3, ChevronDown, Shield, TrendingUp, Key, LogOut, Lock, LogIn, LayoutDashboard, Printer, Image as ImageIcon, Sun, Moon, Palette, ShieldAlert } from 'lucide-react';
+import { AppPageKey, CurrentUser, ThemeId } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
 import { NotificationCenter } from './NotificationCenter';
 import { CompanyLogoImage } from './CompanyLogoImage';
 import { APP_THEMES, getThemeById } from '../themes/themes';
 
-export type ActiveTab = 'kiosk' | 'dashboard' | 'performance' | 'employees' | 'records' | 'shifts' | 'portal' | 'reports' | 'supervisor';
+export type ActiveTab = 'kiosk' | 'dashboard' | 'performance' | 'employees' | 'records' | 'shifts' | 'portal' | 'reports' | 'supervisor' | 'permissions';
 
 interface NavbarProps {
   activeTab: ActiveTab;
@@ -21,6 +21,7 @@ interface NavbarProps {
   onOpenThemeSettings?: () => void;
   activeTheme?: ThemeId;
   companyLogo?: string;
+  companyName?: string;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -36,14 +37,20 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenThemeSettings,
   activeTheme,
   companyLogo: propCompanyLogo,
+  companyName: propCompanyName,
 }) => {
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
   const [restrictedNotice, setRestrictedNotice] = useState<string | null>(null);
   const [companyLogo, setCompanyLogo] = useState<string>(() => propCompanyLogo || pdksStorage.getCompanyLogo());
+  const [companyName, setCompanyName] = useState<string>(() => propCompanyName || pdksStorage.getCompanyName());
 
   useEffect(() => {
     if (propCompanyLogo) setCompanyLogo(propCompanyLogo);
   }, [propCompanyLogo]);
+
+  useEffect(() => {
+    if (propCompanyName) setCompanyName(propCompanyName);
+  }, [propCompanyName]);
 
   useEffect(() => {
     const syncLogo = (e?: any) => {
@@ -53,18 +60,37 @@ export const Navbar: React.FC<NavbarProps> = ({
         setCompanyLogo(pdksStorage.getCompanyLogo());
       }
     };
+    const syncCompanyName = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') {
+        setCompanyName(e.detail);
+      } else {
+        setCompanyName(pdksStorage.getCompanyName());
+      }
+    };
+    const syncAll = () => {
+      setCompanyLogo(pdksStorage.getCompanyLogo());
+      setCompanyName(pdksStorage.getCompanyName());
+    };
     window.addEventListener('pdks-logo-updated', syncLogo);
-    window.addEventListener('pdks-data-synced', syncLogo);
+    window.addEventListener('pdks-company-name-updated', syncCompanyName);
+    window.addEventListener('pdks-wall-qr-updated', syncAll);
+    window.addEventListener('pdks-data-synced', syncAll);
     return () => {
       window.removeEventListener('pdks-logo-updated', syncLogo);
-      window.removeEventListener('pdks-data-synced', syncLogo);
+      window.removeEventListener('pdks-company-name-updated', syncCompanyName);
+      window.removeEventListener('pdks-wall-qr-updated', syncAll);
+      window.removeEventListener('pdks-data-synced', syncAll);
     };
   }, []);
 
-  const isHRManager = currentUser.role === 'ik_yoneticisi';
+  const isSuperAdmin = pdksStorage.isSuperAdmin(currentUser);
+  const isHRManager = pdksStorage.isHRorSuperAdmin(currentUser);
+  const canManageSettings = pdksStorage.canAccessSettings(currentUser);
   const isSupervisor = pdksStorage.canUserAccessShiftManagement(currentUser);
-  const accounts = pdksStorage.getUserAccounts();
   const currentThemeDef = getThemeById(activeTheme || pdksStorage.getUserTheme(currentUser));
+
+  const canAccess = (page: AppPageKey) => pdksStorage.canAccessPage(currentUser, page);
+  const allowedPages = pdksStorage.getUserAllowedPages(currentUser);
 
   const handleQuickSelectTheme = (themeId: ThemeId) => {
     void pdksStorage.saveUserTheme(themeId, currentUser);
@@ -72,6 +98,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const getRoleBadgeStyle = (role: string) => {
     switch (role) {
+      case 'SUPER_ADMIN':
+        return 'bg-purple-100 text-purple-900 border-purple-300 font-bold';
       case 'ik_yoneticisi':
         return 'bg-purple-50 text-purple-700 border-purple-200';
       case 'birim_amiri':
@@ -89,6 +117,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const getRoleLabel = (role: string) => {
     switch (role) {
+      case 'SUPER_ADMIN':
+        return 'Süper Yönetici (Tam Yetki)';
       case 'ik_yoneticisi':
         return 'İK Yöneticisi (Tam Yetkili)';
       case 'birim_amiri':
@@ -106,7 +136,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const handleRestrictedTabClick = (tabName: string) => {
     setRestrictedNotice(
-      `Yetkisiz Erişim: '${tabName}' paneline yalnızca İK Yöneticisi erişebilir. Birim amirleri yalnızca sorumlu oldukları personellerin vardiya planlamasını yapabilir.`
+      `Yetkisiz Erişim: '${tabName}' paneline erişim yetkiniz bulunmamaktadır.`
     );
     setTimeout(() => setRestrictedNotice(null), 5000);
   };
@@ -135,10 +165,14 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div className="flex items-center gap-3">
             <button
               onClick={() => {
-                if (isHRManager) {
+                if (isSuperAdmin) {
+                  setActiveTab('permissions');
+                } else if (canAccess('dashboard')) {
                   setActiveTab('dashboard');
+                } else if (canAccess('shifts')) {
+                  setActiveTab('shifts');
                 } else {
-                  setActiveTab('portal');
+                  setActiveTab(allowedPages[0] || 'portal');
                 }
               }}
               className="text-left group flex items-center gap-2.5 focus:outline-none cursor-pointer"
@@ -146,14 +180,15 @@ export const Navbar: React.FC<NavbarProps> = ({
               <div className="h-9 max-w-[160px] flex items-center shrink-0">
                 <CompanyLogoImage
                   src={companyLogo}
-                  alt="Kurumsal Logo"
+                  alt={companyName}
+                  companyName={companyName}
                   className="max-h-8 max-w-[150px] w-auto h-auto object-contain"
                   variant="light"
                 />
               </div>
-              <div className="hidden sm:block border-l border-slate-200 pl-2.5">
-                <span className="text-sm font-bold tracking-tight text-slate-900 block leading-tight">
-                  Asem PDKS
+              <div className="hidden sm:block border-l border-slate-200 pl-2.5 max-w-[170px]">
+                <span className="text-sm font-bold tracking-tight text-slate-900 block leading-tight truncate" title={companyName}>
+                  {companyName}
                 </span>
                 <span className="text-[10px] font-medium text-slate-500 block leading-none">
                   Personel Devam Takip
@@ -162,186 +197,174 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           </div>
 
-          {/* Zone 2: Navigation Links (Adaptive based on Role Restrictions) */}
+          {/* Zone 2: Navigation Links (Dynamic per-user permissions) */}
           <nav className="hidden lg:flex items-center gap-1">
-            {/* If NOT ik_yoneticisi: Restricted Mode - ONLY Mobile Portal & Kiosk */}
-            {!isHRManager ? (
-              <>
-                <button
-                  onClick={() => setActiveTab('portal')}
-                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeTab === 'portal'
-                      ? 'bg-indigo-50 text-indigo-700 font-semibold shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <Smartphone className="w-4 h-4 text-indigo-600" />
-                  <span>QR Okut & Mola Portalı</span>
-                </button>
+            {isSuperAdmin && (
+              <button
+                onClick={() => setActiveTab('permissions')}
+                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-bold rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === 'permissions'
+                    ? 'bg-purple-600 text-white shadow-xs'
+                    : 'text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200'
+                }`}
+              >
+                <ShieldAlert className="w-4 h-4 shrink-0" />
+                <span>Yetki & Rol Yönetimi</span>
+              </button>
+            )}
 
-                {/* Birim Amiri Vardiya & Mesai Yönetimi Tab */}
-                {isSupervisor && (
-                  <button
-                    onClick={() => setActiveTab('shifts')}
-                    className={`flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg transition-colors whitespace-nowrap ${
-                      activeTab === 'shifts'
-                        ? 'bg-amber-50 text-amber-800 border border-amber-300 shadow-xs'
-                        : 'text-slate-700 hover:text-slate-900 hover:bg-amber-50/50'
-                    }`}
-                  >
-                    <CalendarCheck className="w-4 h-4 text-amber-600" />
-                    <span>Vardiya Yönetimi</span>
-                    <span className="text-[10px] bg-amber-200/90 text-amber-900 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
-                      Birim Amiri
-                    </span>
-                  </button>
+            {canAccess('dashboard') && (
+              <button
+                onClick={() => setActiveTab('dashboard')}
+                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === 'dashboard'
+                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Clock className="w-4 h-4 text-slate-500" />
+                <span>Canlı Pano</span>
+              </button>
+            )}
+
+            {canAccess('employees') && (
+              <button
+                onClick={() => setActiveTab('employees')}
+                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === 'employees'
+                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Users className="w-4 h-4 text-slate-500" />
+                <span>Personel</span>
+              </button>
+            )}
+
+            {canAccess('records') && (
+              <button
+                onClick={() => setActiveTab('records')}
+                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === 'records'
+                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <ShieldCheck className="w-4 h-4 text-slate-500" />
+                <span>Kayıtlar</span>
+              </button>
+            )}
+
+            {canAccess('shifts') && (
+              <button
+                onClick={() => setActiveTab('shifts')}
+                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === 'shifts'
+                    ? isSupervisor && !isHRManager
+                      ? 'bg-amber-50 text-amber-800 border border-amber-300 font-semibold shadow-xs'
+                      : 'bg-indigo-50 text-indigo-700 font-semibold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <CalendarCheck className={`w-4 h-4 ${isSupervisor && !isHRManager ? 'text-amber-600' : 'text-indigo-600'}`} />
+                <span>{isSupervisor && !isHRManager ? 'Vardiya Yönetimi' : 'Vardiya & İzin'}</span>
+                {isSupervisor && !isHRManager && (
+                  <span className="text-[10px] bg-amber-200/90 text-amber-900 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
+                    Birim Amiri
+                  </span>
                 )}
+              </button>
+            )}
 
-                <button
-                  onClick={() => setActiveTab('kiosk')}
-                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeTab === 'kiosk'
-                      ? 'bg-indigo-50 text-indigo-700'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <QrCode className="w-4 h-4 text-indigo-600" />
-                  <span>Kiosk Tarama</span>
-                </button>
+            {canAccess('performance') && (
+              <button
+                onClick={() => setActiveTab('performance')}
+                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === 'performance'
+                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <TrendingUp className="w-4 h-4 text-emerald-600" />
+                <span>Performans</span>
+              </button>
+            )}
 
-                {/* Locked Indicator for Restricted Admin Areas */}
-                <button
-                  onClick={() => handleRestrictedTabClick('Diğer İK Yönetim Panelleri')}
-                  className="flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium text-slate-400 hover:text-amber-700 hover:bg-amber-50/50 rounded-lg transition-colors cursor-pointer"
-                  title="Diğer yönetim panelleri yalnızca İK Yöneticisine açıktır"
-                >
-                  <Lock className="w-3.5 h-3.5 text-amber-500" />
-                  <span>Diğer Paneller (İK Özel)</span>
-                </button>
-              </>
-            ) : (
-              /* If ik_yoneticisi: FULL NAVIGATION to all screens */
-              <>
-                <button
-                  onClick={() => setActiveTab('dashboard')}
-                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeTab === 'dashboard'
-                      ? 'bg-indigo-50 text-indigo-700 font-semibold'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <Clock className="w-4 h-4 text-slate-500" />
-                  <span>Canlı Pano</span>
-                </button>
+            {canAccess('reports') && (
+              <button
+                onClick={() => setActiveTab('reports')}
+                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === 'reports'
+                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <BarChart3 className="w-4 h-4 text-slate-500" />
+                <span>Raporlar</span>
+              </button>
+            )}
 
-                <button
-                  onClick={() => setActiveTab('employees')}
-                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeTab === 'employees'
-                      ? 'bg-indigo-50 text-indigo-700'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <Users className="w-4 h-4 text-slate-500" />
-                  <span>Personel</span>
-                </button>
+            {canAccess('kiosk') && (
+              <button
+                onClick={() => setActiveTab('kiosk')}
+                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === 'kiosk'
+                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <QrCode className="w-4 h-4 text-indigo-600" />
+                <span>{isHRManager ? 'Kiosk' : 'Kiosk Tarama'}</span>
+              </button>
+            )}
 
-                <button
-                  onClick={() => setActiveTab('records')}
-                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeTab === 'records'
-                      ? 'bg-indigo-50 text-indigo-700'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <ShieldCheck className="w-4 h-4 text-slate-500" />
-                  <span>Kayıtlar</span>
-                </button>
+            {canAccess('portal') && (
+              <button
+                onClick={() => setActiveTab('portal')}
+                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                  activeTab === 'portal'
+                    ? 'bg-indigo-50 text-indigo-700 font-semibold shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Smartphone className="w-4 h-4 text-indigo-600" />
+                <span>{isHRManager ? 'Mobil Önizleme' : 'QR Okut & Mola Portalı'}</span>
+              </button>
+            )}
 
-                <button
-                  onClick={() => setActiveTab('shifts')}
-                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeTab === 'shifts'
-                      ? 'bg-indigo-50 text-indigo-700 font-semibold'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <CalendarCheck className="w-4 h-4 text-indigo-600" />
-                  <span>Vardiya & İzin</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTab('performance')}
-                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeTab === 'performance'
-                      ? 'bg-indigo-50 text-indigo-700 font-semibold'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <TrendingUp className="w-4 h-4 text-emerald-600" />
-                  <span>Performans</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTab('reports')}
-                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeTab === 'reports'
-                      ? 'bg-indigo-50 text-indigo-700'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <BarChart3 className="w-4 h-4 text-slate-500" />
-                  <span>Raporlar</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTab('kiosk')}
-                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeTab === 'kiosk'
-                      ? 'bg-indigo-50 text-indigo-700'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <QrCode className="w-4 h-4 text-indigo-600" />
-                  <span>Kiosk</span>
-                </button>
-
-                <button
-                  onClick={() => setActiveTab('portal')}
-                  className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeTab === 'portal'
-                      ? 'bg-indigo-50 text-indigo-700'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <Smartphone className="w-4 h-4 text-slate-500" />
-                  <span>Mobil Önizleme</span>
-                </button>
-              </>
+            {!isHRManager && allowedPages.length <= 3 && (
+              <button
+                onClick={() => handleRestrictedTabClick('Diğer Yönetim Panelleri')}
+                className="flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium text-slate-400 hover:text-amber-700 hover:bg-amber-50/50 rounded-lg transition-colors cursor-pointer"
+                title="Diğer yönetim panelleri için yetki gereklidir"
+              >
+                <Lock className="w-3.5 h-3.5 text-amber-500" />
+                <span>Diğer Paneller (Yetki Gerekli)</span>
+              </button>
             )}
           </nav>
 
           {/* Zone 3: Actions, Wall QR, Login Button, Notification Bell & Active Role Switcher */}
           <div className="flex items-center gap-2">
-            {isHRManager && onOpenLogoManager && (
+            {canManageSettings && onOpenLogoManager && (
               <button
                 onClick={onOpenLogoManager}
                 className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors cursor-pointer"
-                title="Şirket logosunu standart boyutlarda ekleyin veya değiştirin (Yalnızca İK)"
+                title="Şirket logosunu standart boyutlarda ekleyin veya değiştirin"
               >
                 <ImageIcon className="w-3.5 h-3.5 text-indigo-600" />
                 <span>Logo Değiştir</span>
               </button>
             )}
 
-            {isHRManager && onOpenWallQR && (
+            {canManageSettings && onOpenWallQR && (
               <button
                 onClick={onOpenWallQR}
                 className="hidden lg:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors cursor-pointer"
-                title="Şirket duvarına asılacak sabit QR kodu görüntüle, düzenle ve yazdır (Yalnızca İK)"
+                title="Şirket duvarına asılacak sabit QR kodu görüntüle, düzenle ve yazdır"
               >
                 <QrCode className="w-3.5 h-3.5 text-purple-600" />
-                <span>Duvar QR'ı (İK)</span>
+                <span>Duvar QR'ı</span>
               </button>
             )}
 
@@ -385,7 +408,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* Notification Center */}
             <NotificationCenter
               currentUser={currentUser}
-              filterEmployeeId={currentUser.role !== 'ik_yoneticisi' ? currentUser.employeeId : undefined}
+              filterEmployeeId={isHRManager || canAccess('dashboard') ? undefined : currentUser.employeeId}
             />
 
             {/* Role Switcher & Account Profile Dropdown */}
@@ -464,7 +487,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       </div>
                     </div>
 
-                    {isHRManager && onOpenLogoManager && (
+                    {canManageSettings && onOpenLogoManager && (
                       <button
                         onClick={() => {
                           setIsRoleDropdownOpen(false);
@@ -473,7 +496,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         className="w-full mb-2 p-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-purple-200 cursor-pointer"
                       >
                         <ImageIcon className="w-3.5 h-3.5 text-purple-600" />
-                        <span>Kurumsal Logo Yönetimi (İK)</span>
+                        <span>Kurumsal Logo Yönetimi</span>
                       </button>
                     )}
 
@@ -592,8 +615,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <span>Sistemden Çıkış Yap</span>
                     </button>
 
-                    <div className="px-3 py-1.5 border-t border-slate-100 text-center text-[10px] text-slate-400">
-                      Asem PDKS · Güvenli Kurumsal Giriş
+                    <div className="px-3 py-1.5 border-t border-slate-100 text-center text-[10px] text-slate-400 truncate">
+                      {companyName} · Güvenli Kurumsal Giriş
                     </div>
                   </div>
                 </>
@@ -617,155 +640,145 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Mobile secondary tab strip */}
         <div className="flex lg:hidden overflow-x-auto py-2 gap-1.5 border-t border-slate-100 -mx-4 px-4 scrollbar-none items-center">
-          {!isHRManager ? (
-            <>
-              <button
-                onClick={() => setActiveTab('portal')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'portal'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
-                }`}
-              >
-                <Smartphone className="w-3.5 h-3.5" />
-                <span>QR Okut & Mola</span>
-              </button>
+          {isSuperAdmin && (
+            <button
+              onClick={() => setActiveTab('permissions')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                activeTab === 'permissions'
+                  ? 'bg-purple-600 text-white shadow-xs'
+                  : 'text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200'
+              }`}
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Yetki & Rol Yönetimi</span>
+            </button>
+          )}
 
-              {isSupervisor && (
-                <button
-                  onClick={() => setActiveTab('shifts')}
-                  className={`px-3 py-1.5 text-xs font-bold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                    activeTab === 'shifts'
-                      ? 'bg-amber-600 text-white shadow-xs'
-                      : 'text-amber-800 bg-amber-100 hover:bg-amber-200 border border-amber-300'
-                  }`}
-                >
-                  <CalendarCheck className="w-3.5 h-3.5" />
-                  <span>Vardiya (Birim Amiri)</span>
-                </button>
-              )}
+          {canAccess('dashboard') && (
+            <button
+              onClick={() => setActiveTab('dashboard')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                activeTab === 'dashboard'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+              }`}
+            >
+              <LayoutDashboard className="w-3.5 h-3.5" />
+              <span>Canlı Pano</span>
+            </button>
+          )}
 
-              <button
-                onClick={() => setActiveTab('kiosk')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'kiosk'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
-                }`}
-              >
-                <QrCode className="w-3.5 h-3.5" />
-                <span>Kiosk Terminali</span>
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={() => setActiveTab('dashboard')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'dashboard'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
-                }`}
-              >
-                <LayoutDashboard className="w-3.5 h-3.5" />
-                <span>Canlı Pano</span>
-              </button>
+          {canAccess('employees') && (
+            <button
+              onClick={() => setActiveTab('employees')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                activeTab === 'employees'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Personel</span>
+            </button>
+          )}
 
-              <button
-                onClick={() => setActiveTab('employees')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'employees'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
-                }`}
-              >
-                <Users className="w-3.5 h-3.5" />
-                <span>Personel</span>
-              </button>
+          {canAccess('records') && (
+            <button
+              onClick={() => setActiveTab('records')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                activeTab === 'records'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>Kayıtlar</span>
+            </button>
+          )}
 
-              <button
-                onClick={() => setActiveTab('records')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'records'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
-                }`}
-              >
-                <Clock className="w-3.5 h-3.5" />
-                <span>Kayıtlar</span>
-              </button>
+          {canAccess('shifts') && (
+            <button
+              onClick={() => setActiveTab('shifts')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                activeTab === 'shifts'
+                  ? isSupervisor && !isHRManager
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'bg-indigo-600 text-white shadow-xs'
+                  : isSupervisor && !isHRManager
+                  ? 'text-amber-800 bg-amber-100 hover:bg-amber-200 border border-amber-300'
+                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+              }`}
+            >
+              <CalendarCheck className="w-3.5 h-3.5" />
+              <span>{isSupervisor && !isHRManager ? 'Vardiya (Birim Amiri)' : 'Vardiya & İzin'}</span>
+            </button>
+          )}
 
-              <button
-                onClick={() => setActiveTab('shifts')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'shifts'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
-                }`}
-              >
-                <CalendarCheck className="w-3.5 h-3.5" />
-                <span>Vardiya & İzin</span>
-              </button>
+          {canAccess('performance') && (
+            <button
+              onClick={() => setActiveTab('performance')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                activeTab === 'performance'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+              }`}
+            >
+              <TrendingUp className="w-3.5 h-3.5" />
+              <span>Performans</span>
+            </button>
+          )}
 
-              <button
-                onClick={() => setActiveTab('performance')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'performance'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
-                }`}
-              >
-                <TrendingUp className="w-3.5 h-3.5" />
-                <span>Performans</span>
-              </button>
+          {canAccess('reports') && (
+            <button
+              onClick={() => setActiveTab('reports')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                activeTab === 'reports'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+              }`}
+            >
+              <BarChart3 className="w-3.5 h-3.5" />
+              <span>Raporlar</span>
+            </button>
+          )}
 
-              <button
-                onClick={() => setActiveTab('reports')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'reports'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
-                }`}
-              >
-                <BarChart3 className="w-3.5 h-3.5" />
-                <span>Raporlar</span>
-              </button>
+          {canManageSettings && onOpenWallQR && (
+            <button
+              onClick={onOpenWallQR}
+              className="px-2.5 py-1.5 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+              title="Şirket Duvar QR Kodunu Görüntüle / Yazdır"
+            >
+              <Printer className="w-3.5 h-3.5 text-purple-600" />
+              <span>Duvar QR</span>
+            </button>
+          )}
 
-              {isHRManager && onOpenWallQR && (
-                <button
-                  onClick={onOpenWallQR}
-                  className="px-2.5 py-1.5 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0"
-                  title="Şirket Duvar QR Kodunu Görüntüle / Yazdır (Yalnızca İK)"
-                >
-                  <Printer className="w-3.5 h-3.5 text-purple-600" />
-                  <span>Duvar QR</span>
-                </button>
-              )}
+          {canAccess('kiosk') && (
+            <button
+              onClick={() => setActiveTab('kiosk')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                activeTab === 'kiosk'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+              }`}
+            >
+              <QrCode className="w-3.5 h-3.5" />
+              <span>{isHRManager ? 'Kiosk' : 'Kiosk Terminali'}</span>
+            </button>
+          )}
 
-              <button
-                onClick={() => setActiveTab('kiosk')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'kiosk'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
-                }`}
-              >
-                <QrCode className="w-3.5 h-3.5" />
-                <span>Kiosk</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('portal')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
-                  activeTab === 'portal'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
-                }`}
-              >
-                <Smartphone className="w-3.5 h-3.5" />
-                <span>Mobil Önizleme</span>
-              </button>
-            </>
+          {canAccess('portal') && (
+            <button
+              onClick={() => setActiveTab('portal')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                activeTab === 'portal'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+              }`}
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>{isHRManager ? 'Mobil Önizleme' : 'QR Okut & Mola'}</span>
+            </button>
           )}
         </div>
       </div>

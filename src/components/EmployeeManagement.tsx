@@ -17,13 +17,16 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [accounts, setAccounts] = useState<UserAccount[]>([]);
   const [deviceApprovals, setDeviceApprovals] = useState<DeviceEntryApproval[]>([]);
+  const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDepartment, setSelectedDepartment] = useState<string>('all');
 
-  // Permission Checks (Enforced by Prompt: Only İK Yöneticisi can create and delete!)
+  // Dynamic Permission Checks
   const canCreate = pdksStorage.canCreateEmployee(currentUser);
   const canDelete = pdksStorage.canDeleteEmployee(currentUser);
   const canEdit = pdksStorage.canEditEmployee(currentUser);
+  const canApprove = pdksStorage.canApproveRequests(currentUser);
+  const canManageDevices = pdksStorage.canManageDevices(currentUser);
   const canManageAccounts = pdksStorage.canCreateUserAccount(currentUser);
 
   // Modals state
@@ -80,9 +83,22 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
 
   useEffect(() => {
     loadData();
-    const handleSync = () => loadData();
+    const handleSync = () => {
+      loadData();
+      setCompanyName(pdksStorage.getCompanyName());
+    };
+    const handleNameSync = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') setCompanyName(e.detail);
+      else setCompanyName(pdksStorage.getCompanyName());
+    };
     window.addEventListener('pdks-data-synced', handleSync);
-    return () => window.removeEventListener('pdks-data-synced', handleSync);
+    window.addEventListener('pdks-company-name-updated', handleNameSync);
+    window.addEventListener('pdks-wall-qr-updated', handleNameSync);
+    return () => {
+      window.removeEventListener('pdks-data-synced', handleSync);
+      window.removeEventListener('pdks-company-name-updated', handleNameSync);
+      window.removeEventListener('pdks-wall-qr-updated', handleNameSync);
+    };
   }, []);
 
   // Filter employees
@@ -227,8 +243,8 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
         tcNo: formData.tcNo.trim() || String(10000000000 + nextNum),
         department: formData.department,
         title: formData.title.trim(),
-        email: formData.email.trim() || `${cleanNameSlug}@kurumsal.com`,
-        phone: formData.phone.trim() || '+90 530 000 0000',
+        email: formData.email.trim() || `${cleanNameSlug}@example.com`,
+        phone: formData.phone.trim() || '+90 500 000 0000',
         avatar:
           formData.avatar.trim() ||
           'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=256&h=256&q=80',
@@ -761,7 +777,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                       );
                       return (
                         <div className="flex flex-wrap items-center gap-1.5">
-                          {canEdit && activeLock && (
+                          {canApprove && activeLock && (
                             <button
                               type="button"
                               onClick={() => handleQuickApproveDevice(activeLock.id)}
@@ -771,7 +787,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                               <span>Yeni Cihaz Girişini Onayla</span>
                             </button>
                           )}
-                          {canEdit && hasBoundDevice && (
+                          {canManageDevices && hasBoundDevice && (
                             <button
                               type="button"
                               onClick={() => handleResetDevice(emp)}
@@ -782,7 +798,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                               <span>Cihazı Sıfırla</span>
                             </button>
                           )}
-                          {emp.avatarStatus === 'pending' && emp.pendingAvatar && (
+                          {canApprove && emp.avatarStatus === 'pending' && emp.pendingAvatar && (
                             <button
                               onClick={() => setPhotoReviewEmp(emp)}
                               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold cursor-pointer"
@@ -1006,7 +1022,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                                       <Smartphone className="w-3 h-3 text-indigo-500 shrink-0" />
                                       <span className="truncate">{regDeviceName || 'Kayıtlı Cihaz'}</span>
                                     </span>
-                                    {canEdit && (
+                                    {canManageDevices && (
                                       <button
                                         type="button"
                                         onClick={() => handleResetDevice(emp)}
@@ -1048,7 +1064,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                                     <ShieldAlert className="w-2.5 h-2.5" />
                                     <span>Yeni Cihaz Kilidi</span>
                                   </span>
-                                  {canEdit && (
+                                  {canApprove && (
                                     <button
                                       type="button"
                                       onClick={() => handleQuickApproveDevice(activeLock.id)}
@@ -1200,12 +1216,12 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                 className="print-area w-72 rounded-2xl border-2 border-slate-800 bg-white p-5 shadow-lg relative flex flex-col items-center text-center overflow-hidden"
               >
                 {/* Security Header Band */}
-                <div className="w-full bg-slate-900 text-white py-2 px-3 rounded-lg mb-4 flex items-center justify-between">
-                  <div className="text-[10px] font-bold tracking-wider uppercase text-left">
-                    ASEM KURUMSAL KİMLİK KARTI
+                <div className="w-full bg-slate-900 text-white py-2 px-3 rounded-lg mb-4 flex items-center justify-between gap-2">
+                  <div className="text-[10px] font-bold tracking-wider uppercase text-left truncate">
+                    {companyName}
                   </div>
-                  <div className="text-[9px] font-mono text-indigo-300">
-                    ASEM-ID
+                  <div className="text-[9px] font-mono text-indigo-300 shrink-0">
+                    PDKS-ID
                   </div>
                 </div>
 
@@ -1403,7 +1419,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                   </label>
                   <input
                     type="email"
-                    placeholder="isim@sirket.com"
+                    placeholder="isim@example.com"
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                     className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"

@@ -4,6 +4,7 @@ import { ShieldCheck } from 'lucide-react';
 interface CompanyLogoImageProps {
   src?: string | null;
   alt?: string;
+  companyName?: string;
   className?: string;
   variant?: 'light' | 'dark';
 }
@@ -11,6 +12,7 @@ interface CompanyLogoImageProps {
 export const CompanyLogoImage: React.FC<CompanyLogoImageProps> = ({
   src,
   alt = 'Kurumsal Logo',
+  companyName = 'Kurum / Şirket Adı',
   className = 'max-h-8 max-w-[150px] w-auto h-auto object-contain',
   variant = 'light',
 }) => {
@@ -48,9 +50,9 @@ export const CompanyLogoImage: React.FC<CompanyLogoImageProps> = ({
         >
           <ShieldCheck className="w-3.5 h-3.5" />
         </div>
-        <div className="leading-none text-left pr-0.5">
-          <span className="block text-[11px] font-extrabold tracking-wider text-white">
-            ASEM
+        <div className="leading-none text-left pr-0.5 max-w-[110px]">
+          <span className="block text-[11px] font-extrabold tracking-wider text-white truncate">
+            {companyName}
           </span>
           <span className="block text-[8px] font-semibold tracking-widest text-indigo-200">
             PDKS

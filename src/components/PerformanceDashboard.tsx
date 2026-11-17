@@ -4,6 +4,8 @@ import { EmployeePerformanceMetric, Department } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
 
 export const PerformanceDashboard: React.FC = () => {
+  const canExport = pdksStorage.canExportReports(pdksStorage.getActiveUser());
+  const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
   const [data, setData] = useState<{
     metrics: EmployeePerformanceMetric[];
     overallShiftCompliance: number;
@@ -27,11 +29,24 @@ export const PerformanceDashboard: React.FC = () => {
   const [selectedEmpId, setSelectedEmpId] = useState<string>('');
 
   useEffect(() => {
-    const res = pdksStorage.getPerformanceDashboardData();
-    setData(res);
-    if (res.metrics.length > 0) {
-      setSelectedEmpId(res.metrics[0].employeeId);
-    }
+    const syncAll = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') setCompanyName(e.detail);
+      else setCompanyName(pdksStorage.getCompanyName());
+      const res = pdksStorage.getPerformanceDashboardData();
+      setData(res);
+      if (res.metrics.length > 0) {
+        setSelectedEmpId((prev) => prev || res.metrics[0].employeeId);
+      }
+    };
+    syncAll();
+    window.addEventListener('pdks-company-name-updated', syncAll);
+    window.addEventListener('pdks-wall-qr-updated', syncAll);
+    window.addEventListener('pdks-data-synced', syncAll);
+    return () => {
+      window.removeEventListener('pdks-company-name-updated', syncAll);
+      window.removeEventListener('pdks-wall-qr-updated', syncAll);
+      window.removeEventListener('pdks-data-synced', syncAll);
+    };
   }, []);
 
   const filteredMetrics = data.metrics.filter((m) => {
@@ -86,7 +101,7 @@ export const PerformanceDashboard: React.FC = () => {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Asem_Personel_Performans_Analizi_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `PDKS_Personel_Performans_Analizi_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -99,10 +114,10 @@ export const PerformanceDashboard: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-              Asem Personel Performans & İstikrar Dashboard'u
+              {companyName} · Personel Performans & İstikrar Dashboard'u
             </h1>
             <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 font-mono">
-              ASEM ANALYTICS
+              PDKS ANALYTICS
             </span>
           </div>
           <p className="text-sm text-slate-500 mt-1">
@@ -110,15 +125,17 @@ export const PerformanceDashboard: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm transition-colors whitespace-nowrap"
-          >
-            <Download className="w-4 h-4" />
-            <span>Performans Verilerini İndir</span>
-          </button>
-        </div>
+        {canExport && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleExportCSV}
+              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm transition-colors whitespace-nowrap"
+            >
+              <Download className="w-4 h-4" />
+              <span>Performans Verilerini İndir</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Aggregate KPI Strip */}

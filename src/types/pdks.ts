@@ -47,13 +47,36 @@ export interface Employee {
   lastLoginMacAddress?: string;
   lastLoginDeviceName?: string;
   lastLoginAt?: string;
+  isHiddenSuperAdmin?: boolean;
 }
 
 export type ActionType = 'check_in' | 'check_out' | 'break_start' | 'break_end';
 
 export type AttendanceStatus = 'on_time' | 'late' | 'early_leave' | 'normal' | 'overtime';
 
-export type UserRole = 'ik_yoneticisi' | 'birim_amiri' | 'yonetici' | 'personel' | 'guvenlik';
+export type UserRole = 'SUPER_ADMIN' | 'ik_yoneticisi' | 'birim_amiri' | 'yonetici' | 'personel' | 'guvenlik';
+
+export type AppPageKey =
+  | 'dashboard'
+  | 'employees'
+  | 'records'
+  | 'shifts'
+  | 'performance'
+  | 'reports'
+  | 'kiosk'
+  | 'portal';
+
+export interface UserCustomPermissions {
+  allowedPages: AppPageKey[];
+  canCreate: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  canApprove: boolean;
+  canExportReports: boolean;
+  canManageDevices: boolean;
+  canManageSettings: boolean;
+  canClearLogs: boolean;
+}
 
 export type ThemeId =
   | 'kurumsal_saf'
@@ -70,7 +93,7 @@ export interface SupervisorAssignment {
   assignedEmployeeIds: string[]; // List of Employee IDs this supervisor is authorized to schedule
   createdAt: string;
   updatedAt?: string;
-  assignedBy?: string; // e.g. "Merve Özer (İK Yöneticisi)"
+  assignedBy?: string; // e.g. "Yönetici Kullanıcı (İK Yöneticisi)"
   notes?: string;
 }
 
@@ -110,6 +133,8 @@ export interface UserAccount {
   lastLoginMacAddress?: string;
   lastLoginDeviceFingerprint?: string;
   lastLoginDeviceName?: string;
+  isHiddenSuperAdmin?: boolean;
+  customPermissions?: UserCustomPermissions;
 }
 
 export interface DeviceIdentity {
@@ -179,6 +204,8 @@ export interface CurrentUser {
   lastLoginMacAddress?: string;
   lastLoginDeviceFingerprint?: string;
   lastLoginDeviceName?: string;
+  isHiddenSuperAdmin?: boolean;
+  customPermissions?: UserCustomPermissions;
 }
 
 export interface LoginResult {
@@ -204,6 +231,7 @@ export interface PDKSNotification {
   severity: 'info' | 'warning' | 'critical';
   read: boolean;
   targetRole?: UserRole;
+  isHiddenSuperAdmin?: boolean;
   metadata?: {
     deviceApprovalId?: string;
     newDeviceName?: string;
@@ -306,6 +334,7 @@ export interface AttendanceRecord {
   deviceOwnerEmployeeId?: string;
   deviceOwnerEmployeeName?: string;
   deviceOwnerMacAddress?: string;
+  isHiddenSuperAdmin?: boolean;
 }
 
 export interface LeaveRequest {

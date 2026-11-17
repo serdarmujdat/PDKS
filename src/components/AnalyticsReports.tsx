@@ -4,6 +4,8 @@ import { Department, Employee, ReportFilter, EmployeeReportSummary } from '../ty
 import { pdksStorage } from '../services/storage';
 
 export const AnalyticsReports: React.FC = () => {
+  const canExport = pdksStorage.canExportReports(pdksStorage.getActiveUser());
+  const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
   // Preset calculations
   const today = new Date();
   const formatYMD = (d: Date) => d.toISOString().split('T')[0];
@@ -48,6 +50,18 @@ export const AnalyticsReports: React.FC = () => {
 
   useEffect(() => {
     setEmployees(pdksStorage.getEmployees());
+    const syncName = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') setCompanyName(e.detail);
+      else setCompanyName(pdksStorage.getCompanyName());
+    };
+    window.addEventListener('pdks-company-name-updated', syncName);
+    window.addEventListener('pdks-wall-qr-updated', syncName);
+    window.addEventListener('pdks-data-synced', syncName);
+    return () => {
+      window.removeEventListener('pdks-company-name-updated', syncName);
+      window.removeEventListener('pdks-wall-qr-updated', syncName);
+      window.removeEventListener('pdks-data-synced', syncName);
+    };
   }, []);
 
   // Recalculate on filter change
@@ -116,7 +130,11 @@ export const AnalyticsReports: React.FC = () => {
 
     const csvContent =
       'data:text/csv;charset=utf-8,\uFEFF' +
-      [headers.join(';'), ...rows.map((row) => row.join(';'))].join('\n');
+      [
+        `Kurum / Şirket;${companyName};Dönem;${filter.startDate} - ${filter.endDate}`,
+        headers.join(';'),
+        ...rows.map((row) => row.join(';')),
+      ].join('\n');
 
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
@@ -137,30 +155,32 @@ export const AnalyticsReports: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-            PDKS Devamlılık, Gecikme ve Mesai Analizi
+            {companyName} · Devamlılık, Gecikme ve Mesai Analizi
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
             Belirli tarih aralıkları için ayrıntılı personel devam kontrol, devamsızlık ve fazla mesai raporları.
           </p>
         </div>
 
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
-          <button
-            onClick={handlePrint}
-            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl shadow-xs transition-colors cursor-pointer"
-          >
-            <Printer className="w-4 h-4 text-slate-500" />
-            <span>Yazdır / PDF</span>
-          </button>
+        {canExport && (
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={handlePrint}
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl shadow-xs transition-colors cursor-pointer"
+            >
+              <Printer className="w-4 h-4 text-slate-500" />
+              <span>Yazdır / PDF</span>
+            </button>
 
-          <button
-            onClick={handleExportCSV}
-            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xl shadow-xs transition-colors cursor-pointer"
-          >
-            <Download className="w-4 h-4" />
-            <span>Excel / CSV İndir</span>
-          </button>
-        </div>
+            <button
+              onClick={handleExportCSV}
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xl shadow-xs transition-colors cursor-pointer"
+            >
+              <Download className="w-4 h-4" />
+              <span>Excel / CSV İndir</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Date Range & Filter Bar */}

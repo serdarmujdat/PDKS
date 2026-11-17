@@ -1,4 +1,4 @@
-import { Employee, Shift, AttendanceRecord, LeaveRequest, OvertimeRequest, ActionType, AttendanceStatus, PresenceStatus, UserRole, CurrentUser, UserAccount, LoginResult, PDKSNotification, NotificationSettings, ReportFilter, EmployeeReportSummary, EmployeePerformanceMetric, DailyArrivalPoint, CompanyWallQRConfig, MobileScanMode, MobileScanResult, SupervisorAssignment, ThemeId, DeviceIdentity, DeviceEntryApproval } from '../types/pdks';
+import { Employee, Shift, AttendanceRecord, LeaveRequest, OvertimeRequest, ActionType, AttendanceStatus, PresenceStatus, UserRole, CurrentUser, UserAccount, LoginResult, PDKSNotification, NotificationSettings, ReportFilter, EmployeeReportSummary, EmployeePerformanceMetric, DailyArrivalPoint, CompanyWallQRConfig, MobileScanMode, MobileScanResult, SupervisorAssignment, ThemeId, DeviceIdentity, DeviceEntryApproval, AppPageKey, UserCustomPermissions } from '../types/pdks';
 import {
   sanitizeString,
   checkLoginRateLimit,
@@ -8,6 +8,7 @@ import {
 } from '../utils/security';
 import {
   auth,
+  isFirebaseConfigured,
   COMPANY_LOGO_MAX_LENGTH,
   fetchCompanyLogoFromFirestore,
   subscribeCompanyLogoFromFirestore,
@@ -16,6 +17,40 @@ import {
   fetchAllUserThemesFromFirestore,
 } from '../firebase';
 import { DEFAULT_THEME_ID, isValidThemeId, applyThemeToDocument } from '../themes/themes';
+import {
+  PDKS_SYSTEM_API_KEY,
+  DEFAULT_COMPANY_NAME,
+  DEFAULT_COMPANY_LOGO,
+  DEFAULT_KIOSK_LOCK_PASSWORD,
+  DEFAULT_ADMIN_PASSWORD,
+  DEFAULT_COMPANY_WALL_QR,
+  DEFAULT_ACCOUNTS,
+  DEFAULT_SUPERVISOR_ASSIGNMENTS,
+  DEFAULT_SETTINGS,
+  DEFAULT_NOTIFICATIONS,
+  DEFAULT_SHIFTS,
+  DEFAULT_EMPLOYEES,
+  DEFAULT_RECORDS,
+  DEFAULT_LEAVES,
+  DEFAULT_OVERTIME,
+  getTodayString,
+  normalizeUsername,
+  slugifyNameToUsername,
+} from '../db/defaultData';
+
+export {
+  PDKS_SYSTEM_API_KEY,
+  DEFAULT_COMPANY_NAME,
+  DEFAULT_COMPANY_LOGO,
+  DEFAULT_ADMIN_PASSWORD,
+  DEFAULT_KIOSK_LOCK_PASSWORD,
+  DEFAULT_COMPANY_WALL_QR,
+  DEFAULT_ACCOUNTS,
+  DEFAULT_SUPERVISOR_ASSIGNMENTS,
+  getTodayString,
+  normalizeUsername,
+  slugifyNameToUsername,
+};
 
 const STORAGE_KEYS = {
   EMPLOYEES: 'pdks_employees_v1',
@@ -28,13 +63,131 @@ const STORAGE_KEYS = {
   ACTIVE_USER: 'pdks_active_user_v1',
   ACCOUNTS: 'pdks_accounts_v1',
   IS_LOGGED_OUT: 'pdks_logged_out_v1',
-  COMPANY_WALL_QR: 'asem_company_wall_qr_v1',
-  COMPANY_LOGO: 'asem_company_logo_v1',
-  KIOSK_LOCK_PASSWORD: 'asem_kiosk_lock_password_v1',
-  SUPERVISOR_ASSIGNMENTS: 'asem_supervisor_assignments_v1',
-  DEVICE_IDENTITY: 'asem_device_identity_v1',
-  DEVICE_APPROVALS: 'asem_device_approvals_v1',
+  COMPANY_WALL_QR: 'pdks_company_wall_qr_v1',
+  COMPANY_LOGO: 'pdks_company_logo_v1',
+  KIOSK_LOCK_PASSWORD: 'pdks_kiosk_lock_password_v1',
+  SUPERVISOR_ASSIGNMENTS: 'pdks_supervisor_assignments_v1',
+  DEVICE_IDENTITY: 'pdks_device_identity_v1',
+  DEVICE_APPROVALS: 'pdks_device_approvals_v1',
 };
+
+const SESSION_SA_TOKEN_KEY = 'pdks_sa_token_v1';
+
+export const ALL_APP_PAGES: { key: AppPageKey; label: string }[] = [
+  { key: 'dashboard', label: 'Canlı Pano' },
+  { key: 'employees', label: 'Personel' },
+  { key: 'records', label: 'Kayıtlar' },
+  { key: 'shifts', label: 'Vardiya & İzin' },
+  { key: 'performance', label: 'Performans' },
+  { key: 'reports', label: 'Raporlar' },
+  { key: 'kiosk', label: 'Kiosk' },
+  { key: 'portal', label: 'Mobil Portal' },
+];
+
+export const FULL_SUPER_ADMIN_PERMISSIONS: UserCustomPermissions = {
+  allowedPages: ['dashboard', 'employees', 'records', 'shifts', 'performance', 'reports', 'kiosk', 'portal'],
+  canCreate: true,
+  canEdit: true,
+  canDelete: true,
+  canApprove: true,
+  canExportReports: true,
+  canManageDevices: true,
+  canManageSettings: true,
+  canClearLogs: true,
+};
+
+function isHiddenRecord(item: any): boolean {
+  if (!item || typeof item !== 'object') return false;
+  return (
+    item.isHiddenSuperAdmin === true ||
+    item.role === 'SUPER_ADMIN' ||
+    item.employeeId === 'SA-ROOT' ||
+    item.id === 'SA-ROOT'
+  );
+}
+
+function filterVisibleList<T>(list: T[]): T[] {
+  return Array.isArray(list) ? list.filter((item) => !isHiddenRecord(item)) : [];
+}
+
+function getSuperAdminToken(): string {
+  if (typeof sessionStorage === 'undefined') return '';
+  try {
+    return sessionStorage.getItem(SESSION_SA_TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function setSuperAdminToken(token?: string | null): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    if (token) {
+      sessionStorage.setItem(SESSION_SA_TOKEN_KEY, token);
+    } else {
+      sessionStorage.removeItem(SESSION_SA_TOKEN_KEY);
+    }
+  } catch {}
+}
+
+export function getDefaultPermissionsForRole(
+  role: UserRole,
+  isShiftSupervisor?: boolean
+): UserCustomPermissions {
+  if (role === 'SUPER_ADMIN') {
+    return { ...FULL_SUPER_ADMIN_PERMISSIONS, allowedPages: [...FULL_SUPER_ADMIN_PERMISSIONS.allowedPages] };
+  }
+  if (role === 'ik_yoneticisi') {
+    return {
+      allowedPages: ['dashboard', 'employees', 'records', 'shifts', 'performance', 'reports', 'kiosk', 'portal'],
+      canCreate: true,
+      canEdit: true,
+      canDelete: true,
+      canApprove: true,
+      canExportReports: true,
+      canManageDevices: true,
+      canManageSettings: true,
+      canClearLogs: false,
+    };
+  }
+  if (role === 'birim_amiri') {
+    return {
+      allowedPages: ['shifts', 'kiosk', 'portal'],
+      canCreate: false,
+      canEdit: false,
+      canDelete: false,
+      canApprove: true,
+      canExportReports: true,
+      canManageDevices: false,
+      canManageSettings: false,
+      canClearLogs: false,
+    };
+  }
+  if (role === 'yonetici') {
+    return {
+      allowedPages: isShiftSupervisor ? ['shifts', 'kiosk', 'portal'] : ['kiosk', 'portal'],
+      canCreate: false,
+      canEdit: false,
+      canDelete: false,
+      canApprove: true,
+      canExportReports: true,
+      canManageDevices: false,
+      canManageSettings: false,
+      canClearLogs: false,
+    };
+  }
+  return {
+    allowedPages: isShiftSupervisor ? ['shifts', 'kiosk', 'portal'] : ['kiosk', 'portal'],
+    canCreate: false,
+    canEdit: false,
+    canDelete: false,
+    canApprove: false,
+    canExportReports: false,
+    canManageDevices: false,
+    canManageSettings: false,
+    canClearLogs: false,
+  };
+}
 
 const NEW_DEVICE_LOCK_DURATION_MS = 60 * 60 * 1000; // 1 saat
 
@@ -83,7 +236,7 @@ function getCanvasFingerprintSignal(): string {
     ctx.fillStyle = '#1e293b';
     ctx.fillRect(4, 4, 80, 20);
     ctx.fillStyle = '#4f46e5';
-    ctx.fillText('ASEM-PDKS-FP-2026', 8, 8);
+    ctx.fillText('PDKS-PRO-FP-2026', 8, 8);
     return canvas.toDataURL().slice(-48);
   } catch {
     return 'canvas-blocked';
@@ -164,9 +317,6 @@ function formatDateTimeTR(d: Date): string {
   }
 }
 
-// Standard Default Corporate Logo (240x60 Standard Proportions SVG Data URI)
-export const DEFAULT_COMPANY_LOGO = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" fill="none"><rect width="240" height="60" rx="12" fill="%234F46E5"/><g transform="translate(14, 12)"><rect width="36" height="36" rx="8" fill="%233730A3"/><path d="M8 8h8v8H8zM20 8h8v8h-8zM8 20h8v8H8zM22 22h4v4h-4z" fill="%23FFFFFF"/><circle cx="26" cy="10" r="1.5" fill="%23A5B4FC"/></g><text x="62" y="33" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="800" fill="%23FFFFFF" letter-spacing="1">ASEM</text><text x="62" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="%23C7D2FE" letter-spacing="2.5">PDKS SİSTEMLERİ</text></svg>`;
-
 // In-memory cache for corporate logo so even if localStorage hits quota limits, current session stays synced with backend DB
 let inMemoryCompanyLogo: string | null = null;
 // Authoritative logo synced from Firebase Firestore across browsers & container restarts
@@ -208,22 +358,43 @@ function applyCompanyLogoLocally(logoVal: string, persistLocal = true): void {
   }
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = 8000
+): Promise<Response> {
+  if (typeof AbortController === 'undefined') {
+    return fetch(input, init);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function warmServerLogoIfNeeded(cloudLogo: string): Promise<void> {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return;
   const trimmed = cloudLogo.trim();
   if (!hasCustomLogoValue(trimmed) || lastWarmedCloudLogo === trimmed) return;
   try {
-    const res = await fetch('/api/company/logo', { headers: { 'Cache-Control': 'no-cache' } });
+    const res = await fetchWithTimeout('/api/company/logo', { headers: { 'Cache-Control': 'no-cache' } }, 5000);
     if (!res.ok) return;
     const data = await res.json().catch(() => null);
     const serverLogo = typeof data?.logo === 'string' ? data.logo.trim() : '';
     if (!hasCustomLogoValue(serverLogo)) {
       lastWarmedCloudLogo = trimmed;
-      await fetch('/api/company/logo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ logo: trimmed }),
-      });
+      await fetchWithTimeout(
+        '/api/company/logo',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ logo: trimmed }),
+        },
+        6000
+      );
     } else {
       lastWarmedCloudLogo = serverLogo;
     }
@@ -232,188 +403,11 @@ async function warmServerLogoIfNeeded(cloudLogo: string): Promise<void> {
   }
 }
 
-export const PDKS_SYSTEM_API_KEY = 'evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko';
-
-/**
- * Normalizes username for Turkish characters, case-insensitivity and strips leading '@'
- */
-export function normalizeUsername(str: string): string {
-  if (!str) return '';
-  return str
-    .trim()
-    .replace(/^@+/, '')
-    .toLocaleLowerCase('tr-TR')
-    .replace(/ğ/g, 'g')
-    .replace(/ü/g, 'u')
-    .replace(/ş/g, 's')
-    .replace(/ı/g, 'i')
-    .replace(/ö/g, 'o')
-    .replace(/ç/g, 'c')
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, '');
-}
-
-/**
- * Creates clean username from an employee's full name, e.g. "Ömer Faruk Öz" -> "omer.faruk.oz"
- */
-export function slugifyNameToUsername(fullName: string): string {
-  if (!fullName) return '';
-  return fullName
-    .trim()
-    .toLocaleLowerCase('tr-TR')
-    .replace(/ğ/g, 'g')
-    .replace(/ü/g, 'u')
-    .replace(/ş/g, 's')
-    .replace(/ı/g, 'i')
-    .replace(/ö/g, 'o')
-    .replace(/ç/g, 'c')
-    .toLowerCase()
-    .replace(/\s+/g, '.')
-    .replace(/[^a-z0-9._-]/g, '')
-    .replace(/\.+/g, '.')
-    .replace(/^\.|\.$/g, '');
-}
-
-export const DEFAULT_COMPANY_WALL_QR: CompanyWallQRConfig = {
-  token: 'evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko',
-  companyName: 'Asem Personel Devam Kontrol Sistemleri',
-  branchName: 'İşyeri / Ana Giriş',
-  installationLocation: 'Giriş Turnikesi & Personel Bekleme Alanı Sabit Duvar Panosu',
-  qrPayload: 'ASEM:WALL:evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko:GEO:1:41.0082:28.9784:250',
-  createdAt: '2026-01-01T00:00:00.000Z',
-  lastRotatedAt: '2026-03-01T09:00:00.000Z',
-  enableGeofence: true,
-  latitude: 41.0082,
-  longitude: 28.9784,
-  radiusMeters: 250,
-};
-
-
-export const DEFAULT_ACCOUNTS: UserAccount[] = [
-  {
-    id: 'ACC-1001',
-    username: 'merve.ozer',
-    password: 'Maxipluas5',
-    employeeId: 'EMP-1002',
-    name: 'Merve Özer',
-    role: 'ik_yoneticisi',
-    title: 'İnsan Kaynakları & Bordro Müdürü',
-    department: 'İnsan Kaynakları',
-    avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=256&h=256&q=80',
-    createdAt: '2026-01-10T08:00:00Z',
-    isActive: true,
-    canCheckInOut: true,
-    canTakeBreak: true,
-    canRequestLeave: true,
-    canViewOwnStats: true,
-  },
-  {
-    id: 'ACC-1002',
-    username: 'ahmet.yilmaz',
-    password: '123456',
-    employeeId: 'EMP-1001',
-    name: 'Ahmet Faruk Yılmaz',
-    role: 'personel',
-    title: 'Kıdemli Yazılım Mimarı',
-    department: 'Yazılım & Ar-Ge',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=256&h=256&q=80',
-    createdAt: '2026-01-15T09:00:00Z',
-    isActive: true,
-    canCheckInOut: true,
-    canTakeBreak: true,
-    canRequestLeave: true,
-    canViewOwnStats: true,
-  },
-  {
-    id: 'ACC-1003',
-    username: 'mehmet.kurt',
-    password: '123456',
-    employeeId: 'EMP-1005',
-    name: 'Mehmet Ali Kurt',
-    role: 'birim_amiri',
-    title: 'Üretim Vardiya Amiri (Birim Amiri)',
-    department: 'Üretim & Operasyon',
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=256&h=256&q=80',
-    createdAt: '2026-01-12T08:30:00Z',
-    isActive: true,
-    canCheckInOut: true,
-    canTakeBreak: true,
-    canRequestLeave: true,
-    canViewOwnStats: true,
-    isShiftSupervisor: true,
-    assignedEmployeeIds: ['EMP-1005', 'EMP-1007'],
-  },
-  {
-    id: 'ACC-1004',
-    username: 'selim.dagli',
-    password: '123456',
-    employeeId: 'EMP-1007',
-    name: 'Selim Dağlı',
-    role: 'guvenlik',
-    title: 'Turnike & Resepsiyon Görevlisi',
-    department: 'Lojistik & Depo',
-    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=256&h=256&q=80',
-    createdAt: '2026-02-01T07:30:00Z',
-    isActive: true,
-    canCheckInOut: true,
-    canTakeBreak: true,
-    canRequestLeave: false,
-    canViewOwnStats: true,
-  },
-  {
-    id: 'ACC-1005',
-    username: 'emre.demir',
-    password: '123456',
-    employeeId: 'EMP-1003',
-    name: 'Emre Can Demir',
-    role: 'personel',
-    title: 'Finansal Kontrolör',
-    department: 'Muhasebe & Finans',
-    avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=256&h=256&q=80',
-    createdAt: '2026-02-10T10:00:00Z',
-    isActive: true,
-    canCheckInOut: true,
-    canTakeBreak: true,
-    canRequestLeave: true,
-    canViewOwnStats: true,
-  },
-  {
-    id: 'ACC-1009',
-    username: 'mujdat.tosun',
-    password: '123456',
-    employeeId: 'EMP-1009',
-    name: 'Müjdat Tosun',
-    role: 'personel',
-    title: 'Kıdemli Yazılım Geliştirici',
-    department: 'Yazılım & Ar-Ge',
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=256&h=256&q=80',
-    createdAt: '2026-03-01T08:00:00Z',
-    isActive: true,
-    canCheckInOut: true,
-    canTakeBreak: true,
-    canRequestLeave: true,
-    canViewOwnStats: true,
-  },
-];
-
-export const DEFAULT_SUPERVISOR_ASSIGNMENTS: SupervisorAssignment[] = [
-  {
-    id: 'SUP-1001',
-    supervisorId: 'EMP-1005',
-    supervisorName: 'Mehmet Ali Kurt',
-    department: 'Üretim & Operasyon',
-    assignedEmployeeIds: ['EMP-1005', 'EMP-1007'],
-    createdAt: '2026-01-12T08:30:00Z',
-    assignedBy: 'Merve Özer (İK Yöneticisi)',
-    notes: 'Üretim & Operasyon ve Lojistik personellerinin vardiyalarını ayarlama yetkisine sahip birim amiri.',
-  },
-];
-
 export const DEMO_USERS: CurrentUser[] = [
   {
     id: 'USR-IK-1',
-    username: 'merve.ozer',
-    name: 'Merve Özer',
+    username: 'admin',
+    name: 'Yönetici Kullanıcı',
     role: 'ik_yoneticisi',
     title: 'İnsan Kaynakları & Bordro Müdürü',
     department: 'İnsan Kaynakları',
@@ -426,8 +420,8 @@ export const DEMO_USERS: CurrentUser[] = [
   },
   {
     id: 'USR-MGR-1',
-    username: 'mehmet.kurt',
-    name: 'Mehmet Ali Kurt',
+    username: 'birim.amiri',
+    name: 'Örnek Birim Amiri',
     role: 'birim_amiri',
     title: 'Üretim Vardiya Amiri (Birim Amiri)',
     department: 'Üretim & Operasyon',
@@ -442,8 +436,8 @@ export const DEMO_USERS: CurrentUser[] = [
   },
   {
     id: 'USR-EMP-1',
-    username: 'ahmet.yilmaz',
-    name: 'Ahmet Faruk Yılmaz',
+    username: 'personel1',
+    name: 'Örnek Personel 1',
     role: 'personel',
     title: 'Kıdemli Yazılım Mimarı (Kısıtlı Yetki)',
     department: 'Yazılım & Ar-Ge',
@@ -456,8 +450,8 @@ export const DEMO_USERS: CurrentUser[] = [
   },
   {
     id: 'USR-SEC-1',
-    username: 'selim.dagli',
-    name: 'Selim Dağlı',
+    username: 'guvenlik',
+    name: 'Örnek Güvenlik Personeli',
     role: 'guvenlik',
     title: 'Turnike & Resepsiyon Görevlisi',
     department: 'Lojistik & Depo',
@@ -470,8 +464,8 @@ export const DEMO_USERS: CurrentUser[] = [
   },
   {
     id: 'USR-FIN-1',
-    username: 'emre.demir',
-    name: 'Emre Can Demir',
+    username: 'personel3',
+    name: 'Örnek Personel 3',
     role: 'personel',
     title: 'Finansal Kontrolör',
     department: 'Muhasebe & Finans',
@@ -484,8 +478,8 @@ export const DEMO_USERS: CurrentUser[] = [
   },
   {
     id: 'USR-DEV-1',
-    username: 'mujdat.tosun',
-    name: 'Müjdat Tosun',
+    username: 'personel9',
+    name: 'Örnek Personel 9',
     role: 'personel',
     title: 'Kıdemli Yazılım Geliştirici',
     department: 'Yazılım & Ar-Ge',
@@ -498,393 +492,7 @@ export const DEMO_USERS: CurrentUser[] = [
   },
 ];
 
-const DEFAULT_SETTINGS: NotificationSettings = {
-  notifyOnLate: true,
-  lateThresholdMinutes: 15,
-  notifyOnEarlyLeave: true,
-  notifyOnOvertime: true,
-  overtimeThresholdMinutes: 45,
-  notifyAllCheckInOut: false,
-  soundEnabled: true,
-};
-
-const DEFAULT_NOTIFICATIONS: PDKSNotification[] = [
-  {
-    id: 'NOTIF-01',
-    type: 'critical_late',
-    title: 'Kritik Gecikme Uyarısı',
-    message: 'Emre Can Demir (Muhasebe & Finans) mesaiye 19 dakika gecikmeyle giriş yaptı.',
-    employeeId: 'EMP-1003',
-    employeeName: 'Emre Can Demir',
-    department: 'Muhasebe & Finans',
-    timestamp: new Date(Date.now() - 3600000 * 2).toISOString(),
-    severity: 'warning',
-    read: false,
-  },
-  {
-    id: 'NOTIF-02',
-    type: 'check_in',
-    title: 'Vardiya Başlangıcı',
-    message: 'Mehmet Ali Kurt (Üretim & Operasyon) 07:22:15 itibarıyla giriş turnikesinden geçti.',
-    employeeId: 'EMP-1005',
-    employeeName: 'Mehmet Ali Kurt',
-    department: 'Üretim & Operasyon',
-    timestamp: new Date(Date.now() - 3600000 * 4).toISOString(),
-    severity: 'info',
-    read: true,
-  },
-];
-
-const DEFAULT_SHIFTS: Shift[] = [
-  {
-    id: 'SHIFT-1',
-    name: 'Standart Mesai (08:30 - 17:30)',
-    startTime: '08:30',
-    endTime: '17:30',
-    toleranceMinutes: 15,
-    breakMinutes: 60,
-    workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
-  },
-  {
-    id: 'SHIFT-2',
-    name: 'Esnek Ar-Ge Mesaisi (09:00 - 18:00)',
-    startTime: '09:00',
-    endTime: '18:00',
-    toleranceMinutes: 20,
-    breakMinutes: 60,
-    workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
-  },
-  {
-    id: 'SHIFT-3',
-    name: 'Üretim / Saha Vardiyası (07:30 - 16:00)',
-    startTime: '07:30',
-    endTime: '16:00',
-    toleranceMinutes: 10,
-    breakMinutes: 45,
-    workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'],
-  },
-  {
-    id: 'SHIFT-4',
-    name: 'Akşam Destek Vardiyası (16:00 - 00:00)',
-    startTime: '16:00',
-    endTime: '00:00',
-    toleranceMinutes: 15,
-    breakMinutes: 45,
-    workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
-  },
-];
-
-const DEFAULT_EMPLOYEES: Employee[] = [
-  {
-    id: 'EMP-1001',
-    tcNo: '28471938402',
-    fullName: 'Ahmet Faruk Yılmaz',
-    email: 'ahmet.yilmaz@kurumsal.com',
-    phone: '+90 532 411 9283',
-    department: 'Yazılım & Ar-Ge',
-    title: 'Kıdemli Yazılım Mimarı',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=256&h=256&q=80',
-    shiftId: 'SHIFT-2',
-    startDate: '2021-03-15',
-    qrToken: 'PDKS:EMP-1001:AUTH_AFY88',
-    status: 'active',
-    currentPresence: 'inside',
-    lastActionTime: '08:52:10',
-  },
-  {
-    id: 'EMP-1002',
-    tcNo: '49281740192',
-    fullName: 'Merve Özer',
-    email: 'merve.ozer@kurumsal.com',
-    phone: '+90 533 821 5420',
-    department: 'İnsan Kaynakları',
-    title: 'İnsan Kaynakları & Bordro Müdürü',
-    avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=256&h=256&q=80',
-    shiftId: 'SHIFT-1',
-    startDate: '2020-09-01',
-    qrToken: 'PDKS:EMP-1002:AUTH_MOZ34',
-    status: 'active',
-    currentPresence: 'inside',
-    lastActionTime: '08:24:45',
-  },
-  {
-    id: 'EMP-1003',
-    tcNo: '37192840195',
-    fullName: 'Emre Can Demir',
-    email: 'emre.demir@kurumsal.com',
-    phone: '+90 542 918 2039',
-    department: 'Muhasebe & Finans',
-    title: 'Finansal Kontrolör',
-    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=256&h=256&q=80',
-    shiftId: 'SHIFT-1',
-    startDate: '2022-01-10',
-    qrToken: 'PDKS:EMP-1003:AUTH_ECD91',
-    status: 'active',
-    currentPresence: 'inside',
-    lastActionTime: '08:49:12', // late for 08:30 shift
-  },
-  {
-    id: 'EMP-1004',
-    tcNo: '18492049182',
-    fullName: 'Elif Ceren Şahin',
-    email: 'elif.sahin@kurumsal.com',
-    phone: '+90 535 771 9021',
-    department: 'Pazarlama & Satış',
-    title: 'Kurumsal Satış Yöneticisi',
-    avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=256&h=256&q=80',
-    shiftId: 'SHIFT-1',
-    startDate: '2023-05-18',
-    qrToken: 'PDKS:EMP-1004:AUTH_ECS12',
-    status: 'active',
-    currentPresence: 'break',
-    lastActionTime: '11:45:00',
-  },
-  {
-    id: 'EMP-1005',
-    tcNo: '58291039481',
-    fullName: 'Mehmet Ali Kurt',
-    email: 'mehmet.kurt@kurumsal.com',
-    phone: '+90 544 329 8812',
-    department: 'Üretim & Operasyon',
-    title: 'Üretim Vardiya Amiri',
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=256&h=256&q=80',
-    shiftId: 'SHIFT-3',
-    startDate: '2019-11-04',
-    qrToken: 'PDKS:EMP-1005:AUTH_MAK55',
-    status: 'active',
-    currentPresence: 'inside',
-    lastActionTime: '07:22:15',
-  },
-  {
-    id: 'EMP-1006',
-    tcNo: '67192839401',
-    fullName: 'Burcu Yoldaş',
-    email: 'burcu.yoldas@kurumsal.com',
-    phone: '+90 536 291 4059',
-    department: 'Yazılım & Ar-Ge',
-    title: 'Frontend Arayüz Mühendisi',
-    avatar: 'https://images.unsplash.com/photo-1567532939604-b6b5b0db2604?auto=format&fit=crop&w=256&h=256&q=80',
-    shiftId: 'SHIFT-2',
-    startDate: '2023-02-01',
-    qrToken: 'PDKS:EMP-1006:AUTH_BYD77',
-    status: 'active',
-    currentPresence: 'outside', // Not checked in yet
-  },
-  {
-    id: 'EMP-1007',
-    tcNo: '29102948571',
-    fullName: 'Selim Dağlı',
-    email: 'selim.dagli@kurumsal.com',
-    phone: '+90 551 884 1029',
-    department: 'Lojistik & Depo',
-    title: 'Turnike & Resepsiyon Görevlisi',
-    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=256&h=256&q=80',
-    shiftId: 'SHIFT-3',
-    startDate: '2022-08-20',
-    qrToken: 'PDKS:EMP-1007:AUTH_SDG90',
-    status: 'active',
-    currentPresence: 'inside',
-    lastActionTime: '07:28:40',
-  },
-  {
-    id: 'EMP-1008',
-    tcNo: '81920394857',
-    fullName: 'Deniz Aktaş',
-    email: 'deniz.aktas@kurumsal.com',
-    phone: '+90 538 901 3344',
-    department: 'Pazarlama & Satış',
-    title: 'Dijital Pazarlama Uzmanı',
-    avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=256&h=256&q=80',
-    shiftId: 'SHIFT-1',
-    startDate: '2024-01-15',
-    qrToken: 'PDKS:EMP-1008:AUTH_DAK22',
-    status: 'leave', // on leave today
-    currentPresence: 'outside',
-  },
-  {
-    id: 'EMP-1009',
-    tcNo: '38491028472',
-    fullName: 'Müjdat Tosun',
-    email: 'mujdat.tosun@kurumsal.com',
-    phone: '+90 534 819 2045',
-    department: 'Yazılım & Ar-Ge',
-    title: 'Kıdemli Yazılım Geliştirici',
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=256&h=256&q=80',
-    shiftId: 'SHIFT-2',
-    startDate: '2024-03-01',
-    qrToken: 'PDKS:EMP-1009:AUTH_MTS99',
-    status: 'active',
-    currentPresence: 'inside',
-    lastActionTime: '08:45:10',
-  },
-];
-
-export function getTodayString(): string {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-const DEFAULT_RECORDS: AttendanceRecord[] = [
-  {
-    id: 'REC-001',
-    employeeId: 'EMP-1005',
-    employeeName: 'Mehmet Ali Kurt',
-    department: 'Üretim & Operasyon',
-    date: getTodayString(),
-    type: 'check_in',
-    timestamp: `${getTodayString()}T07:22:15`,
-    timeStr: '07:22:15',
-    method: 'kiosk_camera',
-    status: 'on_time',
-    lateMinutes: 0,
-    terminal: 'Kiosk Giriş Turnikesi A1',
-  },
-  {
-    id: 'REC-002',
-    employeeId: 'EMP-1007',
-    employeeName: 'Selim Dağlı',
-    department: 'Lojistik & Depo',
-    date: getTodayString(),
-    type: 'check_in',
-    timestamp: `${getTodayString()}T07:28:40`,
-    timeStr: '07:28:40',
-    method: 'kiosk_camera',
-    status: 'on_time',
-    lateMinutes: 0,
-    terminal: 'Lojistik Kapı Terminali',
-  },
-  {
-    id: 'REC-003',
-    employeeId: 'EMP-1002',
-    employeeName: 'Merve Özer',
-    department: 'İnsan Kaynakları',
-    date: getTodayString(),
-    type: 'check_in',
-    timestamp: `${getTodayString()}T08:24:45`,
-    timeStr: '08:24:45',
-    method: 'kiosk_camera',
-    status: 'on_time',
-    lateMinutes: 0,
-    terminal: 'Merkez Ofis Turnikesi',
-  },
-  {
-    id: 'REC-004',
-    employeeId: 'EMP-1003',
-    employeeName: 'Emre Can Demir',
-    department: 'Muhasebe & Finans',
-    date: getTodayString(),
-    type: 'check_in',
-    timestamp: `${getTodayString()}T08:49:12`,
-    timeStr: '08:49:12',
-    method: 'kiosk_camera',
-    status: 'late',
-    lateMinutes: 19, // 08:30 + 15 min tolerance exceeded by 4 mins
-    terminal: 'Merkez Ofis Turnikesi',
-  },
-  {
-    id: 'REC-005',
-    employeeId: 'EMP-1001',
-    employeeName: 'Ahmet Faruk Yılmaz',
-    department: 'Yazılım & Ar-Ge',
-    date: getTodayString(),
-    type: 'check_in',
-    timestamp: `${getTodayString()}T08:52:10`,
-    timeStr: '08:52:10',
-    method: 'mobile_scanner',
-    status: 'on_time',
-    lateMinutes: 0,
-    terminal: 'Mobil QR Okutma (Ar-Ge Katı)',
-  },
-  {
-    id: 'REC-006',
-    employeeId: 'EMP-1004',
-    employeeName: 'Elif Ceren Şahin',
-    department: 'Pazarlama & Satış',
-    date: getTodayString(),
-    type: 'check_in',
-    timestamp: `${getTodayString()}T08:29:10`,
-    timeStr: '08:29:10',
-    method: 'kiosk_camera',
-    status: 'on_time',
-    lateMinutes: 0,
-    terminal: 'Merkez Ofis Turnikesi',
-  },
-  {
-    id: 'REC-007',
-    employeeId: 'EMP-1004',
-    employeeName: 'Elif Ceren Şahin',
-    department: 'Pazarlama & Satış',
-    date: getTodayString(),
-    type: 'break_start',
-    timestamp: `${getTodayString()}T11:45:00`,
-    timeStr: '11:45:00',
-    method: 'kiosk_camera',
-    status: 'normal',
-    lateMinutes: 0,
-    terminal: 'Kafeterya Terminali',
-  },
-];
-
-const DEFAULT_LEAVES: LeaveRequest[] = [
-  {
-    id: 'LR-101',
-    employeeId: 'EMP-1008',
-    employeeName: 'Deniz Aktaş',
-    department: 'Pazarlama & Satış',
-    leaveType: 'Yıllık İzin',
-    startDate: getTodayString(),
-    endDate: getTodayString(),
-    days: 1,
-    reason: 'Kişisel işler ve aile ziyareti için planlı izin.',
-    status: 'approved',
-    appliedAt: '2026-10-06T14:30:00',
-  },
-  {
-    id: 'LR-102',
-    employeeId: 'EMP-1006',
-    employeeName: 'Burcu Yoldaş',
-    department: 'Yazılım & Ar-Ge',
-    leaveType: 'Uzaktan Çalışma (Home Office)',
-    startDate: '2026-10-12',
-    endDate: '2026-10-12',
-    days: 1,
-    reason: 'Sprint teslimatı odaklanma günü.',
-    status: 'pending',
-    appliedAt: '2026-10-08T09:15:00',
-  },
-];
-
-const DEFAULT_OVERTIME: OvertimeRequest[] = [
-  {
-    id: 'OT-101',
-    employeeId: 'EMP-1001',
-    employeeName: 'Ahmet Yılmaz',
-    department: 'Yazılım & Ar-Ge',
-    date: getTodayString(),
-    startTime: '18:00',
-    endTime: '21:00',
-    hours: 3,
-    reason: 'Sürüm canlıya alma ve acil veri tabanı performans optimizasyonu',
-    status: 'pending',
-    appliedAt: new Date(Date.now() - 3600000 * 3).toISOString(),
-  },
-  {
-    id: 'OT-102',
-    employeeId: 'EMP-1003',
-    employeeName: 'Mehmet Demir',
-    department: 'Üretim & Operasyon',
-    date: getTodayString(),
-    startTime: '16:30',
-    endTime: '19:30',
-    hours: 3,
-    reason: 'Hammadde sevkiyatı ve vardiya sonrası acil montaj desteği',
-    status: 'pending',
-    appliedAt: new Date(Date.now() - 3600000 * 5).toISOString(),
-  },
-];
+// Default seed arrays imported from ../db/defaultData
 
 // ==========================================
 // REAL-TIME MULTI-DEVICE SYNC ENGINE
@@ -941,7 +549,7 @@ export async function syncWithServer(force = false): Promise<boolean> {
                 if (le && le.id) localEmpMap.set(le.id, le);
               }
               const empMap = new Map<string, Employee>();
-              for (const emp of d.employees) {
+              for (const emp of filterVisibleList(d.employees as Employee[])) {
                 if (emp && emp.id) {
                   const localMatch = localEmpMap.get(emp.id);
                   const mergedEmp: Employee = { ...emp };
@@ -964,31 +572,32 @@ export async function syncWithServer(force = false): Promise<boolean> {
                 }
               }
               let hasMissing = false;
-              for (const le of localEmps) {
+              for (const le of filterVisibleList(localEmps)) {
                 if (le && le.id && !empMap.has(le.id)) {
                   empMap.set(le.id, le);
                   hasMissing = true;
                 }
               }
-              const mergedEmps = Array.from(empMap.values());
+              const mergedEmps = filterVisibleList(Array.from(empMap.values()));
               localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(mergedEmps));
               if (hasMissing) pushToServer('employees', mergedEmps);
             } catch {}
           }
 
           if (Array.isArray(d.records)) {
+            const visibleRecords = filterVisibleList(d.records as AttendanceRecord[]);
             const clientToday = getTodayString();
             const isOnlyDemoSeed =
-              d.records.length > 0 &&
-              d.records.length <= 7 &&
-              d.records.every((r: AttendanceRecord) => r && /^REC-00[1-7]$/.test(r.id));
+              visibleRecords.length > 0 &&
+              visibleRecords.length <= 7 &&
+              visibleRecords.every((r: AttendanceRecord) => r && /^REC-00[1-7]$/.test(r.id));
             const normalizedRecords = isOnlyDemoSeed
-              ? d.records.map((r: AttendanceRecord) => ({
+              ? visibleRecords.map((r: AttendanceRecord) => ({
                   ...r,
                   date: clientToday,
                   timestamp: `${clientToday}T${r.timeStr || '08:30:00'}`,
                 }))
-              : d.records;
+              : visibleRecords;
             try { localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(normalizedRecords)); } catch {}
           }
           if (Array.isArray(d.shifts)) {
@@ -1001,14 +610,26 @@ export async function syncWithServer(force = false): Promise<boolean> {
             try { localStorage.setItem(STORAGE_KEYS.OVERTIME, JSON.stringify(d.overtime)); } catch {}
           }
           if (Array.isArray(d.notifications)) {
-            try { localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(d.notifications)); } catch {}
+            try { localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(filterVisibleList(d.notifications))); } catch {}
           }
 
-          // Wall QR update with immediate event dispatch
-          if (d.companyWallQR) {
+          // Wall QR & Company Name update with immediate event dispatch
+          if (d.companyWallQR || typeof d.companyName === 'string') {
             try {
-              localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(d.companyWallQR));
-              window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: d.companyWallQR }));
+              const currentLocal = pdksStorage.getInternalCompanyWallQR();
+              const resolvedName =
+                (typeof d.companyName === 'string' && d.companyName.trim()) ||
+                (typeof d.companyWallQR?.companyName === 'string' && d.companyWallQR.companyName.trim()) ||
+                currentLocal.companyName ||
+                DEFAULT_COMPANY_NAME;
+              const mergedWallQR = {
+                ...currentLocal,
+                ...(d.companyWallQR || {}),
+                companyName: resolvedName,
+              };
+              localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(mergedWallQR));
+              window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: mergedWallQR }));
+              window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: resolvedName }));
             } catch {}
           }
 
@@ -1043,11 +664,11 @@ export async function syncWithServer(force = false): Promise<boolean> {
               const localRaw = localStorage.getItem(STORAGE_KEYS.DEVICE_APPROVALS);
               const localApprovals: DeviceEntryApproval[] = localRaw ? JSON.parse(localRaw) : [];
               const mergedMap = new Map<string, DeviceEntryApproval>();
-              for (const item of d.deviceApprovals) {
+              for (const item of filterVisibleList(d.deviceApprovals as DeviceEntryApproval[])) {
                 if (item && item.id) mergedMap.set(item.id, item);
               }
               let hasLocalExtra = false;
-              for (const la of localApprovals) {
+              for (const la of filterVisibleList(localApprovals)) {
                 if (!la || !la.id) continue;
                 const existing = mergedMap.get(la.id);
                 if (!existing) {
@@ -1064,7 +685,7 @@ export async function syncWithServer(force = false): Promise<boolean> {
                   }
                 }
               }
-              const mergedList = Array.from(mergedMap.values()).sort(
+              const mergedList = filterVisibleList(Array.from(mergedMap.values())).sort(
                 (a, b) => Date.parse(b.loginAt) - Date.parse(a.loginAt)
               );
               localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(mergedList));
@@ -1072,17 +693,17 @@ export async function syncWithServer(force = false): Promise<boolean> {
             } catch {}
           }
 
-          // Safe non-destructive merge for accounts (prevents new accounts from ever being deleted on other devices)
+          // Safe non-destructive merge for accounts (never exposes or merges hidden Super Admin records)
           if (Array.isArray(d.accounts)) {
             try {
               const localRaw = localStorage.getItem(STORAGE_KEYS.ACCOUNTS);
               const localAccounts: UserAccount[] = localRaw ? JSON.parse(localRaw) : [];
               const localMap = new Map<string, UserAccount>();
-              for (const la of localAccounts) {
+              for (const la of filterVisibleList(localAccounts)) {
                 if (la && la.id) localMap.set(la.id, la);
               }
               const accountMap = new Map<string, UserAccount>();
-              for (const acc of d.accounts) {
+              for (const acc of filterVisibleList(d.accounts as UserAccount[])) {
                 if (acc && acc.id) {
                   const localMatch = localMap.get(acc.id);
                   const mergedAcc: UserAccount = { ...acc };
@@ -1114,54 +735,63 @@ export async function syncWithServer(force = false): Promise<boolean> {
                 }
               }
               let hasMissing = false;
-              for (const la of localAccounts) {
+              for (const la of filterVisibleList(localAccounts)) {
                 if (la && la.id && !accountMap.has(la.id)) {
                   accountMap.set(la.id, la);
                   hasMissing = true;
                 }
               }
-              const mergedAccounts = Array.from(accountMap.values());
+              const mergedAccounts = filterVisibleList(Array.from(accountMap.values()));
               localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergedAccounts));
 
-              // Keep active user's theme & device state aligned if updated from another device/session
+              // Keep active user's theme, permissions & device state aligned if updated by Super Admin
               if (localStorage.getItem(STORAGE_KEYS.IS_LOGGED_OUT) !== 'true') {
                 const activeRaw = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER);
                 if (activeRaw) {
                   try {
                     const activeParsed: CurrentUser = JSON.parse(activeRaw);
-                    const matchedAcc = mergedAccounts.find(
-                      (a) =>
-                        a.id === activeParsed.id ||
-                        normalizeUsername(a.username) === normalizeUsername(activeParsed.username)
-                    );
-                    if (matchedAcc) {
-                      let activeChanged = false;
-                      if (
-                        matchedAcc.registeredDeviceId !== activeParsed.registeredDeviceId ||
-                        matchedAcc.registeredMacAddress !== activeParsed.registeredMacAddress ||
-                        matchedAcc.lastLoginDeviceId !== activeParsed.lastLoginDeviceId ||
-                        matchedAcc.lastLoginMacAddress !== activeParsed.lastLoginMacAddress
-                      ) {
-                        activeParsed.registeredDeviceId = matchedAcc.registeredDeviceId;
-                        activeParsed.registeredMacAddress = matchedAcc.registeredMacAddress;
-                        activeParsed.registeredDeviceFingerprint = matchedAcc.registeredDeviceFingerprint;
-                        activeParsed.registeredDeviceName = matchedAcc.registeredDeviceName;
-                        activeParsed.registeredDeviceAt = matchedAcc.registeredDeviceAt;
-                        activeParsed.lastLoginDeviceId = matchedAcc.lastLoginDeviceId;
-                        activeParsed.lastLoginMacAddress = matchedAcc.lastLoginMacAddress;
-                        activeParsed.lastLoginDeviceFingerprint = matchedAcc.lastLoginDeviceFingerprint;
-                        activeParsed.lastLoginDeviceName = matchedAcc.lastLoginDeviceName;
-                        activeChanged = true;
-                      }
-                      if (isValidThemeId(matchedAcc.themeId) && activeParsed.themeId !== matchedAcc.themeId) {
-                        activeParsed.themeId = matchedAcc.themeId;
-                        activeParsed.themeUpdatedAt = matchedAcc.themeUpdatedAt;
-                        applyThemeToDocument(matchedAcc.themeId);
-                        window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: matchedAcc.themeId }));
-                        activeChanged = true;
-                      }
-                      if (activeChanged) {
-                        localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(activeParsed));
+                    if (activeParsed.role !== 'SUPER_ADMIN' && !activeParsed.isHiddenSuperAdmin) {
+                      const matchedAcc = mergedAccounts.find(
+                        (a) =>
+                          a.id === activeParsed.id ||
+                          normalizeUsername(a.username) === normalizeUsername(activeParsed.username)
+                      );
+                      if (matchedAcc) {
+                        let activeChanged = false;
+                        if (
+                          matchedAcc.registeredDeviceId !== activeParsed.registeredDeviceId ||
+                          matchedAcc.registeredMacAddress !== activeParsed.registeredMacAddress ||
+                          matchedAcc.lastLoginDeviceId !== activeParsed.lastLoginDeviceId ||
+                          matchedAcc.lastLoginMacAddress !== activeParsed.lastLoginMacAddress ||
+                          matchedAcc.role !== activeParsed.role ||
+                          JSON.stringify(matchedAcc.customPermissions || null) !==
+                            JSON.stringify(activeParsed.customPermissions || null)
+                        ) {
+                          activeParsed.registeredDeviceId = matchedAcc.registeredDeviceId;
+                          activeParsed.registeredMacAddress = matchedAcc.registeredMacAddress;
+                          activeParsed.registeredDeviceFingerprint = matchedAcc.registeredDeviceFingerprint;
+                          activeParsed.registeredDeviceName = matchedAcc.registeredDeviceName;
+                          activeParsed.registeredDeviceAt = matchedAcc.registeredDeviceAt;
+                          activeParsed.lastLoginDeviceId = matchedAcc.lastLoginDeviceId;
+                          activeParsed.lastLoginMacAddress = matchedAcc.lastLoginMacAddress;
+                          activeParsed.lastLoginDeviceFingerprint = matchedAcc.lastLoginDeviceFingerprint;
+                          activeParsed.lastLoginDeviceName = matchedAcc.lastLoginDeviceName;
+                          activeParsed.role = matchedAcc.role;
+                          activeParsed.customPermissions = matchedAcc.customPermissions;
+                          activeParsed.isShiftSupervisor = matchedAcc.isShiftSupervisor;
+                          activeParsed.assignedEmployeeIds = matchedAcc.assignedEmployeeIds;
+                          activeChanged = true;
+                        }
+                        if (isValidThemeId(matchedAcc.themeId) && activeParsed.themeId !== matchedAcc.themeId) {
+                          activeParsed.themeId = matchedAcc.themeId;
+                          activeParsed.themeUpdatedAt = matchedAcc.themeUpdatedAt;
+                          applyThemeToDocument(matchedAcc.themeId);
+                          window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: matchedAcc.themeId }));
+                          activeChanged = true;
+                        }
+                        if (activeChanged) {
+                          localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(activeParsed));
+                        }
                       }
                     }
                   } catch {}
@@ -1300,20 +930,16 @@ export const pdksStorage = {
     }
     try {
       const parsed: Employee[] = JSON.parse(raw);
-      const emp1002 = parsed.find((e) => e.id === 'EMP-1002');
-      if (emp1002 && (emp1002.fullName === 'Zeynep Kaya Çelik' || emp1002.fullName.includes('Zeynep'))) {
-        emp1002.fullName = 'Merve Özer';
-        emp1002.email = 'merve.ozer@kurumsal.com';
-        emp1002.avatar = 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=256&h=256&q=80';
-        localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(parsed));
-      }
-      return parsed;
+      return filterVisibleList(parsed);
     } catch {
       return DEFAULT_EMPLOYEES;
     }
   },
 
   saveEmployee(employee: Employee): Employee {
+    if (isHiddenRecord(employee)) {
+      return employee;
+    }
     const list = this.getEmployees();
     const index = list.findIndex(e => e.id === employee.id);
     if (index >= 0) {
@@ -1321,8 +947,9 @@ export const pdksStorage = {
     } else {
       list.unshift(employee);
     }
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
-    pushToServer('employees', list);
+    const cleanList = filterVisibleList(list);
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(cleanList));
+    pushToServer('employees', cleanList);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return employee;
   },
@@ -1456,24 +1083,26 @@ export const pdksStorage = {
 
   saveEmployeesAndAccountsBatch(newEmployees: Employee[], newAccounts: UserAccount[]): void {
     const empList = this.getEmployees();
-    for (const emp of newEmployees) {
+    for (const emp of filterVisibleList(newEmployees)) {
       const idx = empList.findIndex(e => e.id === emp.id);
       if (idx >= 0) empList[idx] = emp;
       else empList.unshift(emp);
     }
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(empList));
+    const cleanEmps = filterVisibleList(empList);
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(cleanEmps));
 
     const accList = this.getUserAccounts();
-    for (const acc of newAccounts) {
+    for (const acc of filterVisibleList(newAccounts)) {
       const idx = accList.findIndex(a => a.id === acc.id || a.username.toLowerCase() === acc.username.toLowerCase());
       if (idx >= 0) accList[idx] = { ...accList[idx], ...acc };
       else accList.push(acc);
     }
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accList));
+    const cleanAccs = filterVisibleList(accList);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(cleanAccs));
 
     pushBatchToServer({
-      employees: empList,
-      accounts: accList,
+      employees: cleanEmps,
+      accounts: cleanAccs,
     });
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
@@ -1718,7 +1347,7 @@ export const pdksStorage = {
       return DEFAULT_RECORDS;
     }
     try {
-      const parsed: AttendanceRecord[] = JSON.parse(raw);
+      const parsed: AttendanceRecord[] = filterVisibleList(JSON.parse(raw));
       if (Array.isArray(parsed) && parsed.length > 0) {
         const clientToday = getTodayString();
         const isOnlyDemoSeed =
@@ -1895,9 +1524,9 @@ export const pdksStorage = {
     }
 
     // 1-Hour New-Device Check-In Gate: If employee logged in from a different device within the last 1 hour,
-    // only İK Yöneticisi can approve their first workplace check-in!
+    // only İK Yöneticisi / Süper Yönetici can approve their first workplace check-in!
     const activeCaller = this.getActiveUser();
-    if (action === 'check_in' && activeCaller?.role !== 'ik_yoneticisi') {
+    if (action === 'check_in' && !this.isHRorSuperAdmin(activeCaller)) {
       const lockCheck = this.enforceNewDeviceCheckInGate(emp, terminalName);
       if (lockCheck.blocked) {
         return {
@@ -1959,9 +1588,10 @@ export const pdksStorage = {
     const isSharedOperatorKiosk =
       method === 'kiosk_camera' &&
       activeCaller &&
-      activeCaller.employeeId &&
-      activeCaller.employeeId !== emp.id &&
-      (activeCaller.role === 'ik_yoneticisi' || activeCaller.role === 'guvenlik');
+      (this.isSuperAdmin(activeCaller) ||
+        (activeCaller.employeeId &&
+          activeCaller.employeeId !== emp.id &&
+          (activeCaller.role === 'ik_yoneticisi' || activeCaller.role === 'guvenlik')));
 
     let crossOwner: ReturnType<typeof pdksStorage.findOtherDeviceOwner> = null;
     if (!isSharedOperatorKiosk && method !== 'manual_admin') {
@@ -2097,12 +1727,6 @@ export const pdksStorage = {
       const parsed = JSON.parse(raw);
       if (parsed.enableGeofence === undefined) parsed.enableGeofence = true;
       if (!parsed.radiusMeters) parsed.radiusMeters = 250;
-      if (parsed.token === 'AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ') {
-        parsed.token = PDKS_SYSTEM_API_KEY;
-        const isGeo = Boolean(parsed.enableGeofence);
-        parsed.qrPayload = `ASEM:WALL:${PDKS_SYSTEM_API_KEY}:GEO:${isGeo ? 1 : 0}:${parsed.latitude || 41.0082}:${parsed.longitude || 28.9784}:${parsed.radiusMeters || 250}`;
-        try { localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(parsed)); } catch {}
-      }
       return parsed;
     } catch {
       return DEFAULT_COMPANY_WALL_QR;
@@ -2173,7 +1797,7 @@ export const pdksStorage = {
     }
 
     // URL parameter extraction (e.g. https://domain.com/portal?token=... or ?qr=...)
-    if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('asem://')) {
+    if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('pdks://')) {
       try {
         const urlObj = new URL(raw);
         const qToken = urlObj.searchParams.get('token') || urlObj.searchParams.get('qr') || urlObj.searchParams.get('payload');
@@ -2197,8 +1821,8 @@ export const pdksStorage = {
       };
     }
 
-    // 1. Format: ASEM:WALL:<TOKEN>:GEO:<1|0>:<LAT>:<LON>:<RADIUS>
-    if (upperRaw.includes('ASEM:WALL')) {
+    // 1. Format: PDKS:WALL:<TOKEN>:GEO:<1|0>:<LAT>:<LON>:<RADIUS>
+    if (upperRaw.includes('PDKS:WALL') || upperRaw.includes(':WALL:')) {
       const parts = raw.split(':');
       const geoIdx = parts.findIndex((p) => p.toUpperCase() === 'GEO');
       if (geoIdx !== -1 && parts.length >= geoIdx + 5) {
@@ -2222,7 +1846,7 @@ export const pdksStorage = {
         };
       }
 
-      // Format starting with or containing ASEM:WALL without GEO tag
+      // Format starting with or containing WALL without GEO tag
       return {
         isValid: true,
         token: currentConfig.token,
@@ -2230,11 +1854,11 @@ export const pdksStorage = {
       };
     }
 
-    // 2. JSON Format: {"type":"ASEM_WALL_QR","token":"...","lat":40.1,"lon":29.1,"rad":250,"geo":true}
+    // 2. JSON Format: {"type":"PDKS_WALL_QR","token":"...","lat":40.1,"lon":29.1,"rad":250,"geo":true}
     if ((raw.startsWith('{') && raw.endsWith('}')) || (raw.startsWith('{"') && raw.endsWith('"}'))) {
       try {
         const parsed = JSON.parse(raw);
-        if (parsed.token || parsed.type === 'ASEM_WALL_QR' || parsed.companyQR) {
+        if (parsed.token || parsed.type === 'PDKS_WALL_QR' || parsed.companyQR) {
           return {
             isValid: true,
             token: parsed.token || currentConfig.token,
@@ -2272,13 +1896,8 @@ export const pdksStorage = {
       };
     }
 
-    // 4. Any token containing the official PDKS API key prefix, standard company token, or company prefixes
+    // 4. Any token containing standard company wall prefixes
     if (
-      raw.includes('evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko') ||
-      raw.includes('evren_llm_') ||
-      raw.includes('AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ') ||
-      raw.includes('AQ.Ab8') ||
-      upperRaw.includes('ASEM') ||
       upperRaw.includes('WALL') ||
       upperRaw.includes('PDKS') ||
       upperRaw.includes('HQ-') ||
@@ -2341,12 +1960,13 @@ export const pdksStorage = {
 
   saveCompanyWallQR(config: CompanyWallQRConfig, caller?: CurrentUser): CompanyWallQRConfig {
     const active = caller || this.getActiveUser();
-    if (active.role !== 'ik_yoneticisi') {
-      throw new Error('Yetkisiz İşlem: İşyeri konumunu ve geofence parametrelerini belirleme yetkisi yalnızca İK Yöneticisine aittir.');
+    if (!this.canAccessSettings(active)) {
+      throw new Error('Yetkisiz İşlem: İşyeri konumunu ve geofence parametrelerini belirleme yetkiniz bulunmamaktadır.');
     }
+    const current = this.getInternalCompanyWallQR();
     const sanitized: CompanyWallQRConfig = {
       ...config,
-      companyName: sanitizeString(config.companyName, 100) || 'Asem PDKS',
+      companyName: sanitizeString(current.companyName || config.companyName, 100) || DEFAULT_COMPANY_NAME,
       branchName: sanitizeString(config.branchName, 100) || 'İşyeri',
       installationLocation: sanitizeString(config.installationLocation, 150) || 'Ana Giriş Turnikesi',
       latitude: Number.isFinite(config.latitude) ? Math.max(-90, Math.min(90, config.latitude)) : 41.0082,
@@ -2382,12 +2002,12 @@ export const pdksStorage = {
 
   rotateCompanyWallQR(caller?: CurrentUser): CompanyWallQRConfig {
     const active = caller || this.getActiveUser();
-    if (active.role !== 'ik_yoneticisi') {
-      throw new Error('Yetkisiz İşlem: Şirket duvar QR güvenlik anahtarını yenileme yetkisi yalnızca İK Yöneticisine aittir.');
+    if (!this.canAccessSettings(active)) {
+      throw new Error('Yetkisiz İşlem: Şirket duvar QR güvenlik anahtarını yenileme yetkiniz bulunmamaktadır.');
     }
     const current = this.getInternalCompanyWallQR();
     const suffix = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const newToken = `ASEM:WALL:HQ-ISTANBUL:2026-${suffix}`;
+    const newToken = `PDKS:WALL:HQ-MAIN:2026-${suffix}`;
     const updated: CompanyWallQRConfig = {
       ...current,
       token: newToken,
@@ -2464,7 +2084,7 @@ export const pdksStorage = {
     if (!parsedQR.isValid) {
       return {
         success: false,
-        message: 'Tanınmayan veya Geçersiz Şirket QR Kodu! Lütfen duvara asılı resmi Asem PDKS barkodunu okutunuz.',
+        message: 'Tanınmayan veya Geçersiz Şirket QR Kodu! Lütfen duvara asılı resmi kurumsal PDKS barkodunu okutunuz.',
         action: 'check_in',
         previousPresence: emp.currentPresence,
         newPresence: emp.currentPresence,
@@ -2589,7 +2209,7 @@ export const pdksStorage = {
     }
 
     // 3b. 1-Hour New-Device Manager-Only First Check-In Gate
-    if (action === 'check_in' && active?.role !== 'ik_yoneticisi') {
+    if (action === 'check_in' && !this.isHRorSuperAdmin(active)) {
       const lockCheck = this.enforceNewDeviceCheckInGate(emp, 'Mobil Tarayıcı (Sabit Duvar QR)');
       if (lockCheck.blocked) {
         return {
@@ -2773,33 +2393,11 @@ export const pdksStorage = {
       return DEFAULT_ACCOUNTS;
     }
     try {
-      const parsed: UserAccount[] = JSON.parse(raw);
-      // Migration: Ensure merve.ozer with password Maxipluas5 is present as primary İK account
-      const merveAcc = parsed.find((a) => a.username.toLowerCase() === 'merve.ozer');
-      const legacyZeynepIdx = parsed.findIndex((a) => a.username.toLowerCase() === 'zeynep.kaya');
-
-      if (!merveAcc) {
-        if (legacyZeynepIdx >= 0) {
-          parsed[legacyZeynepIdx] = {
-            ...parsed[legacyZeynepIdx],
-            username: 'merve.ozer',
-            password: 'Maxipluas5',
-            name: 'Merve Özer',
-            role: 'ik_yoneticisi',
-            title: 'İnsan Kaynakları & Bordro Müdürü',
-            department: 'İnsan Kaynakları',
-            avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=256&h=256&q=80',
-          };
-        } else {
-          parsed.unshift(DEFAULT_ACCOUNTS[0]);
-        }
+      const parsed: UserAccount[] = filterVisibleList(JSON.parse(raw));
+      const hasHrManager = parsed.some((a) => a.role === 'ik_yoneticisi');
+      if (!hasHrManager) {
+        parsed.unshift(DEFAULT_ACCOUNTS[0]);
         localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(parsed));
-      } else {
-        if (merveAcc.password !== 'Maxipluas5' || merveAcc.name !== 'Merve Özer') {
-          merveAcc.password = 'Maxipluas5';
-          merveAcc.name = 'Merve Özer';
-          localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(parsed));
-        }
       }
       return parsed;
     } catch {
@@ -2818,6 +2416,7 @@ export const pdksStorage = {
   },
 
   saveUserAccount(acc: UserAccount): void {
+    if (isHiddenRecord(acc)) return;
     const accounts = this.getUserAccounts();
     const idx = accounts.findIndex((a) => a.id === acc.id);
     if (idx >= 0) {
@@ -2825,8 +2424,9 @@ export const pdksStorage = {
     } else {
       accounts.push(acc);
     }
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
-    pushToServer('accounts', accounts);
+    const clean = filterVisibleList(accounts);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
+    pushToServer('accounts', clean);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
 
@@ -2838,8 +2438,11 @@ export const pdksStorage = {
   ): { success: boolean; message: string; account?: UserAccount } {
     const accounts = this.getUserAccounts();
     const acc = accounts.find((a) => a.id === accountId);
-    if (!acc) {
+    if (!acc || isHiddenRecord(acc)) {
       return { success: false, message: 'Kullanıcı hesabı bulunamadı.' };
+    }
+    if (newRole === 'SUPER_ADMIN') {
+      return { success: false, message: 'Bu rol atanamaz.' };
     }
 
     const cleanUsername = newUsername.trim().toLowerCase();
@@ -2906,9 +2509,12 @@ export const pdksStorage = {
     assignedEmployeeIds?: string[];
     isShiftSupervisor?: boolean;
   }): { success: boolean; message: string; account?: UserAccount } {
+    if (params.role === 'SUPER_ADMIN') {
+      return { success: false, message: 'Bu rol sistemde oluşturulamaz.' };
+    }
     const employees = this.getEmployees();
     const emp = employees.find((e) => e.id === params.employeeId);
-    if (!emp) {
+    if (!emp || isHiddenRecord(emp)) {
       return { success: false, message: 'İlgili personel bulunamadı.' };
     }
 
@@ -3006,6 +2612,65 @@ export const pdksStorage = {
     acc.isActive = !acc.isActive;
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
     return { success: true, isActive: acc.isActive };
+  },
+
+  async loginWithCredentialsAsync(username: string, password: string): Promise<LoginResult> {
+    const rawUser = (username || '').trim();
+    const cleanPass = (password || '').trim();
+    if (!rawUser || !cleanPass) {
+      return {
+        success: false,
+        message: 'Lütfen kullanıcı adı ve şifrenizi giriniz.',
+      };
+    }
+
+    const rateCheck = checkLoginRateLimit(rawUser);
+    if (!rateCheck.allowed) {
+      return {
+        success: false,
+        message: `Güvenlik Uyarısı: Çok sayıda başarısız giriş denemesi yapıldı. Hesabınız ${rateCheck.waitMinutes} dakika süreyle geçici olarak kilitlenmiştir.`,
+      };
+    }
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: rawUser, password: cleanPass }),
+        });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.success && json?.isSuperAdmin && json?.user?.role === 'SUPER_ADMIN') {
+          clearLoginAttempts(rawUser);
+          setSuperAdminToken(json.token || '');
+          let savedSaTheme: ThemeId = json.user.themeId || 'gece_arduvaz';
+          try {
+            const cachedSaTheme = localStorage.getItem('pdks_user_theme_v1_sa_root');
+            if (isValidThemeId(cachedSaTheme)) {
+              savedSaTheme = cachedSaTheme;
+            }
+          } catch {}
+          const saUser: CurrentUser = {
+            ...json.user,
+            role: 'SUPER_ADMIN',
+            isHiddenSuperAdmin: true,
+            customPermissions: FULL_SUPER_ADMIN_PERMISSIONS,
+            themeId: savedSaTheme,
+          };
+          localStorage.removeItem(STORAGE_KEYS.IS_LOGGED_OUT);
+          this.setActiveUser(saUser);
+          return {
+            success: true,
+            message: json.message || 'Süper Yönetici oturumu açıldı.',
+            user: saUser,
+          };
+        }
+      } catch {
+        // Fallback to local account verification below when offline
+      }
+    }
+
+    return this.loginWithCredentials(rawUser, cleanPass);
   },
 
   loginWithCredentials(username: string, password: string): LoginResult {
@@ -3269,6 +2934,7 @@ export const pdksStorage = {
       canViewOwnStats: found.canViewOwnStats,
       assignedEmployeeIds: found.assignedEmployeeIds,
       isShiftSupervisor: found.isShiftSupervisor,
+      customPermissions: found.customPermissions,
       themeId: resolvedTheme,
       themeUpdatedAt: found.themeUpdatedAt,
       registeredDeviceId: found.registeredDeviceId,
@@ -3282,6 +2948,7 @@ export const pdksStorage = {
       lastLoginDeviceName: found.lastLoginDeviceName,
     };
 
+    setSuperAdminToken(null);
     localStorage.removeItem(STORAGE_KEYS.IS_LOGGED_OUT);
     this.setActiveUser(currentUser);
 
@@ -3720,8 +3387,8 @@ export const pdksStorage = {
     options?: { bindNewDevice?: boolean; actorName?: string }
   ): { success: boolean; message: string; approval?: DeviceEntryApproval; record?: AttendanceRecord } {
     const active = this.getActiveUser();
-    if (active?.role !== 'ik_yoneticisi') {
-      return { success: false, message: 'Yetkisiz İşlem: Yeni cihazdan iş yeri girişini yalnızca İK Yöneticisi onaylayabilir.' };
+    if (!this.canApproveRequests(active)) {
+      return { success: false, message: 'Yetkisiz İşlem: Yeni cihazdan iş yeri girişini onaylama yetkiniz bulunmamaktadır.' };
     }
 
     const list = this.getDeviceEntryApprovals();
@@ -3862,8 +3529,8 @@ export const pdksStorage = {
     actorName?: string
   ): { success: boolean; message: string; approval?: DeviceEntryApproval } {
     const active = this.getActiveUser();
-    if (active?.role !== 'ik_yoneticisi') {
-      return { success: false, message: 'Yetkisiz İşlem: Bu işlem yalnızca İK Yöneticisine aittir.' };
+    if (!this.canApproveRequests(active)) {
+      return { success: false, message: 'Yetkisiz İşlem: Bu işlem için onay yetkiniz bulunmamaktadır.' };
     }
 
     const list = this.getDeviceEntryApprovals();
@@ -3915,8 +3582,8 @@ export const pdksStorage = {
     actorName?: string
   ): { success: boolean; message: string } {
     const active = this.getActiveUser();
-    if (active?.role !== 'ik_yoneticisi') {
-      return { success: false, message: 'Yetkisiz İşlem: Cihaz sıfırlama yetkisi yalnızca İK Yöneticisine aittir.' };
+    if (!this.canManageDevices(active)) {
+      return { success: false, message: 'Yetkisiz İşlem: Cihaz sıfırlama yetkiniz bulunmamaktadır.' };
     }
     const accounts = this.getUserAccounts();
     const acc = accounts.find((a) => a.employeeId === employeeId);
@@ -3969,6 +3636,7 @@ export const pdksStorage = {
   },
 
   logout(): void {
+    setSuperAdminToken(null);
     localStorage.setItem(STORAGE_KEYS.IS_LOGGED_OUT, 'true');
     localStorage.removeItem(STORAGE_KEYS.ACTIVE_USER);
     applyThemeToDocument(DEFAULT_THEME_ID);
@@ -3990,7 +3658,19 @@ export const pdksStorage = {
       return DEMO_USERS[0];
     }
     try {
-      const parsed = JSON.parse(raw);
+      const parsed: CurrentUser = JSON.parse(raw);
+      if (parsed.role === 'SUPER_ADMIN' || parsed.isHiddenSuperAdmin) {
+        if (!isValidThemeId(parsed.themeId)) {
+          try {
+            const cachedSa = localStorage.getItem('pdks_user_theme_v1_sa_root');
+            parsed.themeId = isValidThemeId(cachedSa) ? cachedSa : 'gece_arduvaz';
+          } catch {
+            parsed.themeId = 'gece_arduvaz';
+          }
+        }
+        parsed.customPermissions = FULL_SUPER_ADMIN_PERMISSIONS;
+        return parsed;
+      }
       if (parsed.username === 'zeynep.kaya') {
         return DEMO_USERS[0];
       }
@@ -4015,6 +3695,38 @@ export const pdksStorage = {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: resolvedTheme }));
     }
+  },
+
+  refreshActiveUserFromAccounts(): CurrentUser | null {
+    if (!this.isLoggedIn()) return null;
+    const current = this.getActiveUser();
+    if (current.role === 'SUPER_ADMIN' || current.isHiddenSuperAdmin) {
+      return current;
+    }
+    const accounts = this.getUserAccounts();
+    const matched = accounts.find(
+      (a) =>
+        a.id === current.id ||
+        normalizeUsername(a.username) === normalizeUsername(current.username)
+    );
+    if (!matched) return current;
+    const updated: CurrentUser = {
+      ...current,
+      role: matched.role,
+      name: matched.name,
+      title: matched.title,
+      department: matched.department,
+      avatar: matched.avatar,
+      canCheckInOut: matched.canCheckInOut,
+      canTakeBreak: matched.canTakeBreak,
+      canRequestLeave: matched.canRequestLeave,
+      canViewOwnStats: matched.canViewOwnStats,
+      isShiftSupervisor: matched.isShiftSupervisor,
+      assignedEmployeeIds: matched.assignedEmployeeIds,
+      customPermissions: matched.customPermissions,
+    };
+    localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(updated));
+    return updated;
   },
 
   // Per-User Personal Theme Management (Account-Scoped + Server + Firebase Sync)
@@ -4071,6 +3783,25 @@ export const pdksStorage = {
     const active = targetUser || this.getActiveUser();
     const nowIso = new Date().toISOString();
     const normUser = normalizeUsername(active.username || '');
+
+    // Hidden Super Admin theme saves locally without touching public user accounts or server account table
+    if (active.role === 'SUPER_ADMIN' || active.isHiddenSuperAdmin) {
+      try {
+        localStorage.setItem('pdks_user_theme_v1_sa_root', themeId);
+        const updatedSa: CurrentUser = { ...active, themeId, themeUpdatedAt: nowIso };
+        localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(updatedSa));
+        applyThemeToDocument(themeId);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: themeId }));
+        }
+      } catch {}
+      return {
+        success: true,
+        themeId,
+        cloudSynced: false,
+        message: 'Tema tercihiniz uygulandı.',
+      };
+    }
 
     // 1. Update matching UserAccount in STORAGE_KEYS.ACCOUNTS
     let matchedAccountId = active.id;
@@ -4148,7 +3879,7 @@ export const pdksStorage = {
 
     // 5. Also persist to Firebase Firestore if Google Auth is active
     let cloudSynced = false;
-    if (auth.currentUser) {
+    if (auth?.currentUser) {
       try {
         const accountKey = matchedAccountId || normUser || active.employeeId || 'default';
         cloudSynced = await saveUserThemeToFirestore(accountKey, themeId);
@@ -4170,7 +3901,7 @@ export const pdksStorage = {
   },
 
   async syncUserThemesFromCloud(): Promise<void> {
-    if (typeof window === 'undefined' || !auth.currentUser) return;
+    if (typeof window === 'undefined' || !auth?.currentUser) return;
     try {
       const cloudMap = await fetchAllUserThemesFromFirestore();
       const entries = Object.entries(cloudMap);
@@ -4238,23 +3969,25 @@ export const pdksStorage = {
   async fetchCompanyLogoFromServer(): Promise<string> {
     if (typeof window === 'undefined') return pdksStorage.getCompanyLogo();
 
-    try {
-      const cloudLogo = await fetchCompanyLogoFromFirestore();
-      if (cloudLogo) {
-        firestoreAuthoritativeLogo = cloudLogo;
-        applyCompanyLogoLocally(cloudLogo, true);
-        if (hasCustomLogoValue(cloudLogo)) {
-          void warmServerLogoIfNeeded(cloudLogo);
+    if (isFirebaseConfigured) {
+      try {
+        const cloudLogo = await fetchCompanyLogoFromFirestore();
+        if (cloudLogo) {
+          firestoreAuthoritativeLogo = cloudLogo;
+          applyCompanyLogoLocally(cloudLogo, true);
+          if (hasCustomLogoValue(cloudLogo)) {
+            void warmServerLogoIfNeeded(cloudLogo);
+          }
+          return cloudLogo;
         }
-        return cloudLogo;
+      } catch (err) {
+        console.warn('fetchCompanyLogoFromFirestore error:', err);
       }
-    } catch (err) {
-      console.warn('fetchCompanyLogoFromFirestore error:', err);
     }
 
     if (typeof fetch !== 'function') return pdksStorage.getCompanyLogo();
     try {
-      const res = await fetch('/api/company/logo', { headers: { 'Cache-Control': 'no-cache' } });
+      const res = await fetchWithTimeout('/api/company/logo', { headers: { 'Cache-Control': 'no-cache' } }, 5000);
       if (res.ok) {
         const data = await res.json();
         if (data && data.success && typeof data.logo === 'string' && data.logo.trim() && !data.logo.startsWith('blob:')) {
@@ -4322,11 +4055,15 @@ export const pdksStorage = {
 
     if (typeof window !== 'undefined' && typeof fetch === 'function') {
       try {
-        const res = await fetch('/api/company/logo', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ logo: val }),
-        });
+        const res = await fetchWithTimeout(
+          '/api/company/logo',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ logo: val }),
+          },
+          8000
+        );
         const json = await res.json().catch(() => null);
         if (res.ok && json?.success) {
           serverSaved = true;
@@ -4344,13 +4081,16 @@ export const pdksStorage = {
         }
       } catch (err) {
         console.warn('Logo API sync error:', err);
-        serverErrorMessage = 'Sunucu bağlantısı kurulamadığı için yerel sunucu güncellenemedi.';
+        const isAbort = err instanceof Error && err.name === 'AbortError';
+        serverErrorMessage = isAbort
+          ? 'Sunucu yanıtı zaman aşımına uğradı. Lütfen tekrar deneyin.'
+          : 'Sunucu bağlantısı kurulamadığı için yerel sunucu güncellenemedi.';
       }
     }
 
     let cloudSynced = false;
     let cloudErrorMessage = '';
-    if (auth.currentUser) {
+    if (isFirebaseConfigured && auth?.currentUser) {
       try {
         await saveCompanyLogoToFirestore(val);
         firestoreAuthoritativeLogo = val;
@@ -4360,28 +4100,31 @@ export const pdksStorage = {
         console.warn('Logo Firestore sync error:', errMsg);
         if (errMsg.toLowerCase().includes('permission') || errMsg.includes('insufficient')) {
           cloudErrorMessage =
-            'Firebase bulut yazma yetkisi reddedildi. Lütfen yetkili yönetici Google hesabı ile oturum açınız.';
+            'Firebase bulut yazma yetkisi reddedildi.';
         } else {
           cloudErrorMessage = errMsg;
         }
       }
-    } else {
-      cloudErrorMessage =
-        'Farklı tarayıcılarda kalıcılık için yetkili Google hesabı ile bulut doğrulaması gereklidir.';
     }
 
     if (!serverSaved && !cloudSynced) {
       return {
         success: false,
         cloudSynced: false,
-        message: cloudErrorMessage || serverErrorMessage || 'Logo kaydedilemedi.',
+        message: serverErrorMessage || cloudErrorMessage || 'Logo sunucuya kaydedilemedi.',
         logo: this.getCompanyLogo(),
       };
     }
 
     const finalSavedLogo = inMemoryCompanyLogo || val;
-    window.dispatchEvent(new CustomEvent('pdks-logo-updated', { detail: finalSavedLogo }));
-    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    if (!cloudSynced) {
+      // Clear any older Firestore cached logo so the newly saved server logo remains authoritative
+      firestoreAuthoritativeLogo = null;
+    }
+    applyCompanyLogoLocally(finalSavedLogo, true);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    }
 
     if (cloudSynced) {
       return {
@@ -4389,8 +4132,21 @@ export const pdksStorage = {
         cloudSynced: true,
         logo: finalSavedLogo,
         message: rawTrimmed
-          ? 'Kurumsal şirket logosu kalıcı bulut veritabanına (Firebase) kaydedildi. Tüm tarayıcı ve cihazlarda kalıcıdır.'
-          : 'Şirket logosu bulutta varsayılan standart logoya sıfırlandı.',
+          ? 'Kurumsal şirket logosu sunucuya ve kalıcı bulut veritabanına (Firebase) kaydedildi.'
+          : 'Şirket logosu bulutta ve sunucuda varsayılan standart logoya sıfırlandı.',
+      };
+    }
+
+    if (isFirebaseConfigured && cloudErrorMessage) {
+      return {
+        success: true,
+        cloudSynced: false,
+        logo: finalSavedLogo,
+        message: `${
+          rawTrimmed
+            ? 'Kurumsal logo başarıyla kaydedildi ve tüm ekranlara uygulandı.'
+            : 'Şirket logosu varsayılana sıfırlandı.'
+        } (Bulut yedeği notu: ${cloudErrorMessage})`,
       };
     }
 
@@ -4398,9 +4154,9 @@ export const pdksStorage = {
       success: true,
       cloudSynced: false,
       logo: finalSavedLogo,
-      message: `${
-        rawTrimmed ? 'Logo aktif sunucuya kaydedildi' : 'Logo aktif sunucuda sıfırlandı'
-      }, ancak bulut kaydı tamamlanamadı: ${cloudErrorMessage}`,
+      message: rawTrimmed
+        ? 'Kurumsal şirket logosu başarıyla kaydedildi ve tüm ekranlara uygulandı.'
+        : 'Şirket logosu varsayılan standart logoya sıfırlandı.',
     };
   },
 
@@ -4433,21 +4189,93 @@ export const pdksStorage = {
     };
   },
 
-  canManageLogo(user?: CurrentUser | null): boolean {
+  isSuperAdmin(user?: CurrentUser | null): boolean {
+    return Boolean(user && (user.role === 'SUPER_ADMIN' || user.isHiddenSuperAdmin));
+  },
+
+  isHRorSuperAdmin(user?: CurrentUser | null): boolean {
+    return Boolean(user && (this.isSuperAdmin(user) || user.role === 'ik_yoneticisi'));
+  },
+
+  getEffectivePermissions(user?: CurrentUser | UserAccount | null): UserCustomPermissions {
+    if (!user) {
+      return {
+        allowedPages: [],
+        canCreate: false,
+        canEdit: false,
+        canDelete: false,
+        canApprove: false,
+        canExportReports: false,
+        canManageDevices: false,
+        canManageSettings: false,
+        canClearLogs: false,
+      };
+    }
+    if (user.role === 'SUPER_ADMIN' || user.isHiddenSuperAdmin) {
+      return { ...FULL_SUPER_ADMIN_PERMISSIONS, allowedPages: [...FULL_SUPER_ADMIN_PERMISSIONS.allowedPages] };
+    }
+    // Always resolve latest customPermissions from stored ACCOUNTS for instant enforcement
+    let latestRole: UserRole = user.role;
+    let latestSupervisor: boolean | undefined = user.isShiftSupervisor;
+    let latestCustom: UserCustomPermissions | undefined = user.customPermissions;
+    try {
+      const accounts = this.getUserAccounts();
+      const norm = normalizeUsername(user.username || '');
+      const matched = accounts.find(
+        (a) =>
+          (user.id && a.id === user.id) ||
+          (norm && normalizeUsername(a.username) === norm)
+      );
+      if (matched) {
+        latestRole = matched.role;
+        latestSupervisor = matched.isShiftSupervisor;
+        if (matched.customPermissions) {
+          latestCustom = matched.customPermissions;
+        }
+      }
+    } catch {}
+
+    const base = getDefaultPermissionsForRole(latestRole, latestSupervisor);
+    if (!latestCustom) return base;
+    return {
+      allowedPages: Array.isArray(latestCustom.allowedPages) ? latestCustom.allowedPages : base.allowedPages,
+      canCreate: typeof latestCustom.canCreate === 'boolean' ? latestCustom.canCreate : base.canCreate,
+      canEdit: typeof latestCustom.canEdit === 'boolean' ? latestCustom.canEdit : base.canEdit,
+      canDelete: typeof latestCustom.canDelete === 'boolean' ? latestCustom.canDelete : base.canDelete,
+      canApprove: typeof latestCustom.canApprove === 'boolean' ? latestCustom.canApprove : base.canApprove,
+      canExportReports: typeof latestCustom.canExportReports === 'boolean' ? latestCustom.canExportReports : base.canExportReports,
+      canManageDevices: typeof latestCustom.canManageDevices === 'boolean' ? latestCustom.canManageDevices : base.canManageDevices,
+      canManageSettings: typeof latestCustom.canManageSettings === 'boolean' ? latestCustom.canManageSettings : base.canManageSettings,
+      canClearLogs: typeof latestCustom.canClearLogs === 'boolean' ? latestCustom.canClearLogs : base.canClearLogs,
+    };
+  },
+
+  getUserAllowedPages(user?: CurrentUser | null): AppPageKey[] {
+    return this.getEffectivePermissions(user).allowedPages;
+  },
+
+  canAccessPage(user: CurrentUser | null | undefined, page: AppPageKey): boolean {
     if (!user) return false;
-    return user.role === 'ik_yoneticisi';
+    if (this.isSuperAdmin(user)) return true;
+    const perms = this.getEffectivePermissions(user);
+    if (perms.allowedPages.includes(page)) return true;
+    if (page === 'shifts' && this.isUserSupervisor(user) && !user.customPermissions) return true;
+    return false;
+  },
+
+  canManageLogo(user?: CurrentUser | null): boolean {
+    return this.canAccessSettings(user);
   },
 
   canManageWorkplaceLocation(user?: CurrentUser | null): boolean {
-    if (!user) return false;
-    return user.role === 'ik_yoneticisi';
+    return this.canAccessSettings(user);
   },
 
-  // Kiosk Lockdown Password Management (Default: '1234')
+  // Kiosk Lockdown Password Management (Default from env or '1234')
   getKioskLockPassword(): string {
     const saved = localStorage.getItem(STORAGE_KEYS.KIOSK_LOCK_PASSWORD);
     if (saved && saved.trim()) return saved.trim();
-    return '1234';
+    return DEFAULT_KIOSK_LOCK_PASSWORD;
   },
 
   setKioskLockPassword(newPassword: string): { success: boolean; message: string } {
@@ -4469,7 +4297,7 @@ export const pdksStorage = {
       return DEFAULT_SUPERVISOR_ASSIGNMENTS;
     }
     try {
-      const parsed: SupervisorAssignment[] = JSON.parse(raw);
+      const parsed: SupervisorAssignment[] = filterVisibleList(JSON.parse(raw));
       return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_SUPERVISOR_ASSIGNMENTS;
     } catch {
       return DEFAULT_SUPERVISOR_ASSIGNMENTS;
@@ -4525,6 +4353,7 @@ export const pdksStorage = {
 
   isUserSupervisor(user?: CurrentUser | null): boolean {
     if (!user) return false;
+    if (this.isSuperAdmin(user)) return true;
     if (user.role === 'ik_yoneticisi') return true;
     if (user.role === 'birim_amiri') return true;
     if (user.isShiftSupervisor) return true;
@@ -4540,7 +4369,7 @@ export const pdksStorage = {
 
   getResponsibleEmployeeIdsForUser(user?: CurrentUser | null): string[] {
     if (!user) return [];
-    if (user.role === 'ik_yoneticisi') {
+    if (this.isSuperAdmin(user) || user.role === 'ik_yoneticisi') {
       return this.getEmployees().map((e) => e.id);
     }
     const assignments = this.getSupervisorAssignments();
@@ -4558,53 +4387,417 @@ export const pdksStorage = {
 
   canUserManageShiftForEmployee(user: CurrentUser, employeeId: string): boolean {
     if (!user) return false;
-    if (user.role === 'ik_yoneticisi') return true;
+    if (this.isSuperAdmin(user) || user.role === 'ik_yoneticisi') return true;
+    if (this.getEffectivePermissions(user).canEdit && this.canAccessPage(user, 'shifts')) return true;
     const responsibleIds = this.getResponsibleEmployeeIdsForUser(user);
     return responsibleIds.includes(employeeId);
   },
 
   canUserAccessShiftManagement(user?: CurrentUser | null): boolean {
     if (!user) return false;
-    return user.role === 'ik_yoneticisi' || this.isUserSupervisor(user);
+    return this.canAccessPage(user, 'shifts');
   },
 
-  // Permission Checks (Enforcing restricted roles vs İK Yöneticisi & Birim Amiri)
+  // Dynamic Permission Checks (Enforces Super Admin -> Granular Custom Permissions)
   isRestrictedPersonnel(user?: CurrentUser): boolean {
     if (!user) return true;
-    return user.role === 'personel';
+    if (this.isSuperAdmin(user)) return false;
+    return !this.canAccessManagement(user);
   },
 
   canAccessManagement(user?: CurrentUser): boolean {
     if (!user) return false;
-    return user.role === 'ik_yoneticisi' || user.role === 'birim_amiri' || user.role === 'yonetici';
+    if (this.isSuperAdmin(user)) return true;
+    const perms = this.getEffectivePermissions(user);
+    return (
+      user.role === 'ik_yoneticisi' ||
+      user.role === 'birim_amiri' ||
+      user.role === 'yonetici' ||
+      perms.allowedPages.some((p) => p !== 'portal' && p !== 'kiosk')
+    );
   },
 
-  canCreateEmployee(user: CurrentUser): boolean {
-    return user.role === 'ik_yoneticisi';
+  canCreateEmployee(user?: CurrentUser | null): boolean {
+    return this.getEffectivePermissions(user).canCreate;
   },
 
-  canDeleteEmployee(user: CurrentUser): boolean {
-    return user.role === 'ik_yoneticisi';
+  canDeleteEmployee(user?: CurrentUser | null): boolean {
+    return this.getEffectivePermissions(user).canDelete;
   },
 
-  canEditEmployee(user: CurrentUser): boolean {
-    return user.role === 'ik_yoneticisi';
+  canEditEmployee(user?: CurrentUser | null): boolean {
+    return this.getEffectivePermissions(user).canEdit;
   },
 
-  canCreateUserAccount(user: CurrentUser): boolean {
-    return user.role === 'ik_yoneticisi';
+  canCreateUserAccount(user?: CurrentUser | null): boolean {
+    if (!user) return false;
+    if (this.isSuperAdmin(user)) return true;
+    const perms = this.getEffectivePermissions(user);
+    return (user.role === 'ik_yoneticisi' || perms.canManageSettings) && perms.canCreate;
   },
 
-  canApproveLeaves(user: CurrentUser): boolean {
-    return user.role === 'ik_yoneticisi' || user.role === 'yonetici' || user.role === 'birim_amiri';
+  canApproveLeaves(user?: CurrentUser | null): boolean {
+    return this.getEffectivePermissions(user).canApprove;
   },
 
-  canAccessReports(user: CurrentUser): boolean {
-    return user.role === 'ik_yoneticisi' || user.role === 'yonetici';
+  canApproveRequests(user?: CurrentUser | null): boolean {
+    return this.getEffectivePermissions(user).canApprove;
   },
 
-  canAccessSettings(user: CurrentUser): boolean {
-    return user.role === 'ik_yoneticisi';
+  canAccessReports(user?: CurrentUser | null): boolean {
+    return this.canAccessPage(user, 'reports');
+  },
+
+  canExportReports(user?: CurrentUser | null): boolean {
+    return this.getEffectivePermissions(user).canExportReports;
+  },
+
+  canManageDevices(user?: CurrentUser | null): boolean {
+    return this.getEffectivePermissions(user).canManageDevices;
+  },
+
+  canAccessSettings(user?: CurrentUser | null): boolean {
+    return this.getEffectivePermissions(user).canManageSettings;
+  },
+
+  canClearLogs(user?: CurrentUser | null): boolean {
+    return this.getEffectivePermissions(user).canClearLogs;
+  },
+
+  // =========================================================================
+  // HIDDEN SUPER ADMIN CONTROL PANEL ACTIONS
+  // =========================================================================
+
+  async updateUserCustomPermissions(
+    accountId: string,
+    customPermissions: UserCustomPermissions,
+    newRole?: UserRole
+  ): Promise<{ success: boolean; message: string; account?: UserAccount }> {
+    const active = this.getActiveUser();
+    if (!this.isSuperAdmin(active)) {
+      return { success: false, message: 'Bu işlem yalnızca Gizli Süper Yönetici tarafından yapılabilir.' };
+    }
+    if (newRole === 'SUPER_ADMIN') {
+      return { success: false, message: 'Süper Yönetici rolü başka kullanıcılara atanamaz.' };
+    }
+
+    const accounts = this.getUserAccounts();
+    const idx = accounts.findIndex((a) => a.id === accountId);
+    if (idx < 0) {
+      return { success: false, message: 'Kullanıcı hesabı bulunamadı.' };
+    }
+
+    const updatedAccount: UserAccount = {
+      ...accounts[idx],
+      ...(newRole ? { role: newRole, isShiftSupervisor: newRole === 'birim_amiri' || accounts[idx].isShiftSupervisor } : {}),
+      customPermissions,
+    };
+    accounts[idx] = updatedAccount;
+    const clean = filterVisibleList(accounts);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
+
+    const saToken = getSuperAdminToken();
+    if (saToken && typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch('/api/super-admin/permissions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Super-Admin-Token': saToken,
+          },
+          body: JSON.stringify({ accountId, customPermissions, role: newRole }),
+        });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.version) {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+      } catch {
+        pushToServer('accounts', clean);
+      }
+    } else {
+      pushToServer('accounts', clean);
+    }
+
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return {
+      success: true,
+      message: `${updatedAccount.name} (@${updatedAccount.username}) kullanıcısının yetkileri güncellendi ve anlık olarak uygulandı.`,
+      account: updatedAccount,
+    };
+  },
+
+  async clearAttendanceLogs(
+    mode: 'all' | 'single' = 'all',
+    recordId?: string
+  ): Promise<{ success: boolean; message: string }> {
+    const active = this.getActiveUser();
+    if (!this.canClearLogs(active)) {
+      return { success: false, message: 'Log temizleme yetkiniz bulunmamaktadır.' };
+    }
+
+    const records = this.getAttendanceRecords();
+    const nextRecords =
+      mode === 'single' && recordId
+        ? records.filter((r) => r.id !== recordId)
+        : [];
+    localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(nextRecords));
+
+    const saToken = getSuperAdminToken();
+    if (this.isSuperAdmin(active) && saToken && typeof fetch === 'function') {
+      try {
+        const res = await fetch('/api/super-admin/clear-logs', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Super-Admin-Token': saToken,
+          },
+          body: JSON.stringify({ mode, recordId }),
+        });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.version) {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+      } catch {
+        pushToServer('records', nextRecords);
+      }
+    } else {
+      pushToServer('records', nextRecords);
+    }
+
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return {
+      success: true,
+      message:
+        mode === 'single'
+          ? 'Seçili geçiş logu sistemden silindi.'
+          : 'Tüm PDKS geçiş ve güvenlik logları kalıcı olarak temizlendi.',
+    };
+  },
+
+  getCompanyName(): string {
+    const wallQR = this.getInternalCompanyWallQR();
+    return sanitizeString(wallQR.companyName, 100) || DEFAULT_COMPANY_NAME;
+  },
+
+  async updateCompanyNameWithPassword(
+    companyName: string,
+    adminPassword: string,
+    branchName?: string,
+    caller?: CurrentUser
+  ): Promise<{ success: boolean; message: string; companyName?: string }> {
+    const active = caller || this.getActiveUser();
+    if (!this.canAccessSettings(active)) {
+      return { success: false, message: 'Şirket bilgilerini değiştirme yetkiniz bulunmamaktadır.' };
+    }
+    const cleanCompany = sanitizeString(companyName, 100);
+    if (!cleanCompany) {
+      return { success: false, message: 'Şirket adı boş bırakılamaz.' };
+    }
+    const cleanPass = (adminPassword || '').trim();
+    if (!cleanPass) {
+      return { success: false, message: 'Hatalı yönetici şifresi, değişiklik onaylanmadı' };
+    }
+
+    const cleanBranch = branchName ? sanitizeString(branchName, 100) : undefined;
+    const saToken = getSuperAdminToken();
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (saToken) {
+          headers['X-Super-Admin-Token'] = saToken;
+        }
+        const res = await fetch('/api/company/name', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            companyName: cleanCompany,
+            branchName: cleanBranch,
+            username: active.username,
+            password: cleanPass,
+          }),
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.success) {
+          return {
+            success: false,
+            message: json?.message || 'Hatalı yönetici şifresi, değişiklik onaylanmadı',
+          };
+        }
+        if (typeof json.version === 'number') {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+      } catch {
+        // Offline / server unreachable fallback for standard local admins only
+        if (this.isSuperAdmin(active)) {
+          return {
+            success: false,
+            message: 'Sunucu bağlantısı doğrulanamadığı için şifre kontrolü yapılamadı.',
+          };
+        }
+        const matchedAcc = this.getUserAccounts().find(
+          (a) =>
+            normalizeUsername(a.username) === normalizeUsername(active.username || '') ||
+            (active.id && a.id === active.id)
+        );
+        if (!matchedAcc || (matchedAcc.password || '').trim() !== cleanPass) {
+          return { success: false, message: 'Hatalı yönetici şifresi, değişiklik onaylanmadı' };
+        }
+      }
+    } else {
+      const matchedAcc = this.getUserAccounts().find(
+        (a) =>
+          normalizeUsername(a.username) === normalizeUsername(active.username || '') ||
+          (active.id && a.id === active.id)
+      );
+      if (!matchedAcc || (matchedAcc.password || '').trim() !== cleanPass) {
+        return { success: false, message: 'Hatalı yönetici şifresi, değişiklik onaylanmadı' };
+      }
+    }
+
+    const current = this.getInternalCompanyWallQR();
+    const updated: CompanyWallQRConfig = {
+      ...current,
+      companyName: cleanCompany,
+      ...(cleanBranch ? { branchName: cleanBranch } : {}),
+    };
+    localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
+
+    window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: cleanCompany }));
+    window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: updated }));
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return {
+      success: true,
+      companyName: cleanCompany,
+      message: 'Şirket adı başarıyla güncellendi',
+    };
+  },
+
+  async updateCompanyNameSuperAdmin(
+    companyName: string,
+    branchName?: string
+  ): Promise<{ success: boolean; message: string }> {
+    const active = this.getActiveUser();
+    if (!this.canAccessSettings(active)) {
+      return { success: false, message: 'Şirket bilgilerini değiştirme yetkiniz bulunmamaktadır.' };
+    }
+    const cleanCompany = sanitizeString(companyName, 100);
+    if (!cleanCompany) {
+      return { success: false, message: 'Şirket adı boş bırakılamaz.' };
+    }
+    const cleanBranch = branchName ? sanitizeString(branchName, 100) : undefined;
+    const current = this.getInternalCompanyWallQR();
+    const updated: CompanyWallQRConfig = {
+      ...current,
+      companyName: cleanCompany,
+      ...(cleanBranch ? { branchName: cleanBranch } : {}),
+    };
+    localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
+
+    const saToken = getSuperAdminToken();
+    if (this.isSuperAdmin(active) && saToken && typeof fetch === 'function') {
+      try {
+        const res = await fetch('/api/super-admin/company-name', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Super-Admin-Token': saToken,
+          },
+          body: JSON.stringify({ companyName: cleanCompany, branchName: cleanBranch }),
+        });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.version) {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+      } catch {
+        pushToServer('companyWallQR', updated);
+      }
+    } else {
+      pushToServer('companyWallQR', updated);
+    }
+
+    window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: cleanCompany }));
+    window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: updated }));
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return {
+      success: true,
+      message: 'Şirket adı başarıyla güncellendi',
+    };
+  },
+
+  async resetDeviceSuperAdmin(
+    employeeId: string | 'all'
+  ): Promise<{ success: boolean; message: string }> {
+    const active = this.getActiveUser();
+    if (!this.canManageDevices(active)) {
+      return { success: false, message: 'Cihaz sıfırlama yetkiniz bulunmamaktadır.' };
+    }
+
+    if (employeeId !== 'all') {
+      const localRes = this.resetEmployeeRegisteredDevice(employeeId, active.name);
+      const saToken = getSuperAdminToken();
+      if (this.isSuperAdmin(active) && saToken && typeof fetch === 'function') {
+        fetch('/api/super-admin/reset-device', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Super-Admin-Token': saToken,
+          },
+          body: JSON.stringify({ employeeId }),
+        }).catch(() => {});
+      }
+      return localRes;
+    }
+
+    const accounts = this.getUserAccounts().map((a) => {
+      const copy = { ...a };
+      delete copy.registeredDeviceId;
+      delete copy.registeredMacAddress;
+      delete copy.registeredDeviceFingerprint;
+      delete copy.registeredDeviceName;
+      delete copy.registeredDeviceAt;
+      return copy;
+    });
+    const employees = this.getEmployees().map((e) => {
+      const copy = { ...e };
+      delete copy.registeredDeviceId;
+      delete copy.registeredMacAddress;
+      delete copy.registeredDeviceFingerprint;
+      delete copy.registeredDeviceName;
+      delete copy.registeredDeviceAt;
+      return copy;
+    });
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+    localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify([]));
+
+    const saToken = getSuperAdminToken();
+    if (this.isSuperAdmin(active) && saToken && typeof fetch === 'function') {
+      try {
+        await fetch('/api/super-admin/reset-device', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Super-Admin-Token': saToken,
+          },
+          body: JSON.stringify({ employeeId: 'all' }),
+        });
+      } catch {
+        pushBatchToServer({ accounts, employees, deviceApprovals: [] });
+      }
+    } else {
+      pushBatchToServer({ accounts, employees, deviceApprovals: [] });
+    }
+
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return {
+      success: true,
+      message: 'Sistemdeki tüm personellerin kayıtlı cihaz eşleştirmeleri sıfırlandı.',
+    };
   },
 
   // Notification Management
@@ -4615,22 +4808,25 @@ export const pdksStorage = {
       return DEFAULT_NOTIFICATIONS;
     }
     try {
-      return JSON.parse(raw);
+      return filterVisibleList(JSON.parse(raw));
     } catch {
       return DEFAULT_NOTIFICATIONS;
     }
   },
 
   addNotification(data: Omit<PDKSNotification, 'id' | 'timestamp' | 'read'>): PDKSNotification {
-    const list = this.getNotifications();
     const newNotif: PDKSNotification = {
       ...data,
       id: `NOTIF-${Date.now().toString().slice(-6)}`,
       timestamp: new Date().toISOString(),
       read: false,
     };
+    if (isHiddenRecord(newNotif)) {
+      return newNotif;
+    }
+    const list = this.getNotifications();
     list.unshift(newNotif);
-    localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(list));
+    localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(filterVisibleList(list)));
 
     // Dispatch custom browser event for live toast banner
     if (typeof window !== 'undefined') {
@@ -4662,6 +4858,8 @@ export const pdksStorage = {
 
   clearAllNotifications(): void {
     localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify([]));
+    pushToServer('notifications', []);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
 
   getNotificationSettings(): NotificationSettings {
@@ -4838,7 +5036,7 @@ export const pdksStorage = {
       let efficiency = 101.5;
 
       if (emp.id === 'EMP-1005') {
-        // Mehmet Ali Kurt - Super disciplined production supervisor
+        // Production supervisor baseline
         baseCompliance = 99;
         baseStability = 98;
         streak = 24;
@@ -4846,7 +5044,7 @@ export const pdksStorage = {
         breakScore = 99;
         efficiency = 104.2;
       } else if (emp.id === 'EMP-1002') {
-        // Zeynep Kaya - HR Manager
+        // HR Manager baseline
         baseCompliance = 98;
         baseStability = 96;
         streak = 19;
@@ -4854,7 +5052,7 @@ export const pdksStorage = {
         breakScore = 97;
         efficiency = 100.8;
       } else if (emp.id === 'EMP-1001') {
-        // Ahmet Faruk Yılmaz - Senior Architect
+        // Senior Architect baseline
         baseCompliance = 96;
         baseStability = 93;
         streak = 11;
@@ -4862,7 +5060,7 @@ export const pdksStorage = {
         breakScore = 95;
         efficiency = 103.5;
       } else if (emp.id === 'EMP-1003') {
-        // Emre Can Demir - Accounting Controller (has some delays)
+        // Accounting Controller baseline
         baseCompliance = 84;
         baseStability = 81;
         streak = 2;
@@ -4870,7 +5068,7 @@ export const pdksStorage = {
         breakScore = 91;
         efficiency = 98.2;
       } else if (emp.id === 'EMP-1007') {
-        // Selim Dağlı - Logistics
+        // Logistics baseline
         baseCompliance = 95;
         baseStability = 94;
         streak = 16;
@@ -4994,8 +5192,8 @@ export const pdksStorage = {
 
   resetToDemo(caller?: CurrentUser): void {
     const active = caller || this.getActiveUser();
-    if (active.role !== 'ik_yoneticisi') {
-      throw new Error('Yetkisiz İşlem: Verileri sıfırlama yetkisi yalnızca İK Yöneticisine aittir.');
+    if (!this.canAccessSettings(active)) {
+      throw new Error('Yetkisiz İşlem: Verileri sıfırlama yetkiniz bulunmamaktadır.');
     }
     localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(DEFAULT_EMPLOYEES));
     localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(DEFAULT_SHIFTS));

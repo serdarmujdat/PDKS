@@ -34,7 +34,7 @@ export const SystemArchitectureModal: React.FC<SystemArchitectureModalProps> = (
   if (!isOpen) return null;
 
   const sqlSchemaCode = `-- ==========================================================
--- ASEM PDKS SİSTEMİ - İLİŞKİSEL VERİTABANI ŞEMASI (PostgreSQL / SQLite)
+-- PDKS PRO SİSTEMİ - İLİŞKİSEL VERİTABANI ŞEMASI (PostgreSQL / SQLite)
 -- ==========================================================
 
 -- 1. KULLANICILAR VE YETKİ HESAPLARI TABLOSU
@@ -83,7 +83,7 @@ CREATE TABLE shifts (
 -- 4. SABİT ŞİRKET DUVAR QR KODLARI VE GEOFENCE TABLOSU
 CREATE TABLE company_wall_qr_tokens (
     id VARCHAR(36) PRIMARY KEY,
-    token_string VARCHAR(100) UNIQUE NOT NULL, -- örn: ASEM:WALL:HQ-ISTANBUL:2026-X8F9
+    token_string VARCHAR(100) UNIQUE NOT NULL, -- örn: PDKS:WALL:HQ-MAIN:2026-X8F9
     company_name VARCHAR(100) NOT NULL,
     branch_name VARCHAR(100) NOT NULL,
     installation_location VARCHAR(150),
@@ -118,18 +118,18 @@ CREATE INDEX idx_records_timestamp ON attendance_records (server_timestamp DESC)
 CREATE INDEX idx_emp_presence ON employees (current_presence);`;
 
   const apiEndpointsCode = `// ==========================================================
-// ASEM PDKS REST API UÇ NOKTALARI (Node.js/Express & Python)
+// PDKS PRO REST API UÇ NOKTALARI (Node.js/Express & Python)
 // ==========================================================
 
 1. POST /api/auth/login
    - Amaç: Kullanıcı adı ve şifre ile güvenli oturum açma
-   - Body: { "username": "ahmet.yilmaz", "password": "******" }
+   - Body: { "username": "personel1", "password": "******" }
    - Yanıt: {
        "success": true,
        "token": "jwt_token_here",
        "user": {
          "id": "ACC-1002",
-         "username": "ahmet.yilmaz",
+         "username": "personel1",
          "role": "personel",
          "employeeId": "EMP-1001",
          "permissions": { "canCheckInOut": true, "canTakeBreak": true }
@@ -162,7 +162,7 @@ CREATE INDEX idx_emp_presence ON employees (current_presence);`;
    - Headers: x-api-key: <GİZLİ_API_ANAHTARI>
    - Yanıt: {
        "token": "<GİZLİ_API_ANAHTARI>",
-       "companyName": "Asem Personel Devam Kontrol Sistemleri",
+       "companyName": "Kurum / Şirket Adı",
        "branchName": "İşyeri",
        "enableGeofence": true,
        "radiusMeters": 200
@@ -175,17 +175,19 @@ CREATE INDEX idx_emp_presence ON employees (current_presence);`;
    - Amaç: Kim içeride, kim molada, kim ayrıldı anlık canlı durum tablosu`;
 
   const setupInstructions = `# ==========================================================
-# ASEM PDKS - ADIM ADIM KURULUM VE ÇALIŞTIRMA TALİMATI
+# PDKS PRO - ADIM ADIM KURULUM VE ÇALIŞTIRMA TALİMATI
 # ==========================================================
 
 1. GEREKSİNİMLER:
    - Node.js 18+ veya 20+
    - npm veya bun / yarn
 
-2. KURULUM:
+2. KURULUM VE ORTAM DEĞİŞKENLERİ:
    git clone <repo_url>
-   cd asem-pdks
+   cd pdks-pro
    npm install
+   cp .env.example .env
+   # .env dosyası içine kendi API anahtarlarınızı ve Firebase ayarlarınızı girin.
 
 3. GELİŞTİRME SUNUCUSUNU ÇALIŞTIRMA:
    npm run dev
@@ -198,7 +200,7 @@ CREATE INDEX idx_emp_presence ON employees (current_presence);`;
 5. İŞLETME İÇİ KURULUM ADIMLARI:
    Adım A: Yönetici paneline girin ("Şirket Duvarı QR Kodu Oluşturucu" butonuna tıklayın).
    Adım B: "Yazdır (A4 Poster)" butonuna basarak poster çıktısını alın ve işyeri giriş turnikesine asın.
-   Adım C: Personel telefonundan tarayıcıyı açarak Asem'e girer, kullanıcı adı/şifresiyle oturum açar.
+   Adım C: Personel telefonundan tarayıcıyı açarak sisteme girer, kullanıcı adı/şifresiyle oturum açar.
    Adım D: "Kamerayı Aç" penceresinden duvardaki QR'ı okuttuğunda PDKS akıllı durum makinesi otomatik çalışır!`;
 
   return (
@@ -211,7 +213,7 @@ CREATE INDEX idx_emp_presence ON employees (current_presence);`;
               <Layers className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h2 className="text-lg font-bold">Asem PDKS - Sistem Mimarisi & Geliştirici Kılavuzu</h2>
+              <h2 className="text-lg font-bold">PDKS Pro - Sistem Mimarisi & Geliştirici Kılavuzu</h2>
               <p className="text-xs text-slate-300">
                 Uçtan uca durum makinesi, veritabanı şemaları, REST API rotaları ve kurulum rehberi
               </p>
@@ -518,7 +520,7 @@ CREATE INDEX idx_emp_presence ON employees (current_presence);`;
         {/* Modal Footer */}
         <div className="bg-slate-50 px-6 py-3.5 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-700">Asem PDKS v2.4</span>
+            <span className="font-semibold text-slate-700">PDKS Pro v2.4</span>
             <span>·</span>
             <span>Kurumsal Web Platformu</span>
           </div>

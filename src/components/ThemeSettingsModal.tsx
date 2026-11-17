@@ -3,7 +3,7 @@ import { Sun, Moon, Palette, Check, X, UserCheck, Cloud, RefreshCw } from 'lucid
 import type { CurrentUser, ThemeId } from '../types/pdks';
 import { APP_THEMES, getThemeById, type ThemeDefinition } from '../themes/themes';
 import { pdksStorage } from '../services/storage';
-import { auth, signInWithGoogleForCloudSync } from '../firebase';
+import { getCurrentFirebaseUser, signInWithGoogleForCloudSync } from '../firebase';
 
 interface ThemeSettingsModalProps {
   isOpen: boolean;
@@ -23,14 +23,14 @@ export const ThemeSettingsModal: React.FC<ThemeSettingsModalProps> = ({
   const [selectedTheme, setSelectedTheme] = useState<ThemeId>(activeTheme);
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [isCloudLinked, setIsCloudLinked] = useState<boolean>(Boolean(auth.currentUser));
+  const [isCloudLinked, setIsCloudLinked] = useState<boolean>(Boolean(getCurrentFirebaseUser()));
   const [isLinkingCloud, setIsLinkingCloud] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
     setSelectedTheme(activeTheme);
     setFeedback(null);
-    setIsCloudLinked(Boolean(auth.currentUser));
+    setIsCloudLinked(Boolean(getCurrentFirebaseUser()));
   }, [isOpen, activeTheme]);
 
   if (!isOpen) return null;
@@ -59,7 +59,7 @@ export const ThemeSettingsModal: React.FC<ThemeSettingsModalProps> = ({
     setFeedback(null);
     try {
       await signInWithGoogleForCloudSync();
-      setIsCloudLinked(Boolean(auth.currentUser));
+      setIsCloudLinked(Boolean(getCurrentFirebaseUser()));
       const res = await pdksStorage.saveUserTheme(selectedTheme, currentUser);
       setFeedback(
         res.cloudSynced

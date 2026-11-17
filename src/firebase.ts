@@ -1,5 +1,5 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, User } from 'firebase/auth';
+import { initializeApp, type FirebaseApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, type Auth, type User } from 'firebase/auth';
 import {
   getFirestore,
   doc,
@@ -9,15 +9,48 @@ import {
   setDoc,
   onSnapshot,
   serverTimestamp,
-  Unsubscribe,
+  type Firestore,
+  type Unsubscribe,
 } from 'firebase/firestore';
 import type { ThemeId } from './types/pdks';
 import { isValidThemeId } from './themes/themes';
-import firebaseConfig from '../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
+const env = (import.meta as any).env || {};
+
+const firebaseConfig = {
+  apiKey: String(env.VITE_FIREBASE_API_KEY || '').trim(),
+  authDomain: String(env.VITE_FIREBASE_AUTH_DOMAIN || '').trim(),
+  projectId: String(env.VITE_FIREBASE_PROJECT_ID || '').trim(),
+  storageBucket: String(env.VITE_FIREBASE_STORAGE_BUCKET || '').trim(),
+  messagingSenderId: String(env.VITE_FIREBASE_MESSAGING_SENDER_ID || '').trim(),
+  appId: String(env.VITE_FIREBASE_APP_ID || '').trim(),
+};
+
+const firestoreDatabaseId = String(env.VITE_FIREBASE_DATABASE_ID || '').trim() || undefined;
+
+export const isFirebaseConfigured = Boolean(
+  firebaseConfig.apiKey &&
+    firebaseConfig.projectId &&
+    !firebaseConfig.apiKey.includes('your_firebase_api_key') &&
+    !firebaseConfig.projectId.includes('your-project')
+);
+
+let app: FirebaseApp | null = null;
+export let db: Firestore | null = null;
+export let auth: Auth | null = null;
+
+if (isFirebaseConfigured) {
+  try {
+    app = initializeApp(firebaseConfig);
+    db = firestoreDatabaseId ? getFirestore(app, firestoreDatabaseId) : getFirestore(app);
+    auth = getAuth(app);
+  } catch (err) {
+    console.warn('Firebase initialization skipped:', err);
+    app = null;
+    db = null;
+    auth = null;
+  }
+}
 
 export const COMPANY_LOGO_MAX_LENGTH = 900000;
 const BRANDING_COLLECTION = 'company_branding';
@@ -58,13 +91,13 @@ export function handleFirestoreError(
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+      emailVerified: auth?.currentUser?.emailVerified,
+      isAnonymous: auth?.currentUser?.isAnonymous,
+      tenantId: auth?.currentUser?.tenantId,
       providerInfo:
-        auth.currentUser?.providerData?.map((provider) => ({
+        auth?.currentUser?.providerData?.map((provider) => ({
           providerId: provider.providerId,
           email: provider.email,
         })) || [],
@@ -77,6 +110,7 @@ export function handleFirestoreError(
 }
 
 async function testConnection(): Promise<void> {
+  if (!db) return;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
@@ -86,20 +120,62 @@ async function testConnection(): Promise<void> {
   }
 }
 
-if (typeof window !== 'undefined') {
+if (typeof window !== 'undefined' && isFirebaseConfigured) {
   void testConnection();
 }
 
+export function getCurrentFirebaseUser(): User | null {
+  return auth?.currentUser || null;
+}
+
+export function subscribeFirebaseAuth(callback: (user: User | null) => void): () => void {
+  if (!auth) {
+    callback(null);
+    return () => {};
+  }
+  return onAuthStateChanged(auth, callback);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+    promise.then(
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 export async function signInWithGoogleForCloudSync(): Promise<User> {
+  if (!auth) {
+    throw new Error('Firebase bulut senkronizasyonu yapılandırılmamış (.env dosyasında VITE_FIREBASE_* değişkenlerini tanımlayın).');
+  }
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: 'select_account' });
-  const result = await signInWithPopup(auth, provider);
+  const result = await withTimeout(
+    signInWithPopup(auth, provider),
+    45000,
+    'Google oturum açma penceresi zaman aşımına uğradı. Lütfen pop-up engelleyicisini kontrol edin.'
+  );
   return result.user;
 }
 
 export async function fetchCompanyLogoFromFirestore(): Promise<string | null> {
+  if (!db) return null;
   try {
-    const snap = await getDocFromServer(doc(db, BRANDING_COLLECTION, LOGO_DOC_ID));
+    const snap = await withTimeout(
+      getDocFromServer(doc(db, BRANDING_COLLECTION, LOGO_DOC_ID)),
+      5000,
+      'Firebase logo okuma zaman aşımına uğradı.'
+    );
     if (!snap.exists()) {
       return null;
     }
@@ -125,6 +201,9 @@ export async function fetchCompanyLogoFromFirestore(): Promise<string | null> {
 export function subscribeCompanyLogoFromFirestore(
   onLogo: (logoUrl: string) => void
 ): Unsubscribe {
+  if (!db) {
+    return () => {};
+  }
   const logoRef = doc(db, BRANDING_COLLECTION, LOGO_DOC_ID);
   return onSnapshot(
     logoRef,
@@ -150,6 +229,9 @@ export function subscribeCompanyLogoFromFirestore(
 }
 
 export async function saveCompanyLogoToFirestore(logoUrl: string): Promise<void> {
+  if (!db || !auth) {
+    throw new Error('Firebase bulut senkronizasyonu yapılandırılmamış.');
+  }
   const user = auth.currentUser;
   if (!user) {
     throw new Error('Bulut kaydı için önce yetkili Google hesabı ile oturum açmalısınız.');
@@ -163,12 +245,20 @@ export async function saveCompanyLogoToFirestore(logoUrl: string): Promise<void>
   }
 
   try {
-    await setDoc(doc(db, BRANDING_COLLECTION, LOGO_DOC_ID), {
-      logoUrl: trimmed,
-      updatedAt: serverTimestamp(),
-      updatedByUid: user.uid,
-    });
+    await withTimeout(
+      setDoc(doc(db, BRANDING_COLLECTION, LOGO_DOC_ID), {
+        logoUrl: trimmed,
+        updatedAt: serverTimestamp(),
+        updatedByUid: user.uid,
+      }),
+      6000,
+      'Firebase bulut kaydı zaman aşımına uğradı.'
+    );
   } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes('zaman aşımına')) {
+      throw new Error(msg);
+    }
     handleFirestoreError(error, OperationType.WRITE, LOGO_DOC_PATH);
   }
 }
@@ -185,6 +275,7 @@ export async function saveUserThemeToFirestore(
   rawAccountKey: string,
   themeId: ThemeId
 ): Promise<boolean> {
+  if (!db || !auth) return false;
   const user = auth.currentUser;
   if (!user || !user.emailVerified || !isValidThemeId(themeId)) {
     return false;
@@ -208,6 +299,7 @@ export async function saveUserThemeToFirestore(
 }
 
 export async function fetchAllUserThemesFromFirestore(): Promise<Record<string, ThemeId>> {
+  if (!db || !auth) return {};
   const user = auth.currentUser;
   if (!user || !user.emailVerified) {
     return {};

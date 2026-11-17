@@ -31,6 +31,7 @@ import { Employee, AttendanceRecord, Department, OvertimeRequest, LeaveRequest, 
 import { pdksStorage, getTodayString } from '../services/storage';
 import { NotificationCenter } from './NotificationCenter';
 import { CompanyLogoImage } from './CompanyLogoImage';
+import { CompanySettingsPanel } from './CompanySettingsPanel';
 
 interface DashboardOverviewProps {
   onNavigateToKiosk: () => void;
@@ -41,6 +42,7 @@ interface DashboardOverviewProps {
   onOpenLogoManager?: () => void;
   currentUser?: import('../types/pdks').CurrentUser;
   companyLogo?: string;
+  companyName?: string;
 }
 
 export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
@@ -52,9 +54,13 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   onOpenLogoManager,
   currentUser,
   companyLogo: propCompanyLogo,
+  companyName: propCompanyName,
 }) => {
   const activeUser = currentUser || pdksStorage.getActiveUser();
-  const isHRManager = activeUser.role === 'ik_yoneticisi';
+  const isHRManager = pdksStorage.isHRorSuperAdmin(activeUser);
+  const canManageSettings = pdksStorage.canAccessSettings(activeUser);
+  const canApprove = pdksStorage.canApproveRequests(activeUser);
+  const canExport = pdksStorage.canExportReports(activeUser);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [overtimeRequests, setOvertimeRequests] = useState<OvertimeRequest[]>([]);
@@ -69,10 +75,15 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   const [unreadAlertCount, setUnreadAlertCount] = useState(0);
   const [approvalFeedback, setApprovalFeedback] = useState<string | null>(null);
   const [companyLogo, setCompanyLogo] = useState<string>(() => propCompanyLogo || pdksStorage.getCompanyLogo());
+  const [companyName, setCompanyName] = useState<string>(() => propCompanyName || pdksStorage.getCompanyName());
 
   useEffect(() => {
     if (propCompanyLogo) setCompanyLogo(propCompanyLogo);
   }, [propCompanyLogo]);
+
+  useEffect(() => {
+    if (propCompanyName) setCompanyName(propCompanyName);
+  }, [propCompanyName]);
 
   const loadData = () => {
     setEmployees(pdksStorage.getEmployees());
@@ -82,12 +93,13 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
     setDeviceApprovals(pdksStorage.getDeviceEntryApprovals());
     setNowTick(Date.now());
     setCompanyLogo(pdksStorage.getCompanyLogo());
+    setCompanyName(pdksStorage.getCompanyName());
     const allNotifs = pdksStorage.getNotifications();
-    const notifs = allNotifs.filter((n) => !n.read && (!n.targetRole || n.targetRole === activeUser.role));
+    const notifs = allNotifs.filter((n) => !n.read && (!n.targetRole || n.targetRole === activeUser.role || isHRManager || canApprove));
     setUnreadAlertCount(notifs.length);
     setCrossDeviceAlerts(
       allNotifs
-        .filter((n) => n.metadata?.isCrossEmployeeDevice && !n.read && (!n.targetRole || n.targetRole === activeUser.role))
+        .filter((n) => n.metadata?.isCrossEmployeeDevice && !n.read && (!n.targetRole || n.targetRole === activeUser.role || isHRManager || canApprove))
         .slice(0, 4)
     );
   };
@@ -109,14 +121,25 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         setCompanyLogo(pdksStorage.getCompanyLogo());
       }
     };
+    const handleCompanyNameEvent = (e: any) => {
+      if (e?.detail && typeof e.detail === 'string') {
+        setCompanyName(e.detail);
+      } else {
+        setCompanyName(pdksStorage.getCompanyName());
+      }
+    };
     window.addEventListener('pdks-notification', handleLiveEvent);
     window.addEventListener('pdks-data-synced', handleLiveEvent);
     window.addEventListener('pdks-logo-updated', handleLogoEvent);
+    window.addEventListener('pdks-company-name-updated', handleCompanyNameEvent);
+    window.addEventListener('pdks-wall-qr-updated', handleCompanyNameEvent);
     return () => {
       clearInterval(timer);
       window.removeEventListener('pdks-notification', handleLiveEvent);
       window.removeEventListener('pdks-data-synced', handleLiveEvent);
       window.removeEventListener('pdks-logo-updated', handleLogoEvent);
+      window.removeEventListener('pdks-company-name-updated', handleCompanyNameEvent);
+      window.removeEventListener('pdks-wall-qr-updated', handleCompanyNameEvent);
     };
   }, []);
 
@@ -281,7 +304,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 pb-3 sm:pb-4 border-b border-slate-200">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-            Asem Canlı Yönetim Panosu
+            {companyName} · Canlı Yönetim Panosu
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5 sm:mt-1">
             Bugünkü katılım durumu, canlı geçiş hareketleri ve personel devam istatistikleri.
@@ -289,22 +312,22 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         </div>
 
         <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
-          {isHRManager && onOpenLogoManager && (
+          {canManageSettings && onOpenLogoManager && (
             <button
               onClick={onOpenLogoManager}
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-purple-700 bg-purple-50 border border-purple-200 hover:bg-purple-100 rounded-lg shadow-xs transition-colors cursor-pointer"
-              title="Şirket logosunu standart boyutlarda ekleyin veya güncelleyin (İK Yetkisi)"
+              title="Şirket logosunu standart boyutlarda ekleyin veya güncelleyin"
             >
               <ImageIcon className="w-3.5 h-3.5 text-purple-600" />
               <span>Kurumsal Logo</span>
             </button>
           )}
 
-          {isHRManager && onOpenWallQR && (
+          {canManageSettings && onOpenWallQR && (
             <button
               onClick={onOpenWallQR}
               className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 rounded-lg shadow-xs transition-colors cursor-pointer"
-              title="Şirket duvarına asılacak A4 poster QR kodunu görüntüle ve yazdır (Yalnızca İK)"
+              title="Şirket duvarına asılacak A4 poster QR kodunu görüntüle ve yazdır"
             >
               <Printer className="w-3.5 h-3.5 text-indigo-600" />
               <span>Duvar QR'ı</span>
@@ -321,13 +344,15 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             </button>
           )}
 
-          <button
-            onClick={handleExportCSV}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg shadow-xs transition-colors cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5 text-slate-500" />
-            <span>Excel / CSV</span>
-          </button>
+          {canExport && (
+            <button
+              onClick={handleExportCSV}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg shadow-xs transition-colors cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 text-slate-500" />
+              <span>Excel / CSV</span>
+            </button>
+          )}
 
           <button
             onClick={() => setIsNotificationModalOpen(true)}
@@ -374,7 +399,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           <div className="w-[240px] h-[60px] max-w-full rounded-xl border-2 border-dashed border-indigo-200 bg-slate-50 flex items-center justify-center p-2 shrink-0 self-center sm:self-auto shadow-2xs">
             <CompanyLogoImage
               src={companyLogo}
-              alt="Kurumsal Standart Şirket Logosu"
+              alt={companyName}
+              companyName={companyName}
               className="max-h-[48px] max-w-[220px] w-auto h-auto object-contain"
               variant="light"
             />
@@ -408,6 +434,14 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           </button>
         )}
       </div>
+
+      {/* Yönetici Paneli - Sistem / Şirket Ayarları (Mevcut Şirket Adı + Yönetici Şifresi Kilidi) */}
+      {canManageSettings && (
+        <CompanySettingsPanel
+          currentUser={activeUser}
+          onCompanyUpdated={(updatedName) => setCompanyName(updatedName)}
+        />
+      )}
 
 
       {/* Primary KPI Grid (Tabular numerals enforced, Mobile Optimized) */}
@@ -514,7 +548,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       )}
 
       {/* KRİTİK CİHAZ GÜVENLİĞİ BİLDİRİMLERİ: Başka Personel Cihazı ile Giriş */}
-      {isHRManager && crossDeviceAlerts.length > 0 && (
+      {(isHRManager || canApprove) && crossDeviceAlerts.length > 0 && (
         <div className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3 animate-fade-in">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div className="flex items-center gap-2.5">
@@ -758,7 +792,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                           })}
                         </span>
                       </div>
-                      {isHRManager ? (
+                      {canApprove ? (
                         <div className="flex flex-wrap items-center justify-end gap-1.5">
                           <button
                             type="button"
@@ -845,24 +879,26 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                     <span className="text-[10px] text-slate-400 font-mono">
                       {new Date(ot.appliedAt).toLocaleDateString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
                     </span>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => handleRejectOvertime(ot.id)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
-                        title="Talebi Reddet"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                        <span>Reddet</span>
-                      </button>
-                      <button
-                        onClick={() => handleApproveOvertime(ot.id)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors cursor-pointer"
-                        title="Fazla Mesaiyi Onayla ve Personele Bildirim Gönder"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Onayla</span>
-                      </button>
-                    </div>
+                    {canApprove && (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleRejectOvertime(ot.id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                          title="Talebi Reddet"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span>Reddet</span>
+                        </button>
+                        <button
+                          onClick={() => handleApproveOvertime(ot.id)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors cursor-pointer"
+                          title="Fazla Mesaiyi Onayla ve Personele Bildirim Gönder"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Onayla</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -914,24 +950,26 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                     <span className="text-[10px] text-slate-400 font-mono">
                       {new Date(lr.appliedAt).toLocaleDateString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
                     </span>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => handleRejectLeave(lr.id)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
-                        title="İzni Reddet"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                        <span>Reddet</span>
-                      </button>
-                      <button
-                        onClick={() => handleApproveLeave(lr.id)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors cursor-pointer"
-                        title="İzni Onayla ve Personele Bildir"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Onayla</span>
-                      </button>
-                    </div>
+                    {canApprove && (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleRejectLeave(lr.id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                          title="İzni Reddet"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span>Reddet</span>
+                        </button>
+                        <button
+                          onClick={() => handleApproveLeave(lr.id)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors cursor-pointer"
+                          title="İzni Onayla ve Personele Bildir"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Onayla</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}

@@ -41,6 +41,20 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
   const [editingPasswordAccId, setEditingPasswordAccId] = useState<string | null>(null);
   const [newPasswordValue, setNewPasswordValue] = useState<string>('');
   const [revealedPasswordAccIds, setRevealedPasswordAccIds] = useState<Set<string>>(new Set());
+  const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
+
+  React.useEffect(() => {
+    const syncName = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') setCompanyName(e.detail);
+      else setCompanyName(pdksStorage.getCompanyName());
+    };
+    window.addEventListener('pdks-company-name-updated', syncName);
+    window.addEventListener('pdks-data-synced', syncName);
+    return () => {
+      window.removeEventListener('pdks-company-name-updated', syncName);
+      window.removeEventListener('pdks-data-synced', syncName);
+    };
+  }, []);
 
   const togglePasswordVisibility = (id: string) => {
     setRevealedPasswordAccIds((prev) => {
@@ -62,7 +76,7 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
     setFormEmployeeId(empId);
     const emp = employees.find((e) => e.id === empId);
     if (emp) {
-      // Create clean, Turkish-normalized username, e.g. "Ahmet Faruk Yılmaz" -> "ahmet.yilmaz"
+      // Create clean, Turkish-normalized username, e.g. "Örnek Personel 1" -> "ornek.personel.1"
       const suggested = slugifyNameToUsername(emp.fullName);
       setFormUsername(suggested);
     }
@@ -111,7 +125,7 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
   };
 
   const handleCopyCredentials = (acc: UserAccount) => {
-    const text = `Asem PDKS Giriş Bilgileri\nKullanıcı Adı: ${acc.username}\nŞifre: ${acc.password}\nRol: ${
+    const text = `${companyName} · PDKS Giriş Bilgileri\nKullanıcı Adı: ${acc.username}\nŞifre: ${acc.password}\nRol: ${
       acc.role === 'personel' ? 'Personel (Kısıtlı Yetki)' : acc.role
     }\nGiriş URL: ${window.location.origin}`;
 
@@ -808,7 +822,7 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                 <div>
                   <span className="font-bold">Yeni Personel Hesabı Tanımlama</span>
                   <p className="text-[11px] text-indigo-700 mt-0.5">
-                    Bir personel seçiniz, giriş yapabileceği kullanıcı adı ve şifreyi belirleyiniz. Hesap oluşturulduğunda kullanıcı bu bilgilerle Asem PDKS sistemine erişebilecektir.
+                    Bir personel seçiniz, giriş yapabileceği kullanıcı adı ve şifreyi belirleyiniz. Hesap oluşturulduğunda kullanıcı bu bilgilerle {companyName} PDKS sistemine erişebilecektir.
                   </p>
                 </div>
               </div>

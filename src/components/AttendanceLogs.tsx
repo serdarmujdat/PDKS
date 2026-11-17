@@ -1,11 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Search, Filter, Plus, ArrowDownRight, ArrowUpRight, Coffee, Calendar, Shield, ShieldAlert, Smartphone, Clock, X, Check } from 'lucide-react';
+import { Download, Search, Filter, Plus, ArrowDownRight, ArrowUpRight, Coffee, Calendar, Shield, ShieldAlert, Smartphone, Clock, X, Check, Trash2 } from 'lucide-react';
 import { AttendanceRecord, Employee, Department, ActionType } from '../types/pdks';
 import { pdksStorage, getTodayString } from '../services/storage';
 
 export const AttendanceLogs: React.FC = () => {
+  const activeUser = pdksStorage.getActiveUser();
+  const canCreate = pdksStorage.canCreateEmployee(activeUser);
+  const canExport = pdksStorage.canExportReports(activeUser);
+  const canClear = pdksStorage.canClearLogs(activeUser);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
 
   // Filter state
   const [searchQuery, setSearchQuery] = useState('');
@@ -27,16 +33,25 @@ export const AttendanceLogs: React.FC = () => {
   const loadData = () => {
     setRecords(pdksStorage.getAttendanceRecords());
     setEmployees(pdksStorage.getEmployees());
+    setCompanyName(pdksStorage.getCompanyName());
   };
 
   useEffect(() => {
     loadData();
     const handleSync = () => loadData();
+    const handleNameSync = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') setCompanyName(e.detail);
+      else setCompanyName(pdksStorage.getCompanyName());
+    };
     window.addEventListener('pdks-data-synced', handleSync);
     window.addEventListener('pdks-notification', handleSync);
+    window.addEventListener('pdks-company-name-updated', handleNameSync);
+    window.addEventListener('pdks-wall-qr-updated', handleNameSync);
     return () => {
       window.removeEventListener('pdks-data-synced', handleSync);
       window.removeEventListener('pdks-notification', handleSync);
+      window.removeEventListener('pdks-company-name-updated', handleNameSync);
+      window.removeEventListener('pdks-wall-qr-updated', handleNameSync);
     };
   }, []);
 
@@ -145,7 +160,11 @@ export const AttendanceLogs: React.FC = () => {
 
     const csvContent =
       'data:text/csv;charset=utf-8,\uFEFF' +
-      [headers.join(';'), ...rows.map((row) => row.join(';'))].join('\n');
+      [
+        `Kurum / Şirket;${companyName};Tarih;${getTodayString()}`,
+        headers.join(';'),
+        ...rows.map((row) => row.join(';')),
+      ].join('\n');
 
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
@@ -162,7 +181,7 @@ export const AttendanceLogs: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-            Giriş - Çıkış Hareket Kayıtları
+            {companyName} · Giriş - Çıkış Hareket Kayıtları
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5 sm:mt-1">
             Turnike ve mobil tarayıcılardan gelen tüm PDKS logları, gecikme ve mesai hareketleri.
@@ -170,26 +189,65 @@ export const AttendanceLogs: React.FC = () => {
         </div>
 
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
-          <button
-            onClick={() => {
-              if (employees.length > 0) {
-                setManualForm((prev) => ({ ...prev, employeeId: employees[0].id }));
-              }
-              setIsManualModalOpen(true);
-            }}
-            className="inline-flex items-center justify-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg shadow-sm transition-colors whitespace-nowrap cursor-pointer"
-          >
-            <Plus className="w-4 h-4 text-slate-500" />
-            <span>Manuel Kayıt Ekle</span>
-          </button>
+          {canCreate && (
+            <button
+              onClick={() => {
+                if (employees.length > 0) {
+                  setManualForm((prev) => ({ ...prev, employeeId: employees[0].id }));
+                }
+                setIsManualModalOpen(true);
+              }}
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg shadow-sm transition-colors whitespace-nowrap cursor-pointer"
+            >
+              <Plus className="w-4 h-4 text-slate-500" />
+              <span>Manuel Kayıt Ekle</span>
+            </button>
+          )}
 
-          <button
-            onClick={handleExportCSV}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm transition-colors whitespace-nowrap cursor-pointer"
-          >
-            <Download className="w-4 h-4" />
-            <span>Excel / CSV İndir</span>
-          </button>
+          {canExport && (
+            <button
+              onClick={handleExportCSV}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm transition-colors whitespace-nowrap cursor-pointer"
+            >
+              <Download className="w-4 h-4" />
+              <span>Excel / CSV İndir</span>
+            </button>
+          )}
+
+          {canClear && records.length > 0 && (
+            !confirmClearAll ? (
+              <button
+                type="button"
+                onClick={() => setConfirmClearAll(true)}
+                className="inline-flex items-center justify-center gap-2 px-3.5 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Logları Temizle</span>
+              </button>
+            ) : (
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-rose-50 border border-rose-300 text-xs">
+                <span className="font-bold text-rose-900">Tüm loglar silinsin mi?</span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await pdksStorage.clearAttendanceLogs('all');
+                    setConfirmClearAll(false);
+                    loadData();
+                  }}
+                  className="px-2 py-0.5 rounded bg-rose-600 text-white font-bold cursor-pointer"
+                >
+                  Evet
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmClearAll(false)}
+                  className="px-2 py-0.5 rounded bg-white border border-slate-200 text-slate-700 font-semibold cursor-pointer"
+                >
+                  İptal
+                </button>
+              </div>
+            )
+          )}
         </div>
       </div>
 

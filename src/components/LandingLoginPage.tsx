@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Lock,
   User,
@@ -22,11 +22,13 @@ import { CompanyLogoImage } from './CompanyLogoImage';
 interface LandingLoginPageProps {
   onLoginSuccess: (user: CurrentUser) => void;
   companyLogo: string;
+  companyName?: string;
 }
 
 export const LandingLoginPage: React.FC<LandingLoginPageProps> = ({
   onLoginSuccess,
   companyLogo,
+  companyName: propCompanyName,
 }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -34,8 +36,28 @@ export const LandingLoginPage: React.FC<LandingLoginPageProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [companyName, setCompanyName] = useState<string>(() => propCompanyName || pdksStorage.getCompanyName());
 
-  const handleLogin = (e?: React.FormEvent) => {
+  useEffect(() => {
+    if (propCompanyName) setCompanyName(propCompanyName);
+  }, [propCompanyName]);
+
+  useEffect(() => {
+    const syncName = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') setCompanyName(e.detail);
+      else setCompanyName(pdksStorage.getCompanyName());
+    };
+    window.addEventListener('pdks-company-name-updated', syncName);
+    window.addEventListener('pdks-wall-qr-updated', syncName);
+    window.addEventListener('pdks-data-synced', syncName);
+    return () => {
+      window.removeEventListener('pdks-company-name-updated', syncName);
+      window.removeEventListener('pdks-wall-qr-updated', syncName);
+      window.removeEventListener('pdks-data-synced', syncName);
+    };
+  }, []);
+
+  const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setError(null);
 
@@ -45,19 +67,22 @@ export const LandingLoginPage: React.FC<LandingLoginPageProps> = ({
     }
 
     setIsLoading(true);
-    setTimeout(() => {
-      const res = pdksStorage.loginWithCredentials(username, password);
+    try {
+      const res = await pdksStorage.loginWithCredentialsAsync(username, password);
       setIsLoading(false);
 
       if (res.success && res.user) {
         setSuccessNotice(res.message);
         setTimeout(() => {
           onLoginSuccess(res.user!);
-        }, 400);
+        }, 300);
       } else {
         setError(res.message);
       }
-    }, 250);
+    } catch {
+      setIsLoading(false);
+      setError('Giriş doğrulaması sırasında bir hata oluştu.');
+    }
   };
 
   const todayDateStr = new Date().toLocaleDateString('tr-TR', {
@@ -77,14 +102,15 @@ export const LandingLoginPage: React.FC<LandingLoginPageProps> = ({
             <div className="h-10 max-w-[220px] flex items-center shrink-0">
               <CompanyLogoImage
                 src={companyLogo}
-                alt="Asem Kurumsal Logo"
+                alt={companyName}
+                companyName={companyName}
                 className="max-h-9 max-w-[200px] w-auto h-auto object-contain"
                 variant="light"
               />
             </div>
             <div className="hidden sm:block border-l border-slate-200 pl-3">
               <span className="text-xs font-bold text-slate-900 block leading-tight">
-                Asem PDKS
+                {companyName}
               </span>
               <span className="text-[10px] text-slate-500 block leading-tight">
                 Personel Devam Kontrol Sistemi
@@ -111,10 +137,10 @@ export const LandingLoginPage: React.FC<LandingLoginPageProps> = ({
             <div className="space-y-3">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-medium">
                 <Building2 className="w-3.5 h-3.5 text-indigo-600" />
-                <span>Kurumsal Devam Takip ve Güvenlik Altyapısı</span>
+                <span>{companyName} · Devam Takip ve Güvenlik Altyapısı</span>
               </div>
               <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900 leading-tight">
-                Asem QR Kodlu Personel Devam Kontrol Sistemi
+                QR Kodlu Personel Devam Kontrol Sistemi
               </h1>
               <p className="text-sm sm:text-base text-slate-600 leading-relaxed max-w-xl">
                 Temassız QR kodlu turnike geçişleri, GPS işyeri konumu geofence doğrulaması, canlı mesai ve mola takibi ile şirketinizin devam kontrolünü eksiksiz yönetin.
@@ -181,7 +207,7 @@ export const LandingLoginPage: React.FC<LandingLoginPageProps> = ({
               <span className="text-slate-300">·</span>
               <div className="flex items-center gap-1.5">
                 <Shield className="w-4 h-4 text-indigo-500" />
-                <span>Standart Kurumsal PDKS v2.4</span>
+                <span>{companyName} PDKS v2.4</span>
               </div>
             </div>
           </div>
@@ -194,14 +220,15 @@ export const LandingLoginPage: React.FC<LandingLoginPageProps> = ({
                 <div className="w-full h-14 max-w-[240px] mx-auto rounded-xl border border-slate-200/80 bg-white p-2 shadow-xs flex items-center justify-center">
                   <CompanyLogoImage
                     src={companyLogo}
-                    alt="Şirket Kurumsal Logosu"
+                    alt={companyName}
+                    companyName={companyName}
                     className="max-h-11 max-w-[210px] w-auto h-auto object-contain"
                     variant="light"
                   />
                 </div>
                 <div>
                   <h2 className="text-lg font-bold text-slate-900 tracking-tight">
-                    Sisteme Giriş Yap
+                    {companyName} · Giriş
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Kullanıcı adı ve şifrenizle oturum açınız
@@ -319,7 +346,7 @@ export const LandingLoginPage: React.FC<LandingLoginPageProps> = ({
       <footer className="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-700">Asem PDKS</span>
+            <span className="font-semibold text-slate-700">{companyName}</span>
             <span>·</span>
             <span>Tüm Hakları Saklıdır © {new Date().getFullYear()}</span>
           </div>

@@ -22,8 +22,9 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
   onToggleFullscreen,
   companyLogo: propCompanyLogo,
 }) => {
-  const isHR = currentUser?.role === 'ik_yoneticisi';
+  const isHR = pdksStorage.isHRorSuperAdmin(currentUser) || pdksStorage.canAccessSettings(currentUser);
   const [companyLogo, setCompanyLogo] = useState<string>(() => propCompanyLogo || pdksStorage.getCompanyLogo());
+  const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
 
   useEffect(() => {
     if (propCompanyLogo) setCompanyLogo(propCompanyLogo);
@@ -34,11 +35,23 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
       if (e?.detail && typeof e.detail === 'string') setCompanyLogo(e.detail);
       else setCompanyLogo(pdksStorage.getCompanyLogo());
     };
+    const syncCompanyName = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') setCompanyName(e.detail);
+      else setCompanyName(pdksStorage.getCompanyName());
+    };
+    const syncAll = () => {
+      setCompanyLogo(pdksStorage.getCompanyLogo());
+      setCompanyName(pdksStorage.getCompanyName());
+    };
     window.addEventListener('pdks-logo-updated', syncLogo);
-    window.addEventListener('pdks-data-synced', syncLogo);
+    window.addEventListener('pdks-company-name-updated', syncCompanyName);
+    window.addEventListener('pdks-wall-qr-updated', syncAll);
+    window.addEventListener('pdks-data-synced', syncAll);
     return () => {
       window.removeEventListener('pdks-logo-updated', syncLogo);
-      window.removeEventListener('pdks-data-synced', syncLogo);
+      window.removeEventListener('pdks-company-name-updated', syncCompanyName);
+      window.removeEventListener('pdks-wall-qr-updated', syncAll);
+      window.removeEventListener('pdks-data-synced', syncAll);
     };
   }, []);
 
@@ -207,14 +220,11 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
     const currentWallConfig = pdksStorage.getInternalCompanyWallQR();
     const isWallQR =
       wallCheck.isValid ||
-      upperRaw.includes('ASEM:WALL') ||
-      upperRaw.includes('ASEM') ||
+      upperRaw.includes('PDKS:WALL') ||
+      upperRaw.includes(':WALL:') ||
       upperRaw.includes('WALL') ||
       upperRaw.includes('PDKS') ||
       rawCode.includes(PDKS_SYSTEM_API_KEY) ||
-      rawCode.includes('evren_llm_') ||
-      rawCode.includes('AQ.Ab8RN6IQLh43aJSyjpBqkesYfVh2cWmuCciG5Mrp8b4eagNrHQ') ||
-      rawCode.includes('AQ.Ab8') ||
       (currentWallConfig.token && rawCode.includes(currentWallConfig.token));
 
     let targetEmployeeId = employeeId;
@@ -662,8 +672,11 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
     e.preventDefault();
     const correctPin = pdksStorage.getKioskLockPassword();
     const entered = lockdownPasswordInput.trim();
-    // Allow configured pin, default 1234, or HR master password
-    if (entered === (correctPin || '').trim() || entered === '1234' || entered === 'Maxipluas5') {
+    const hrAccounts = pdksStorage
+      .getUserAccounts()
+      .filter((a) => a.isActive && a.role === 'ik_yoneticisi');
+    const isHrMasterPass = hrAccounts.some((a) => a.password === entered);
+    if (entered === (correctPin || '').trim() || isHrMasterPass) {
       setIsLockdownModalOpen(false);
       setLockdownPasswordInput('');
       setLockdownError(null);
@@ -718,7 +731,7 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-bold text-base text-white">Asem Terminal A1 - Merkez Giriş</span>
+              <span className="font-bold text-base text-white">Terminal A1 - Merkez Giriş</span>
               <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 Çevrimiçi
@@ -731,7 +744,7 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
               )}
             </div>
             <p className="text-xs text-slate-400">
-              Asem Turnike & Kart Okuma İstasyonu · Otomatik Akıllı Tanıma
+              Turnike & Kart Okuma İstasyonu · Otomatik Akıllı Tanıma
             </p>
           </div>
         </div>
@@ -839,14 +852,15 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
               <div className="h-10 max-w-[140px] flex items-center rounded-lg bg-white/10 p-1.5 backdrop-blur border border-white/20">
                 <CompanyLogoImage
                   src={companyLogo}
-                  alt="Şirket Logosu"
+                  alt={companyName}
+                  companyName={companyName}
                   className="h-7 w-auto max-w-[126px] object-contain"
                   variant="dark"
                 />
               </div>
               <div>
-                <span className="font-bold text-sm text-white tracking-wide block">ASEM PDKS TURNİKE TERMİNALİ</span>
-                <span className="text-xs text-slate-400">İşyeri / Ana Giriş</span>
+                <span className="font-bold text-sm text-white tracking-wide block">{companyName}</span>
+                <span className="text-xs text-slate-400">PDKS Turnike Terminali</span>
               </div>
             </div>
 

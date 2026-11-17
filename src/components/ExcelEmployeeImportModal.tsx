@@ -75,30 +75,30 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
   const handleDownloadTemplate = () => {
     const templateData = [
       {
-        'Ad Soyad': 'Selin Karaca',
-        'TC Kimlik No': '23456789012',
+        'Ad Soyad': 'Örnek Personel 1',
+        'TC Kimlik No': '10000000001',
         'Departman': 'Yazılım & Ar-Ge',
-        'Unvan': 'Kıdemli Frontend Geliştirici',
-        'E-posta': 'selin.karaca@asempdks.com',
-        'Telefon': '+90 532 100 2030',
+        'Unvan': 'Yazılım Geliştirici',
+        'E-posta': 'personel1@example.com',
+        'Telefon': '+90 500 000 0001',
         'Vardiya': shifts[0]?.name || 'Standart Mesai',
       },
       {
-        'Ad Soyad': 'Kemal Aksoy',
-        'TC Kimlik No': '34567890123',
+        'Ad Soyad': 'Örnek Personel 2',
+        'TC Kimlik No': '10000000002',
         'Departman': 'Üretim & Operasyon',
         'Unvan': 'Vardiya Teknisyeni',
-        'E-posta': 'kemal.aksoy@asempdks.com',
-        'Telefon': '+90 533 200 3040',
+        'E-posta': 'personel2@example.com',
+        'Telefon': '+90 500 000 0002',
         'Vardiya': shifts[1]?.name || shifts[0]?.name || 'Sabah Vardiyası',
       },
       {
-        'Ad Soyad': 'Zeynep Kaya',
-        'TC Kimlik No': '45678901234',
+        'Ad Soyad': 'Örnek Personel 3',
+        'TC Kimlik No': '10000000003',
         'Departman': 'Muhasebe & Finans',
         'Unvan': 'Finans Uzmanı',
-        'E-posta': 'zeynep.kaya@asempdks.com',
-        'Telefon': '+90 535 300 4050',
+        'E-posta': 'personel3@example.com',
+        'Telefon': '+90 500 000 0003',
         'Vardiya': shifts[0]?.name || 'Standart Mesai',
       },
     ];
@@ -117,7 +117,7 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
 
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Personel Listesi');
-    XLSX.writeFile(workbook, 'Asem_PDKS_Personel_Sablonu.xlsx');
+    XLSX.writeFile(workbook, 'PDKS_Personel_Sablonu.xlsx');
   };
 
   // 2. Parse Uploaded Excel/CSV File
@@ -219,7 +219,7 @@ export const ExcelEmployeeImportModal: React.FC<ExcelEmployeeImportModalProps> =
           tcNo: tcNo || `${Math.floor(10000000000 + Math.random() * 90000000000)}`,
           department,
           title,
-          email: email || `${slugifyNameToUsername(fullName || 'personel')}@asempdks.com`,
+          email: email || `${slugifyNameToUsername(fullName || 'personel')}@example.com`,
           phone,
           shiftId,
           isValid,

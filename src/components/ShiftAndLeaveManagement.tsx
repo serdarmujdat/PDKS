@@ -171,9 +171,28 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
   });
 
   const activeUser = currentUser || pdksStorage.getActiveUser();
-  const isHRManager = activeUser.role === 'ik_yoneticisi';
+  const isHRManager = pdksStorage.isHRorSuperAdmin(activeUser);
+  const canApprove = pdksStorage.canApproveRequests(activeUser);
+  const canExport = pdksStorage.canExportReports(activeUser);
+  const canDelete = pdksStorage.canDeleteEmployee(activeUser);
   const isSupervisor = pdksStorage.isUserSupervisor(activeUser);
   const exportMenuRef = useRef<HTMLDivElement>(null);
+  const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
+
+  useEffect(() => {
+    const syncName = (e?: any) => {
+      if (e?.detail && typeof e.detail === 'string') setCompanyName(e.detail);
+      else setCompanyName(pdksStorage.getCompanyName());
+    };
+    window.addEventListener('pdks-company-name-updated', syncName);
+    window.addEventListener('pdks-wall-qr-updated', syncName);
+    window.addEventListener('pdks-data-synced', syncName);
+    return () => {
+      window.removeEventListener('pdks-company-name-updated', syncName);
+      window.removeEventListener('pdks-wall-qr-updated', syncName);
+      window.removeEventListener('pdks-data-synced', syncName);
+    };
+  }, []);
 
   // Supervisor Management States
   const [supervisorAssignments, setSupervisorAssignments] = useState<SupervisorAssignment[]>(() =>
@@ -450,7 +469,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `Asem_Vardiyalar_${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `PDKS_Vardiyalar_${new Date().toISOString().split('T')[0]}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -481,7 +500,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `Asem_Izin_Talepleri_${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `PDKS_Izin_Talepleri_${new Date().toISOString().split('T')[0]}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -512,7 +531,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `Asem_Personel_Vardiya_Cizelgesi_${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `PDKS_Personel_Vardiya_Cizelgesi_${new Date().toISOString().split('T')[0]}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -532,10 +551,10 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     window.print();
   };
 
-  // Delete Shift (Only ik_yoneticisi)
+  // Delete Shift (İK / Super Admin / Silme Yetkili)
   const handleDeleteShift = (id: string, name: string) => {
-    if (!isHRManager) {
-      setPermissionNotice('Yetkisiz İşlem: Vardiya silme yetkisi yalnızca İK Yöneticisine aittir.');
+    if (!isHRManager && !canDelete) {
+      setPermissionNotice('Yetkisiz İşlem: Vardiya silme yetkiniz bulunmamaktadır.');
       setTimeout(() => setPermissionNotice(null), 4000);
       return;
     }
@@ -591,8 +610,8 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
 
   // Overtime Approval Handlers
   const handleApproveOvertime = (id: string) => {
-    if (!isHRManager) {
-      setPermissionNotice('Yetkisiz İşlem: Fazla mesai onaylama yetkisi yalnızca İK Yöneticisine aittir.');
+    if (!canApprove) {
+      setPermissionNotice('Yetkisiz İşlem: Fazla mesai onaylama yetkiniz bulunmamaktadır.');
       setTimeout(() => setPermissionNotice(null), 4000);
       return;
     }
@@ -605,8 +624,8 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
   };
 
   const handleRejectOvertime = (id: string) => {
-    if (!isHRManager) {
-      setPermissionNotice('Yetkisiz İşlem: Fazla mesai reddetme yetkisi yalnızca İK Yöneticisine aittir.');
+    if (!canApprove) {
+      setPermissionNotice('Yetkisiz İşlem: Fazla mesai reddetme yetkiniz bulunmamaktadır.');
       setTimeout(() => setPermissionNotice(null), 4000);
       return;
     }
@@ -939,72 +958,74 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
           </p>
         </div>
 
-        {/* HR Manager Export Toolbar (User Request: PDF & CSV Download) */}
+        {/* Export Toolbar (PDF & CSV Download) */}
         <div className="flex items-center gap-2.5 self-start md:self-auto flex-wrap">
-          <div className="relative" ref={exportMenuRef}>
-            <button
-              onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
-              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-bold text-slate-800 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl shadow-xs transition-colors cursor-pointer"
-              title="Mevcut listeleri PDF veya CSV formatında bilgisayarınıza indirin"
-            >
-              <Download className="w-4 h-4 text-indigo-600" />
-              <span>Dışa Aktar (PDF / CSV)</span>
-              <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${isExportMenuOpen ? 'rotate-180' : ''}`} />
-            </button>
+          {canExport && (
+            <div className="relative" ref={exportMenuRef}>
+              <button
+                onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
+                className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-bold text-slate-800 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl shadow-xs transition-colors cursor-pointer"
+                title="Mevcut listeleri PDF veya CSV formatında bilgisayarınıza indirin"
+              >
+                <Download className="w-4 h-4 text-indigo-600" />
+                <span>Dışa Aktar (PDF / CSV)</span>
+                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${isExportMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
 
-            {/* Dropdown Menu */}
-            {isExportMenuOpen && (
-              <div className="absolute right-0 mt-2 w-72 bg-white rounded-2xl shadow-xl border border-slate-200 py-2 z-30 animate-fade-in text-xs">
-                <div className="px-3 py-1.5 border-b border-slate-100 font-bold text-slate-500 text-[11px] uppercase tracking-wider">
-                  Rapor Dışa Aktarımı (İK)
+              {/* Dropdown Menu */}
+              {isExportMenuOpen && (
+                <div className="absolute right-0 mt-2 w-72 bg-white rounded-2xl shadow-xl border border-slate-200 py-2 z-30 animate-fade-in text-xs">
+                  <div className="px-3 py-1.5 border-b border-slate-100 font-bold text-slate-500 text-[11px] uppercase tracking-wider">
+                    Rapor Dışa Aktarımı
+                  </div>
+
+                  <button
+                    onClick={handlePrintPDF}
+                    className="w-full text-left px-3.5 py-2.5 hover:bg-slate-50 flex items-center gap-2.5 text-slate-800 transition-colors cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4 text-rose-600 shrink-0" />
+                    <div>
+                      <div className="font-bold text-xs">Raporu Yazdır / PDF İndir</div>
+                      <div className="text-[11px] text-slate-400">Şirket antetli tam liste (PDF kaydet)</div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={handleExportShiftsCSV}
+                    className="w-full text-left px-3.5 py-2.5 hover:bg-slate-50 flex items-center gap-2.5 text-slate-800 transition-colors cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <div>
+                      <div className="font-bold text-xs">Vardiyalar Listesi (CSV)</div>
+                      <div className="text-[11px] text-slate-400">Excel uyumlu mesai tanımları</div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={handleExportLeavesCSV}
+                    className="w-full text-left px-3.5 py-2.5 hover:bg-slate-50 flex items-center gap-2.5 text-slate-800 transition-colors cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-4 h-4 text-indigo-600 shrink-0" />
+                    <div>
+                      <div className="font-bold text-xs">İzin & Mazeret Talepleri (CSV)</div>
+                      <div className="text-[11px] text-slate-400">Onaylı/bekleyen izin kayıtları</div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={handleExportCombinedCSV}
+                    className="w-full text-left px-3.5 py-2.5 hover:bg-slate-50 flex items-center gap-2.5 text-slate-800 transition-colors cursor-pointer border-t border-slate-100"
+                  >
+                    <Users className="w-4 h-4 text-purple-600 shrink-0" />
+                    <div>
+                      <div className="font-bold text-xs">Personel Vardiya Çizelgesi (CSV)</div>
+                      <div className="text-[11px] text-slate-400">Tüm personelin atandığı vardiyalar</div>
+                    </div>
+                  </button>
                 </div>
-
-                <button
-                  onClick={handlePrintPDF}
-                  className="w-full text-left px-3.5 py-2.5 hover:bg-slate-50 flex items-center gap-2.5 text-slate-800 transition-colors cursor-pointer"
-                >
-                  <FileText className="w-4 h-4 text-rose-600 shrink-0" />
-                  <div>
-                    <div className="font-bold text-xs">Raporu Yazdır / PDF İndir</div>
-                    <div className="text-[11px] text-slate-400">Şirket antetli tam liste (PDF kaydet)</div>
-                  </div>
-                </button>
-
-                <button
-                  onClick={handleExportShiftsCSV}
-                  className="w-full text-left px-3.5 py-2.5 hover:bg-slate-50 flex items-center gap-2.5 text-slate-800 transition-colors cursor-pointer"
-                >
-                  <FileSpreadsheet className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <div>
-                    <div className="font-bold text-xs">Vardiyalar Listesi (CSV)</div>
-                    <div className="text-[11px] text-slate-400">Excel uyumlu mesai tanımları</div>
-                  </div>
-                </button>
-
-                <button
-                  onClick={handleExportLeavesCSV}
-                  className="w-full text-left px-3.5 py-2.5 hover:bg-slate-50 flex items-center gap-2.5 text-slate-800 transition-colors cursor-pointer"
-                >
-                  <FileSpreadsheet className="w-4 h-4 text-indigo-600 shrink-0" />
-                  <div>
-                    <div className="font-bold text-xs">İzin & Mazeret Talepleri (CSV)</div>
-                    <div className="text-[11px] text-slate-400">Onaylı/bekleyen izin kayıtları</div>
-                  </div>
-                </button>
-
-                <button
-                  onClick={handleExportCombinedCSV}
-                  className="w-full text-left px-3.5 py-2.5 hover:bg-slate-50 flex items-center gap-2.5 text-slate-800 transition-colors cursor-pointer border-t border-slate-100"
-                >
-                  <Users className="w-4 h-4 text-purple-600 shrink-0" />
-                  <div>
-                    <div className="font-bold text-xs">Personel Vardiya Çizelgesi (CSV)</div>
-                    <div className="text-[11px] text-slate-400">Tüm personelin atandığı vardiyalar</div>
-                  </div>
-                </button>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
           {isHRManager && (
             <button
@@ -2085,7 +2106,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                     </div>
                   )}
 
-                  {lr.status === 'pending' && isHRManager && (
+                  {lr.status === 'pending' && canApprove && (
                     <div className="flex items-center gap-2 pt-1.5 border-t border-slate-100">
                       <button
                         onClick={() => handleUpdateStatus(lr.id, 'approved')}
@@ -2171,7 +2192,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
 
                       <td className="py-3 px-4 text-right">
                         {lr.status === 'pending' ? (
-                          isHRManager ? (
+                          canApprove ? (
                             <div className="flex items-center justify-end gap-1.5">
                               <button
                                 onClick={() => handleUpdateStatus(lr.id, 'approved')}
@@ -2320,7 +2341,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                         </div>
                       )}
 
-                      {ot.status === 'pending' && isHRManager && (
+                      {ot.status === 'pending' && canApprove && (
                         <div className="flex items-center gap-2 pt-1.5 border-t border-slate-100">
                           <button
                             onClick={() => handleApproveOvertime(ot.id)}
@@ -2415,7 +2436,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                           </td>
                           <td className="py-3 px-4 text-right">
                             {ot.status === 'pending' ? (
-                              isHRManager ? (
+                              canApprove ? (
                                 <div className="flex items-center justify-end gap-1.5">
                                   <button
                                     onClick={() => handleApproveOvertime(ot.id)}
@@ -3096,7 +3117,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                   })}
                 </select>
                 <span className="text-[11px] text-slate-500 mt-1 block">
-                  Seçilen personel, Asem PDKS sisteminde Birim Amiri yetkisiyle yalnızca kendisine atanan çalışanların vardiyalarını yönetebilecektir.
+                  Seçilen personel, PDKS sisteminde Birim Amiri yetkisiyle yalnızca kendisine atanan çalışanların vardiyalarını yönetebilecektir.
                 </span>
               </div>
 
@@ -3313,7 +3334,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
             <div className="p-6 sm:p-8 space-y-6 text-slate-800 text-xs">
               <div className="border-b border-slate-300 pb-4 flex items-center justify-between">
                 <div>
-                  <h1 className="text-xl font-bold text-slate-900">ASEM PDKS · VARDİYA & İZİN RESMİ RAPORU</h1>
+                  <h1 className="text-xl font-bold text-slate-900">{companyName} · VARDİYA & İZİN RESMİ RAPORU</h1>
                   <p className="text-slate-500 text-xs mt-0.5">
                     İnsan Kaynakları ve Personel Devam Kontrol Sistemi Raporu
                   </p>
