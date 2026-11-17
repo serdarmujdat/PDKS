@@ -1,4 +1,4 @@
-import { Employee, Shift, AttendanceRecord, LeaveRequest, OvertimeRequest, ActionType, AttendanceStatus, UserRole, CurrentUser, UserAccount, LoginResult, PDKSNotification, NotificationSettings, ReportFilter, EmployeeReportSummary, EmployeePerformanceMetric, DailyArrivalPoint, CompanyWallQRConfig, MobileScanMode, MobileScanResult, SupervisorAssignment } from '../types/pdks';
+import { Employee, Shift, AttendanceRecord, LeaveRequest, OvertimeRequest, ActionType, AttendanceStatus, PresenceStatus, UserRole, CurrentUser, UserAccount, LoginResult, PDKSNotification, NotificationSettings, ReportFilter, EmployeeReportSummary, EmployeePerformanceMetric, DailyArrivalPoint, CompanyWallQRConfig, MobileScanMode, MobileScanResult, SupervisorAssignment, ThemeId, DeviceIdentity, DeviceEntryApproval } from '../types/pdks';
 import {
   sanitizeString,
   checkLoginRateLimit,
@@ -12,7 +12,10 @@ import {
   fetchCompanyLogoFromFirestore,
   subscribeCompanyLogoFromFirestore,
   saveCompanyLogoToFirestore,
+  saveUserThemeToFirestore,
+  fetchAllUserThemesFromFirestore,
 } from '../firebase';
+import { DEFAULT_THEME_ID, isValidThemeId, applyThemeToDocument } from '../themes/themes';
 
 const STORAGE_KEYS = {
   EMPLOYEES: 'pdks_employees_v1',
@@ -29,7 +32,137 @@ const STORAGE_KEYS = {
   COMPANY_LOGO: 'asem_company_logo_v1',
   KIOSK_LOCK_PASSWORD: 'asem_kiosk_lock_password_v1',
   SUPERVISOR_ASSIGNMENTS: 'asem_supervisor_assignments_v1',
+  DEVICE_IDENTITY: 'asem_device_identity_v1',
+  DEVICE_APPROVALS: 'asem_device_approvals_v1',
 };
+
+const NEW_DEVICE_LOCK_DURATION_MS = 60 * 60 * 1000; // 1 saat
+
+function detectClientDeviceMetadata(): { platform: string; browser: string } {
+  if (typeof navigator === 'undefined') {
+    return { platform: 'Sunucu', browser: 'Sistem' };
+  }
+  const ua = navigator.userAgent || '';
+  let platform = 'Bilgisayar';
+  if (/iPhone/i.test(ua)) platform = 'iPhone';
+  else if (/iPad/i.test(ua)) platform = 'iPad';
+  else if (/Android/i.test(ua)) platform = 'Android';
+  else if (/Windows/i.test(ua)) platform = 'Windows';
+  else if (/Mac OS X|Macintosh/i.test(ua)) platform = 'macOS';
+  else if (/Linux/i.test(ua)) platform = 'Linux';
+
+  let browser = 'Tarayıcı';
+  if (/Edg\//i.test(ua)) browser = 'Edge';
+  else if (/OPR\//i.test(ua) || /Opera/i.test(ua)) browser = 'Opera';
+  else if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) browser = 'Chrome';
+  else if (/Firefox\//i.test(ua)) browser = 'Firefox';
+  else if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) browser = 'Safari';
+
+  return { platform, browser };
+}
+
+function fnv1a32(input: string, seed = 0x811c9dc5): number {
+  let hash = seed >>> 0;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+function getCanvasFingerprintSignal(): string {
+  if (typeof document === 'undefined') return 'ssr';
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 220;
+    canvas.height = 40;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return 'no-2d';
+    ctx.textBaseline = 'top';
+    ctx.font = '14px sans-serif';
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(4, 4, 80, 20);
+    ctx.fillStyle = '#4f46e5';
+    ctx.fillText('ASEM-PDKS-FP-2026', 8, 8);
+    return canvas.toDataURL().slice(-48);
+  } catch {
+    return 'canvas-blocked';
+  }
+}
+
+function computeDeviceFingerprintAndMac(seedSalt = ''): {
+  fingerprint: string;
+  macAddress: string;
+  suggestedDeviceId: string;
+} {
+  const nav = typeof navigator !== 'undefined' ? navigator : null;
+  const scr = typeof screen !== 'undefined' ? screen : null;
+  let tz = 'UTC';
+  try {
+    tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {}
+
+  const rawSignals = [
+    nav?.userAgent || 'ua',
+    nav?.platform || 'plat',
+    nav?.language || 'tr',
+    String(nav?.hardwareConcurrency || 4),
+    String((nav as any)?.deviceMemory || 4),
+    String(scr?.width || 1920),
+    String(scr?.height || 1080),
+    String(scr?.colorDepth || 24),
+    tz,
+    getCanvasFingerprintSignal(),
+    seedSalt,
+  ].join('|');
+
+  const h1 = fnv1a32(rawSignals, 0x811c9dc5);
+  const h2 = fnv1a32(`${rawSignals}|MAC_SALT`, 0x9e3779b9);
+
+  // Format as locally administered unicast MAC address (02:XX:XX:XX:XX:XX)
+  const b0 = (((h1 >>> 24) & 0xff) & 0xfe) | 0x02;
+  const b1 = (h1 >>> 16) & 0xff;
+  const b2 = (h1 >>> 8) & 0xff;
+  const b3 = h1 & 0xff;
+  const b4 = (h2 >>> 24) & 0xff;
+  const b5 = (h2 >>> 16) & 0xff;
+  const toHex2 = (n: number) => n.toString(16).padStart(2, '0').toUpperCase();
+  const macAddress = [b0, b1, b2, b3, b4, b5].map(toHex2).join(':');
+
+  const h1Hex = h1.toString(16).padStart(8, '0').toUpperCase();
+  const h2Hex = h2.toString(16).padStart(8, '0').toUpperCase();
+
+  return {
+    fingerprint: `FP-${h1Hex}${h2Hex.slice(0, 4)}`,
+    macAddress,
+    suggestedDeviceId: `DEV-${h1Hex}`,
+  };
+}
+
+function generateShortDeviceId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return `DEV-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    }
+  } catch {}
+  const rnd = Math.random().toString(36).substring(2, 10).toUpperCase();
+  return `DEV-${rnd}`;
+}
+
+function formatDateTimeTR(d: Date): string {
+  try {
+    return d.toLocaleString('tr-TR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return d.toISOString();
+  }
+}
 
 // Standard Default Corporate Logo (240x60 Standard Proportions SVG Data URI)
 export const DEFAULT_COMPANY_LOGO = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" fill="none"><rect width="240" height="60" rx="12" fill="%234F46E5"/><g transform="translate(14, 12)"><rect width="36" height="36" rx="8" fill="%233730A3"/><path d="M8 8h8v8H8zM20 8h8v8h-8zM8 20h8v8H8zM22 22h4v4h-4z" fill="%23FFFFFF"/><circle cx="26" cy="10" r="1.5" fill="%23A5B4FC"/></g><text x="62" y="33" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="800" fill="%23FFFFFF" letter-spacing="1">ASEM</text><text x="62" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="%23C7D2FE" letter-spacing="2.5">PDKS SİSTEMLERİ</text></svg>`;
@@ -40,13 +173,25 @@ let inMemoryCompanyLogo: string | null = null;
 let firestoreAuthoritativeLogo: string | null = null;
 let lastWarmedCloudLogo: string | null = null;
 
-export function hasCustomLogoValue(logo?: string | null): boolean {
+export function normalizeCompanyLogoSrc(logo?: string | null): string {
   const trimmed = logo ? logo.trim() : '';
+  if (!trimmed) return '';
+  if (trimmed.startsWith('data:image/svg+xml;utf8,')) {
+    return trimmed.replace(
+      /&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)/g,
+      '%26amp;'
+    );
+  }
+  return trimmed;
+}
+
+export function hasCustomLogoValue(logo?: string | null): boolean {
+  const trimmed = normalizeCompanyLogoSrc(logo);
   return Boolean(trimmed && !trimmed.startsWith('blob:') && trimmed !== DEFAULT_COMPANY_LOGO);
 }
 
 function applyCompanyLogoLocally(logoVal: string, persistLocal = true): void {
-  const normalized = logoVal.trim();
+  const normalized = normalizeCompanyLogoSrc(logoVal);
   if (!normalized || normalized.startsWith('blob:')) return;
   inMemoryCompanyLogo = normalized;
   if (persistLocal && typeof localStorage !== 'undefined') {
@@ -791,9 +936,32 @@ export async function syncWithServer(force = false): Promise<boolean> {
             try {
               const localRaw = localStorage.getItem(STORAGE_KEYS.EMPLOYEES);
               const localEmps: Employee[] = localRaw ? JSON.parse(localRaw) : [];
+              const localEmpMap = new Map<string, Employee>();
+              for (const le of localEmps) {
+                if (le && le.id) localEmpMap.set(le.id, le);
+              }
               const empMap = new Map<string, Employee>();
               for (const emp of d.employees) {
-                if (emp && emp.id) empMap.set(emp.id, emp);
+                if (emp && emp.id) {
+                  const localMatch = localEmpMap.get(emp.id);
+                  const mergedEmp: Employee = { ...emp };
+                  if (localMatch) {
+                    if (!mergedEmp.registeredDeviceId && localMatch.registeredDeviceId) {
+                      mergedEmp.registeredDeviceId = localMatch.registeredDeviceId;
+                      mergedEmp.registeredMacAddress = localMatch.registeredMacAddress;
+                      mergedEmp.registeredDeviceFingerprint = localMatch.registeredDeviceFingerprint;
+                      mergedEmp.registeredDeviceName = localMatch.registeredDeviceName;
+                      mergedEmp.registeredDeviceAt = localMatch.registeredDeviceAt;
+                    }
+                    if (!mergedEmp.lastLoginDeviceId && localMatch.lastLoginDeviceId) {
+                      mergedEmp.lastLoginDeviceId = localMatch.lastLoginDeviceId;
+                      mergedEmp.lastLoginMacAddress = localMatch.lastLoginMacAddress;
+                      mergedEmp.lastLoginDeviceName = localMatch.lastLoginDeviceName;
+                      mergedEmp.lastLoginAt = localMatch.lastLoginAt;
+                    }
+                  }
+                  empMap.set(emp.id, mergedEmp);
+                }
               }
               let hasMissing = false;
               for (const le of localEmps) {
@@ -870,14 +1038,80 @@ export async function syncWithServer(force = false): Promise<boolean> {
             try { localStorage.setItem(STORAGE_KEYS.SUPERVISOR_ASSIGNMENTS, JSON.stringify(d.supervisorAssignments)); } catch {}
           }
 
+          if (Array.isArray(d.deviceApprovals)) {
+            try {
+              const localRaw = localStorage.getItem(STORAGE_KEYS.DEVICE_APPROVALS);
+              const localApprovals: DeviceEntryApproval[] = localRaw ? JSON.parse(localRaw) : [];
+              const mergedMap = new Map<string, DeviceEntryApproval>();
+              for (const item of d.deviceApprovals) {
+                if (item && item.id) mergedMap.set(item.id, item);
+              }
+              let hasLocalExtra = false;
+              for (const la of localApprovals) {
+                if (!la || !la.id) continue;
+                const existing = mergedMap.get(la.id);
+                if (!existing) {
+                  mergedMap.set(la.id, la);
+                  hasLocalExtra = true;
+                } else {
+                  const localResolved = existing.status === 'pending' && la.status !== 'pending';
+                  const localNewerReq =
+                    existing.status === 'pending' &&
+                    la.status === 'check_in_requested';
+                  if (localResolved || localNewerReq) {
+                    mergedMap.set(la.id, la);
+                    hasLocalExtra = true;
+                  }
+                }
+              }
+              const mergedList = Array.from(mergedMap.values()).sort(
+                (a, b) => Date.parse(b.loginAt) - Date.parse(a.loginAt)
+              );
+              localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(mergedList));
+              if (hasLocalExtra) pushToServer('deviceApprovals', mergedList);
+            } catch {}
+          }
+
           // Safe non-destructive merge for accounts (prevents new accounts from ever being deleted on other devices)
           if (Array.isArray(d.accounts)) {
             try {
               const localRaw = localStorage.getItem(STORAGE_KEYS.ACCOUNTS);
               const localAccounts: UserAccount[] = localRaw ? JSON.parse(localRaw) : [];
+              const localMap = new Map<string, UserAccount>();
+              for (const la of localAccounts) {
+                if (la && la.id) localMap.set(la.id, la);
+              }
               const accountMap = new Map<string, UserAccount>();
               for (const acc of d.accounts) {
-                if (acc && acc.id) accountMap.set(acc.id, acc);
+                if (acc && acc.id) {
+                  const localMatch = localMap.get(acc.id);
+                  const mergedAcc: UserAccount = { ...acc };
+                  if (localMatch) {
+                    if (isValidThemeId(localMatch.themeId)) {
+                      const localTime = localMatch.themeUpdatedAt ? Date.parse(localMatch.themeUpdatedAt) : 0;
+                      const srvTime = acc.themeUpdatedAt ? Date.parse(acc.themeUpdatedAt) : 0;
+                      if (!isValidThemeId(acc.themeId) || localTime > srvTime) {
+                        mergedAcc.themeId = localMatch.themeId;
+                        mergedAcc.themeUpdatedAt = localMatch.themeUpdatedAt;
+                      }
+                    }
+                    // Preserve registered device binding if local holds a newer or missing-on-server device registration
+                    if (!mergedAcc.registeredDeviceId && localMatch.registeredDeviceId) {
+                      mergedAcc.registeredDeviceId = localMatch.registeredDeviceId;
+                      mergedAcc.registeredMacAddress = localMatch.registeredMacAddress;
+                      mergedAcc.registeredDeviceFingerprint = localMatch.registeredDeviceFingerprint;
+                      mergedAcc.registeredDeviceName = localMatch.registeredDeviceName;
+                      mergedAcc.registeredDeviceAt = localMatch.registeredDeviceAt;
+                    }
+                    if (!mergedAcc.lastLoginDeviceId && localMatch.lastLoginDeviceId) {
+                      mergedAcc.lastLoginDeviceId = localMatch.lastLoginDeviceId;
+                      mergedAcc.lastLoginMacAddress = localMatch.lastLoginMacAddress;
+                      mergedAcc.lastLoginDeviceFingerprint = localMatch.lastLoginDeviceFingerprint;
+                      mergedAcc.lastLoginDeviceName = localMatch.lastLoginDeviceName;
+                    }
+                  }
+                  accountMap.set(acc.id, mergedAcc);
+                }
               }
               let hasMissing = false;
               for (const la of localAccounts) {
@@ -888,6 +1122,52 @@ export async function syncWithServer(force = false): Promise<boolean> {
               }
               const mergedAccounts = Array.from(accountMap.values());
               localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergedAccounts));
+
+              // Keep active user's theme & device state aligned if updated from another device/session
+              if (localStorage.getItem(STORAGE_KEYS.IS_LOGGED_OUT) !== 'true') {
+                const activeRaw = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER);
+                if (activeRaw) {
+                  try {
+                    const activeParsed: CurrentUser = JSON.parse(activeRaw);
+                    const matchedAcc = mergedAccounts.find(
+                      (a) =>
+                        a.id === activeParsed.id ||
+                        normalizeUsername(a.username) === normalizeUsername(activeParsed.username)
+                    );
+                    if (matchedAcc) {
+                      let activeChanged = false;
+                      if (
+                        matchedAcc.registeredDeviceId !== activeParsed.registeredDeviceId ||
+                        matchedAcc.registeredMacAddress !== activeParsed.registeredMacAddress ||
+                        matchedAcc.lastLoginDeviceId !== activeParsed.lastLoginDeviceId ||
+                        matchedAcc.lastLoginMacAddress !== activeParsed.lastLoginMacAddress
+                      ) {
+                        activeParsed.registeredDeviceId = matchedAcc.registeredDeviceId;
+                        activeParsed.registeredMacAddress = matchedAcc.registeredMacAddress;
+                        activeParsed.registeredDeviceFingerprint = matchedAcc.registeredDeviceFingerprint;
+                        activeParsed.registeredDeviceName = matchedAcc.registeredDeviceName;
+                        activeParsed.registeredDeviceAt = matchedAcc.registeredDeviceAt;
+                        activeParsed.lastLoginDeviceId = matchedAcc.lastLoginDeviceId;
+                        activeParsed.lastLoginMacAddress = matchedAcc.lastLoginMacAddress;
+                        activeParsed.lastLoginDeviceFingerprint = matchedAcc.lastLoginDeviceFingerprint;
+                        activeParsed.lastLoginDeviceName = matchedAcc.lastLoginDeviceName;
+                        activeChanged = true;
+                      }
+                      if (isValidThemeId(matchedAcc.themeId) && activeParsed.themeId !== matchedAcc.themeId) {
+                        activeParsed.themeId = matchedAcc.themeId;
+                        activeParsed.themeUpdatedAt = matchedAcc.themeUpdatedAt;
+                        applyThemeToDocument(matchedAcc.themeId);
+                        window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: matchedAcc.themeId }));
+                        activeChanged = true;
+                      }
+                      if (activeChanged) {
+                        localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(activeParsed));
+                      }
+                    }
+                  } catch {}
+                }
+              }
+
               if (hasMissing) pushToServer('accounts', mergedAccounts);
             } catch {}
           }
@@ -1045,6 +1325,133 @@ export const pdksStorage = {
     pushToServer('employees', list);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return employee;
+  },
+
+  updateEmployeePresenceManual(
+    employeeId: string,
+    newPresence: PresenceStatus,
+    options?: {
+      timeStr?: string;
+      note?: string;
+      recordAttendance?: boolean;
+      actorName?: string;
+    }
+  ): { success: boolean; message: string; employee?: Employee; record?: AttendanceRecord } {
+    const list = this.getEmployees();
+    const idx = list.findIndex(e => e.id === employeeId);
+    if (idx < 0) {
+      return { success: false, message: 'Personel bulunamadı.' };
+    }
+
+    const emp = { ...list[idx] };
+    const previousPresence = emp.currentPresence;
+    const now = new Date();
+    const rawTime = (options?.timeStr || '').trim();
+    const normalizedTime = rawTime
+      ? (rawTime.length === 5 ? `${rawTime}:00` : rawTime)
+      : now.toTimeString().split(' ')[0];
+    const dateStr = getTodayString();
+
+    emp.currentPresence = newPresence;
+    emp.lastActionTime = normalizedTime;
+    list[idx] = emp;
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
+
+    let createdRecord: AttendanceRecord | undefined;
+    const shouldRecord = options?.recordAttendance !== false;
+
+    if (shouldRecord) {
+      const action: ActionType =
+        newPresence === 'break'
+          ? 'break_start'
+          : newPresence === 'outside'
+          ? 'check_out'
+          : previousPresence === 'break'
+          ? 'break_end'
+          : 'check_in';
+
+      const shifts = this.getShifts();
+      const shift = shifts.find(s => s.id === emp.shiftId) || shifts[0];
+      let status: AttendanceStatus = 'normal';
+      let lateMinutes = 0;
+
+      const [hh, mm] = normalizedTime.split(':').map(Number);
+      const currentMinutes =
+        (isNaN(hh) ? now.getHours() : hh) * 60 + (isNaN(mm) ? now.getMinutes() : mm);
+
+      if (action === 'check_in' && shift) {
+        const [startHour, startMin] = shift.startTime.split(':').map(Number);
+        const shiftStartMins = startHour * 60 + startMin;
+        const diff = currentMinutes - shiftStartMins;
+        if (diff > shift.toleranceMinutes) {
+          status = 'late';
+          lateMinutes = diff;
+        } else {
+          status = 'on_time';
+        }
+      } else if (action === 'check_out' && shift) {
+        const [endHour, endMin] = shift.endTime.split(':').map(Number);
+        const shiftEndMins = endHour * 60 + endMin;
+        if (currentMinutes < shiftEndMins - 15) {
+          status = 'early_leave';
+        } else if (currentMinutes > shiftEndMins + 45) {
+          status = 'overtime';
+        }
+      }
+
+      const [yr, mo, dy] = dateStr.split('-').map(Number);
+      const recordTimestamp = new Date(
+        yr || now.getFullYear(),
+        (mo || now.getMonth() + 1) - 1,
+        dy || now.getDate(),
+        isNaN(hh) ? now.getHours() : hh,
+        isNaN(mm) ? now.getMinutes() : mm,
+        0
+      ).toISOString();
+
+      createdRecord = {
+        id: `MAN-${Date.now().toString().slice(-6)}`,
+        employeeId: emp.id,
+        employeeName: emp.fullName,
+        department: emp.department,
+        date: dateStr,
+        type: action,
+        timestamp: recordTimestamp,
+        timeStr: normalizedTime,
+        method: 'manual_admin',
+        status,
+        lateMinutes,
+        note: options?.note?.trim() || 'Kart basmayı unuttu — İK manuel durum düzenlemesi',
+        terminal: options?.actorName ? `İK Manuel (${options.actorName})` : 'İK Manuel Düzenleme',
+      };
+
+      const records = this.getAttendanceRecords();
+      records.unshift(createdRecord);
+      localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
+
+      pushBatchToServer({
+        employees: list,
+        records,
+      });
+    } else {
+      pushToServer('employees', list);
+    }
+
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+
+    const presenceLabel =
+      newPresence === 'inside'
+        ? 'Ofiste (İçeride)'
+        : newPresence === 'break'
+        ? 'Molada'
+        : 'Ofis Dışında';
+
+    return {
+      success: true,
+      message: `${emp.fullName} durumu "${presenceLabel}" olarak güncellendi.`,
+      employee: emp,
+      record: createdRecord,
+    };
   },
 
   saveEmployeesAndAccountsBatch(newEmployees: Employee[], newAccounts: UserAccount[]): void {
@@ -1487,6 +1894,20 @@ export const pdksStorage = {
       }
     }
 
+    // 1-Hour New-Device Check-In Gate: If employee logged in from a different device within the last 1 hour,
+    // only İK Yöneticisi can approve their first workplace check-in!
+    const activeCaller = this.getActiveUser();
+    if (action === 'check_in' && activeCaller?.role !== 'ik_yoneticisi') {
+      const lockCheck = this.enforceNewDeviceCheckInGate(emp, terminalName);
+      if (lockCheck.blocked) {
+        return {
+          success: false,
+          message: lockCheck.message,
+          action: 'check_in',
+        };
+      }
+    }
+
     const now = new Date();
     const timeStr = now.toTimeString().split(' ')[0]; // "08:35:12"
     const dateStr = getTodayString();
@@ -1533,8 +1954,39 @@ export const pdksStorage = {
     }
     emp.lastActionTime = timeStr;
 
+    // Device identity capture & cross-employee check when employee acts on their own device (or non-shared kiosk)
+    const device = this.getDeviceIdentity();
+    const isSharedOperatorKiosk =
+      method === 'kiosk_camera' &&
+      activeCaller &&
+      activeCaller.employeeId &&
+      activeCaller.employeeId !== emp.id &&
+      (activeCaller.role === 'ik_yoneticisi' || activeCaller.role === 'guvenlik');
+
+    let crossOwner: ReturnType<typeof pdksStorage.findOtherDeviceOwner> = null;
+    if (!isSharedOperatorKiosk && method !== 'manual_admin') {
+      crossOwner = this.findOtherDeviceOwner(emp.id, device);
+      if (!emp.registeredDeviceId && !crossOwner) {
+        this.bindRegisteredDeviceToEmployee(emp.id, device, now.toISOString());
+        emp.registeredDeviceId = device.deviceId;
+        emp.registeredMacAddress = device.macAddress;
+        emp.registeredDeviceFingerprint = device.fingerprint;
+        emp.registeredDeviceName = device.deviceName;
+        emp.registeredDeviceAt = now.toISOString();
+      }
+      emp.lastLoginDeviceId = device.deviceId;
+      emp.lastLoginMacAddress = device.macAddress;
+      emp.lastLoginDeviceName = device.deviceName;
+      emp.lastLoginAt = now.toISOString();
+      this.syncEmployeeLastDevice(emp.id, device, now.toISOString());
+    }
+
     // Save updated employee
     this.saveEmployee(emp);
+
+    const crossWarningText = crossOwner
+      ? `Başka Personel Cihazı ile Giriş (Yetkisiz/Şüpheli Cihaz Kullanımı) · Cihaz Sahibi: ${crossOwner.employeeName}`
+      : undefined;
 
     // Create record
     const record: AttendanceRecord = {
@@ -1550,11 +2002,28 @@ export const pdksStorage = {
       status,
       lateMinutes,
       terminal: terminalName,
+      note: crossWarningText,
+      deviceId: method === 'manual_admin' ? undefined : device.deviceId,
+      macAddress: method === 'manual_admin' ? undefined : device.macAddress,
+      deviceName: method === 'manual_admin' ? undefined : device.deviceName,
+      deviceFingerprint: method === 'manual_admin' ? undefined : device.fingerprint,
+      isSuspiciousDevice: Boolean(crossOwner),
+      securityEventKind: crossOwner ? 'scan_cross_device' : undefined,
+      securityWarning: crossOwner
+        ? 'Başka Personel Cihazı ile Giriş (Yetkisiz/Şüpheli Cihaz Kullanımı)'
+        : undefined,
+      deviceOwnerEmployeeId: crossOwner?.employeeId,
+      deviceOwnerEmployeeName: crossOwner?.employeeName,
+      deviceOwnerMacAddress: crossOwner?.macAddress,
     };
 
     const records = this.getAttendanceRecords();
     records.unshift(record);
     localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
+
+    if (crossOwner) {
+      this.triggerCrossEmployeeNotification(emp, crossOwner, device, 'Vardiya / QR İşlemi', now);
+    }
 
     // Instant Mobile / Push Notification dispatch based on thresholds
     const settings = this.getNotificationSettings();
@@ -1602,6 +2071,7 @@ export const pdksStorage = {
 
     pushBatchToServer({
       employees: this.getEmployees(),
+      accounts: this.getUserAccounts(),
       records: this.getAttendanceRecords(),
       notifications: this.getNotifications(),
     });
@@ -2118,6 +2588,27 @@ export const pdksStorage = {
       }
     }
 
+    // 3b. 1-Hour New-Device Manager-Only First Check-In Gate
+    if (action === 'check_in' && active?.role !== 'ik_yoneticisi') {
+      const lockCheck = this.enforceNewDeviceCheckInGate(emp, 'Mobil Tarayıcı (Sabit Duvar QR)');
+      if (lockCheck.blocked) {
+        return {
+          success: false,
+          message: lockCheck.message,
+          action: 'check_in',
+          previousPresence,
+          newPresence: previousPresence,
+          timestamp: serverTimestamp,
+          serverTime: timeStr,
+          geofencePassed,
+          distanceMeters: calculatedDistance,
+          userLocation,
+          awaitingManagerApproval: true,
+          deviceApproval: lockCheck.approval,
+        };
+      }
+    }
+
     // 4. Calculate Punctuality / Compliance
     const shifts = this.getShifts();
     const shift = shifts.find((s) => s.id === emp.shiftId) || shifts[0];
@@ -2150,7 +2641,28 @@ export const pdksStorage = {
       }
     }
 
-    // 5. Update Employee State locally (batch synced with records & notifications below)
+    // 5. Device Identification, Registration (if first-time & unowned) & Cross-Employee Device Check
+    const device = this.getDeviceIdentity();
+    const crossOwner = this.findOtherDeviceOwner(emp.id, device);
+    const accForEmp = this.getUserAccountByEmployeeId(emp.id);
+    const alreadyRegistered = Boolean(emp.registeredDeviceId || accForEmp?.registeredDeviceId);
+
+    if (!alreadyRegistered && !crossOwner) {
+      this.bindRegisteredDeviceToEmployee(emp.id, device, serverTimestamp);
+      emp.registeredDeviceId = device.deviceId;
+      emp.registeredMacAddress = device.macAddress;
+      emp.registeredDeviceFingerprint = device.fingerprint;
+      emp.registeredDeviceName = device.deviceName;
+      emp.registeredDeviceAt = serverTimestamp;
+    }
+
+    emp.lastLoginDeviceId = device.deviceId;
+    emp.lastLoginMacAddress = device.macAddress;
+    emp.lastLoginDeviceName = device.deviceName;
+    emp.lastLoginAt = serverTimestamp;
+    this.syncEmployeeLastDevice(emp.id, device, serverTimestamp);
+
+    // Update Employee State locally (batch synced with records & notifications below)
     emp.currentPresence = newPresence;
     emp.lastActionTime = timeStr;
     const empList = this.getEmployees();
@@ -2158,6 +2670,10 @@ export const pdksStorage = {
     if (empIdx >= 0) empList[empIdx] = emp;
     else empList.unshift(emp);
     localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(empList));
+
+    const crossWarningNote = crossOwner
+      ? `Başka Personel Cihazı ile Giriş (Yetkisiz/Şüpheli Cihaz Kullanımı) · Cihaz Sahibi: ${crossOwner.employeeName}`
+      : undefined;
 
     // 6. Create and Save Attendance Record
     const record: AttendanceRecord = {
@@ -2176,11 +2692,28 @@ export const pdksStorage = {
       userLocation,
       distanceMeters: calculatedDistance,
       geofenceVerified: geofencePassed,
+      note: crossWarningNote,
+      deviceId: device.deviceId,
+      macAddress: device.macAddress,
+      deviceName: device.deviceName,
+      deviceFingerprint: device.fingerprint,
+      isSuspiciousDevice: Boolean(crossOwner),
+      securityEventKind: crossOwner ? 'scan_cross_device' : undefined,
+      securityWarning: crossOwner
+        ? 'Başka Personel Cihazı ile Giriş (Yetkisiz/Şüpheli Cihaz Kullanımı)'
+        : undefined,
+      deviceOwnerEmployeeId: crossOwner?.employeeId,
+      deviceOwnerEmployeeName: crossOwner?.employeeName,
+      deviceOwnerMacAddress: crossOwner?.macAddress,
     };
 
     const records = this.getAttendanceRecords();
     records.unshift(record);
     localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
+
+    if (crossOwner) {
+      this.triggerCrossEmployeeNotification(emp, crossOwner, device, 'Mobil QR Vardiya İşlemi', now);
+    }
 
     // 7. Notification dispatch
     const settings = this.getNotificationSettings();
@@ -2210,6 +2743,7 @@ export const pdksStorage = {
 
     pushBatchToServer({
       employees: this.getEmployees(),
+      accounts: this.getUserAccounts(),
       records: this.getAttendanceRecords(),
       notifications: this.getNotifications(),
     });
@@ -2543,10 +3077,183 @@ export const pdksStorage = {
       };
     }
 
-    // Update lastLogin
-    found.lastLogin = new Date().toISOString();
-    this.saveUserAccount(found);
+    // Device Identity Registration, Cross-Employee Detection & Multi-Device 1-Hour Manager Approval Gate
+    const device = this.getDeviceIdentity();
+    const nowDate = new Date();
+    const nowIso = nowDate.toISOString();
+    let firstDeviceRegistered = false;
+    let newDeviceDetected = false;
+    let createdOrUpdatedApproval: DeviceEntryApproval | undefined;
 
+    // Check if this device/MAC/fingerprint is ALREADY registered to another employee in the database
+    const crossOwner = this.findOtherDeviceOwner(found.employeeId, device);
+    const crossEmployeeDeviceDetected = Boolean(crossOwner);
+
+    // Match user's own registered device via Device ID, MAC Address, or Browser Fingerprint
+    const matchesOwnRegistered = Boolean(
+      found.registeredDeviceId &&
+        (found.registeredDeviceId === device.deviceId ||
+          (found.registeredMacAddress && found.registeredMacAddress === device.macAddress) ||
+          (found.registeredDeviceFingerprint && found.registeredDeviceFingerprint === device.fingerprint))
+    );
+
+    if (!found.registeredDeviceId && !crossOwner) {
+      // First-time registration (only bind if not already owned by another employee)
+      firstDeviceRegistered = true;
+      found.registeredDeviceId = device.deviceId;
+      found.registeredMacAddress = device.macAddress;
+      found.registeredDeviceFingerprint = device.fingerprint;
+      found.registeredDeviceName = device.deviceName;
+      found.registeredDeviceAt = nowIso;
+    } else if ((!matchesOwnRegistered || crossOwner) && found.role !== 'ik_yoneticisi') {
+      newDeviceDetected = true;
+      const approvals = this.getDeviceEntryApprovals();
+      const updatedApprovals = approvals.map((item) => {
+        if (
+          item.employeeId === found.employeeId &&
+          (item.status === 'pending' || item.status === 'check_in_requested') &&
+          (item.newDeviceId !== device.deviceId || nowDate.getTime() >= Date.parse(item.expiresAt))
+        ) {
+          return { ...item, status: 'expired' as const };
+        }
+        return item;
+      });
+
+      const expiresAtIso = new Date(nowDate.getTime() + NEW_DEVICE_LOCK_DURATION_MS).toISOString();
+      const existingSameDevice = updatedApprovals.find(
+        (item) =>
+          item.employeeId === found.employeeId &&
+          item.newDeviceId === device.deviceId &&
+          (item.status === 'pending' || item.status === 'check_in_requested') &&
+          nowDate.getTime() < Date.parse(item.expiresAt)
+      );
+
+      if (existingSameDevice) {
+        existingSameDevice.loginAt = nowIso;
+        existingSameDevice.expiresAt = expiresAtIso;
+        existingSameDevice.newMacAddress = device.macAddress;
+        existingSameDevice.newDeviceFingerprint = device.fingerprint;
+        createdOrUpdatedApproval = existingSameDevice;
+      } else {
+        createdOrUpdatedApproval = {
+          id: `DEVAPP-${Date.now().toString().slice(-6)}`,
+          employeeId: found.employeeId,
+          accountId: found.id,
+          username: found.username,
+          employeeName: found.name,
+          department: found.department || 'Genel',
+          registeredDeviceId: found.registeredDeviceId || 'YOK',
+          registeredMacAddress: found.registeredMacAddress,
+          registeredDeviceName:
+            found.registeredDeviceName || found.registeredDeviceId || 'Henüz Kayıtlı Cihaz Yok',
+          newDeviceId: device.deviceId,
+          newMacAddress: device.macAddress,
+          newDeviceFingerprint: device.fingerprint,
+          newDeviceName: device.deviceName,
+          loginAt: nowIso,
+          expiresAt: expiresAtIso,
+          status: 'pending',
+        };
+        updatedApprovals.unshift(createdOrUpdatedApproval);
+      }
+
+      localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(updatedApprovals));
+
+      // Standard new-device 1-hour lock manager notification (when not already covered or in addition to cross-device alert)
+      const managerNotif = this.addNotification({
+        type: 'device_alert',
+        title: crossOwner
+          ? 'Farklı & Başka Personele Kayıtlı Cihazdan Giriş'
+          : 'Farklı Cihazdan Giriş Uyarısı',
+        message: crossOwner
+          ? `${found.name} (@${found.username}), ${crossOwner.employeeName} adına kayıtlı cihazdan (${device.macAddress} · ${device.deviceId}) giriş yaptı. Önümüzdeki 1 saat içindeki ilk iş yeri girişi yalnızca yönetici onayına tabidir.`
+          : `${found.name} (@${found.username}) kayıtlı cihazı (${found.registeredDeviceName || found.registeredDeviceId}) dışında yeni bir cihazdan (${device.deviceName} · MAC: ${device.macAddress}) giriş yaptı. Önümüzdeki 1 saat içindeki ilk iş yeri girişi yalnızca yönetici tarafından onaylanabilir.`,
+        employeeId: found.employeeId,
+        employeeName: found.name,
+        department: (found.department || 'Genel') as any,
+        severity: crossOwner ? 'critical' : 'warning',
+        targetRole: 'ik_yoneticisi',
+        metadata: {
+          deviceApprovalId: createdOrUpdatedApproval.id,
+          newDeviceName: device.deviceName,
+          expiresAt: expiresAtIso,
+          macAddress: device.macAddress,
+          deviceId: device.deviceId,
+          deviceName: device.deviceName,
+        },
+      });
+      createdOrUpdatedApproval.notificationId = managerNotif.id;
+      localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(updatedApprovals));
+    }
+
+    // Update last login device on both account & employee profile
+    found.lastLoginDeviceId = device.deviceId;
+    found.lastLoginMacAddress = device.macAddress;
+    found.lastLoginDeviceFingerprint = device.fingerprint;
+    found.lastLoginDeviceName = device.deviceName;
+    found.lastLogin = nowIso;
+
+    const allAccounts = this.getUserAccounts();
+    const accIdx = allAccounts.findIndex((a) => a.id === found.id);
+    if (accIdx >= 0) allAccounts[accIdx] = found;
+    else allAccounts.push(found);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(allAccounts));
+
+    // Mirror registered & last-login MAC/Device info onto the Employee profile
+    const employees = this.getEmployees();
+    const empMatch = employees.find((e) => e.id === found.employeeId);
+    if (empMatch) {
+      if (found.registeredDeviceId) {
+        empMatch.registeredDeviceId = found.registeredDeviceId;
+        empMatch.registeredMacAddress = found.registeredMacAddress;
+        empMatch.registeredDeviceFingerprint = found.registeredDeviceFingerprint;
+        empMatch.registeredDeviceName = found.registeredDeviceName;
+        empMatch.registeredDeviceAt = found.registeredDeviceAt;
+      }
+      empMatch.lastLoginDeviceId = device.deviceId;
+      empMatch.lastLoginMacAddress = device.macAddress;
+      empMatch.lastLoginDeviceName = device.deviceName;
+      empMatch.lastLoginAt = nowIso;
+      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+    }
+
+    // Critical Cross-Employee Device Alert + Security Log Entry in AttendanceLogs
+    if (crossOwner) {
+      const actorEmp: Employee = empMatch || {
+        id: found.employeeId,
+        tcNo: '',
+        fullName: found.name,
+        email: '',
+        phone: '',
+        department: (found.department || 'Genel') as any,
+        title: found.title,
+        avatar: found.avatar,
+        shiftId: 'SHIFT-1',
+        startDate: getTodayString(),
+        qrToken: '',
+        status: 'active',
+        currentPresence: 'outside',
+      };
+      this.logCrossEmployeeLoginSecurityEvent(actorEmp, crossOwner, device, nowDate);
+    }
+
+    if (newDeviceDetected || crossEmployeeDeviceDetected || firstDeviceRegistered) {
+      pushBatchToServer({
+        accounts: allAccounts,
+        employees: this.getEmployees(),
+        records: this.getAttendanceRecords(),
+        deviceApprovals: this.getDeviceEntryApprovals(),
+        notifications: this.getNotifications(),
+      });
+    } else {
+      pushBatchToServer({
+        accounts: allAccounts,
+        employees: this.getEmployees(),
+      });
+    }
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+
+    const resolvedTheme = this.getUserTheme(found);
     const currentUser: CurrentUser = {
       id: found.id,
       username: found.username,
@@ -2560,6 +3267,19 @@ export const pdksStorage = {
       canTakeBreak: found.canTakeBreak,
       canRequestLeave: found.canRequestLeave,
       canViewOwnStats: found.canViewOwnStats,
+      assignedEmployeeIds: found.assignedEmployeeIds,
+      isShiftSupervisor: found.isShiftSupervisor,
+      themeId: resolvedTheme,
+      themeUpdatedAt: found.themeUpdatedAt,
+      registeredDeviceId: found.registeredDeviceId,
+      registeredMacAddress: found.registeredMacAddress,
+      registeredDeviceFingerprint: found.registeredDeviceFingerprint,
+      registeredDeviceName: found.registeredDeviceName,
+      registeredDeviceAt: found.registeredDeviceAt,
+      lastLoginDeviceId: found.lastLoginDeviceId,
+      lastLoginMacAddress: found.lastLoginMacAddress,
+      lastLoginDeviceFingerprint: found.lastLoginDeviceFingerprint,
+      lastLoginDeviceName: found.lastLoginDeviceName,
     };
 
     localStorage.removeItem(STORAGE_KEYS.IS_LOGGED_OUT);
@@ -2567,14 +3287,694 @@ export const pdksStorage = {
 
     return {
       success: true,
-      message: `Hoş geldiniz, ${found.name}!`,
+      message: crossOwner
+        ? `Güvenlik Uyarısı: Giriş yaptığınız cihaz (${device.macAddress}) sistemde ${crossOwner.employeeName} adına kayıtlıdır! Durum yöneticiye raporlandı.`
+        : newDeviceDetected
+        ? `Hoş geldiniz, ${found.name}! Yeni cihazdan giriş algılandı — 1 saat içindeki ilk iş yeri girişiniz yönetici onayına tabidir.`
+        : firstDeviceRegistered
+        ? `Hoş geldiniz, ${found.name}! Bu cihaz (${device.deviceName} · MAC: ${device.macAddress}) hesabınıza ilk güvenli cihaz olarak kaydedildi.`
+        : `Hoş geldiniz, ${found.name}!`,
       user: currentUser,
+      firstDeviceRegistered,
+      newDeviceDetected,
+      crossEmployeeDeviceDetected,
+      crossEmployeeOwnerName: crossOwner?.employeeName,
+      deviceApproval: createdOrUpdatedApproval,
+    };
+  },
+
+  // =========================================================================
+  // DEVICE BINDING, MAC FINGERPRINT & CROSS-EMPLOYEE SECURITY ENGINE
+  // =========================================================================
+
+  getDeviceIdentity(): DeviceIdentity {
+    if (typeof localStorage === 'undefined') {
+      return {
+        deviceId: 'DEV-SERVER',
+        macAddress: '02:00:00:00:00:01',
+        fingerprint: 'FP-SERVER000001',
+        deviceName: 'Sunucu',
+        platform: 'Sunucu',
+        browser: 'Sistem',
+        createdAt: new Date().toISOString(),
+      };
+    }
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.DEVICE_IDENTITY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.deviceId && parsed.deviceName) {
+          if (!parsed.macAddress || !parsed.fingerprint) {
+            const computed = computeDeviceFingerprintAndMac(parsed.deviceId);
+            const upgraded: DeviceIdentity = {
+              ...parsed,
+              macAddress: parsed.macAddress || computed.macAddress,
+              fingerprint: parsed.fingerprint || computed.fingerprint,
+            };
+            localStorage.setItem(STORAGE_KEYS.DEVICE_IDENTITY, JSON.stringify(upgraded));
+            return upgraded;
+          }
+          return parsed;
+        }
+      }
+    } catch {}
+    const { platform, browser } = detectClientDeviceMetadata();
+    const computed = computeDeviceFingerprintAndMac();
+    const deviceId = computed.suggestedDeviceId || generateShortDeviceId();
+    const shortSuffix = deviceId.replace(/^DEV-/, '').slice(0, 4);
+    const identity: DeviceIdentity = {
+      deviceId,
+      macAddress: computed.macAddress,
+      fingerprint: computed.fingerprint,
+      deviceName: `${platform} · ${browser} (#${shortSuffix})`,
+      platform,
+      browser,
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      localStorage.setItem(STORAGE_KEYS.DEVICE_IDENTITY, JSON.stringify(identity));
+    } catch {}
+    return identity;
+  },
+
+  findOtherDeviceOwner(
+    currentEmployeeId: string,
+    device: DeviceIdentity
+  ): {
+    employeeId: string;
+    employeeName: string;
+    department: string;
+    macAddress: string;
+    deviceId: string;
+    deviceName: string;
+  } | null {
+    if (!device) return null;
+    const employees = this.getEmployees();
+    const accounts = this.getUserAccounts();
+
+    for (const acc of accounts) {
+      if (!acc || acc.employeeId === currentEmployeeId) continue;
+      if (!acc.registeredDeviceId && !acc.registeredMacAddress && !acc.registeredDeviceFingerprint) continue;
+      const sameDevice =
+        (acc.registeredDeviceId && acc.registeredDeviceId === device.deviceId) ||
+        (acc.registeredMacAddress && acc.registeredMacAddress === device.macAddress) ||
+        (acc.registeredDeviceFingerprint && acc.registeredDeviceFingerprint === device.fingerprint);
+      if (sameDevice) {
+        return {
+          employeeId: acc.employeeId,
+          employeeName: acc.name,
+          department: acc.department || 'Genel',
+          macAddress: acc.registeredMacAddress || device.macAddress,
+          deviceId: acc.registeredDeviceId || device.deviceId,
+          deviceName: acc.registeredDeviceName || device.deviceName,
+        };
+      }
+    }
+
+    for (const emp of employees) {
+      if (!emp || emp.id === currentEmployeeId) continue;
+      if (!emp.registeredDeviceId && !emp.registeredMacAddress && !emp.registeredDeviceFingerprint) continue;
+      const sameDevice =
+        (emp.registeredDeviceId && emp.registeredDeviceId === device.deviceId) ||
+        (emp.registeredMacAddress && emp.registeredMacAddress === device.macAddress) ||
+        (emp.registeredDeviceFingerprint && emp.registeredDeviceFingerprint === device.fingerprint);
+      if (sameDevice) {
+        return {
+          employeeId: emp.id,
+          employeeName: emp.fullName,
+          department: emp.department || 'Genel',
+          macAddress: emp.registeredMacAddress || device.macAddress,
+          deviceId: emp.registeredDeviceId || device.deviceId,
+          deviceName: emp.registeredDeviceName || device.deviceName,
+        };
+      }
+    }
+
+    return null;
+  },
+
+  bindRegisteredDeviceToEmployee(employeeId: string, device: DeviceIdentity, timestampIso: string): void {
+    const accounts = this.getUserAccounts();
+    let accChanged = false;
+    for (const acc of accounts) {
+      if (acc.employeeId === employeeId) {
+        acc.registeredDeviceId = device.deviceId;
+        acc.registeredMacAddress = device.macAddress;
+        acc.registeredDeviceFingerprint = device.fingerprint;
+        acc.registeredDeviceName = device.deviceName;
+        acc.registeredDeviceAt = timestampIso;
+        acc.lastLoginDeviceId = device.deviceId;
+        acc.lastLoginMacAddress = device.macAddress;
+        acc.lastLoginDeviceFingerprint = device.fingerprint;
+        acc.lastLoginDeviceName = device.deviceName;
+        accChanged = true;
+      }
+    }
+    if (accChanged) {
+      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+    }
+
+    const employees = this.getEmployees();
+    const emp = employees.find((e) => e.id === employeeId);
+    if (emp) {
+      emp.registeredDeviceId = device.deviceId;
+      emp.registeredMacAddress = device.macAddress;
+      emp.registeredDeviceFingerprint = device.fingerprint;
+      emp.registeredDeviceName = device.deviceName;
+      emp.registeredDeviceAt = timestampIso;
+      emp.lastLoginDeviceId = device.deviceId;
+      emp.lastLoginMacAddress = device.macAddress;
+      emp.lastLoginDeviceName = device.deviceName;
+      emp.lastLoginAt = timestampIso;
+      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+    }
+  },
+
+  syncEmployeeLastDevice(employeeId: string, device: DeviceIdentity, timestampIso: string): void {
+    const accounts = this.getUserAccounts();
+    let accChanged = false;
+    for (const acc of accounts) {
+      if (acc.employeeId === employeeId) {
+        acc.lastLoginDeviceId = device.deviceId;
+        acc.lastLoginMacAddress = device.macAddress;
+        acc.lastLoginDeviceFingerprint = device.fingerprint;
+        acc.lastLoginDeviceName = device.deviceName;
+        accChanged = true;
+      }
+    }
+    if (accChanged) {
+      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+    }
+  },
+
+  triggerCrossEmployeeNotification(
+    actorEmp: Employee,
+    owner: {
+      employeeId: string;
+      employeeName: string;
+      department: string;
+      macAddress: string;
+      deviceId: string;
+      deviceName: string;
+    },
+    device: DeviceIdentity,
+    actionLabel: string,
+    eventDate: Date
+  ): void {
+    const eventDateTime = formatDateTimeTR(eventDate);
+    this.addNotification({
+      type: 'device_alert',
+      title: 'Yetkisiz/Şüpheli Cihaz: Başka Personel Cihazı ile Giriş',
+      message: `İşlemi Yapan: ${actorEmp.fullName} | Cihaz Sahibi: ${owner.employeeName} | MAC / Device ID: ${device.macAddress} (${device.deviceId}) | İşlem: ${actionLabel} | Tarih & Saat: ${eventDateTime}. Başka Personel Cihazı ile Giriş tespit edildi!`,
+      employeeId: actorEmp.id,
+      employeeName: actorEmp.fullName,
+      department: actorEmp.department,
+      severity: 'critical',
+      targetRole: 'ik_yoneticisi',
+      metadata: {
+        isCrossEmployeeDevice: true,
+        actorEmployeeName: actorEmp.fullName,
+        ownerEmployeeId: owner.employeeId,
+        ownerEmployeeName: owner.employeeName,
+        macAddress: device.macAddress,
+        deviceId: device.deviceId,
+        deviceName: device.deviceName,
+        eventDateTime,
+      },
+    });
+  },
+
+  logCrossEmployeeLoginSecurityEvent(
+    actorEmp: Employee,
+    owner: {
+      employeeId: string;
+      employeeName: string;
+      department: string;
+      macAddress: string;
+      deviceId: string;
+      deviceName: string;
+    },
+    device: DeviceIdentity,
+    eventDate: Date
+  ): void {
+    const timeStr = eventDate.toTimeString().split(' ')[0];
+    const dateStr = getTodayString();
+    const secRecord: AttendanceRecord = {
+      id: `SEC-${Date.now().toString().slice(-6)}`,
+      employeeId: actorEmp.id,
+      employeeName: actorEmp.fullName,
+      department: actorEmp.department,
+      date: dateStr,
+      type: 'security_alert',
+      timestamp: eventDate.toISOString(),
+      timeStr,
+      method: 'mobile_scanner',
+      status: 'normal',
+      lateMinutes: 0,
+      terminal: 'Web / Mobil Oturum Girişi',
+      note: `Başka Personel Cihazı ile Giriş (Yetkisiz/Şüpheli Cihaz Kullanımı) · Cihaz Sahibi: ${owner.employeeName}`,
+      deviceId: device.deviceId,
+      macAddress: device.macAddress,
+      deviceName: device.deviceName,
+      deviceFingerprint: device.fingerprint,
+      isSuspiciousDevice: true,
+      securityEventKind: 'login_cross_device',
+      securityWarning: 'Başka Personel Cihazı ile Giriş (Yetkisiz/Şüpheli Cihaz Kullanımı)',
+      deviceOwnerEmployeeId: owner.employeeId,
+      deviceOwnerEmployeeName: owner.employeeName,
+      deviceOwnerMacAddress: owner.macAddress,
+    };
+    const records = this.getAttendanceRecords();
+    records.unshift(secRecord);
+    localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
+
+    this.triggerCrossEmployeeNotification(actorEmp, owner, device, 'Sistem Girişi', eventDate);
+  },
+
+  getDeviceEntryApprovals(): DeviceEntryApproval[] {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(STORAGE_KEYS.DEVICE_APPROVALS);
+    if (!raw) return [];
+    try {
+      const parsed: DeviceEntryApproval[] = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      const nowMs = Date.now();
+      let mutated = false;
+      const normalized = parsed.map((item) => {
+        if (
+          (item.status === 'pending' || item.status === 'check_in_requested') &&
+          nowMs >= Date.parse(item.expiresAt)
+        ) {
+          mutated = true;
+          return { ...item, status: 'expired' as const };
+        }
+        return item;
+      });
+      if (mutated) {
+        localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(normalized));
+      }
+      return normalized;
+    } catch {
+      return [];
+    }
+  },
+
+  getActiveNewDeviceLock(employeeId: string): DeviceEntryApproval | null {
+    if (!employeeId) return null;
+    const nowMs = Date.now();
+    const list = this.getDeviceEntryApprovals();
+    return (
+      list.find(
+        (item) =>
+          item.employeeId === employeeId &&
+          (item.status === 'pending' || item.status === 'check_in_requested' || item.status === 'rejected') &&
+          nowMs < Date.parse(item.expiresAt)
+      ) || null
+    );
+  },
+
+  enforceNewDeviceCheckInGate(
+    emp: Employee,
+    sourceLabel: string = 'Mobil / Kiosk'
+  ): { blocked: boolean; message: string; approval?: DeviceEntryApproval } {
+    const activeLock = this.getActiveNewDeviceLock(emp.id);
+    if (!activeLock) {
+      return { blocked: false, message: '' };
+    }
+
+    const nowMs = Date.now();
+    const remainingMins = Math.max(1, Math.ceil((Date.parse(activeLock.expiresAt) - nowMs) / 60000));
+
+    if (activeLock.status === 'rejected') {
+      return {
+        blocked: true,
+        approval: activeLock,
+        message: `Yeni cihazdan giriş talebiniz yönetici tarafından reddedildi. ${remainingMins} dakika içinde yalnızca yönetici onaylarsa iş yerine giriş yapabilirsiniz.`,
+      };
+    }
+
+    const list = this.getDeviceEntryApprovals();
+    const idx = list.findIndex((x) => x.id === activeLock.id);
+    const prevReqTime = activeLock.checkInRequestedAt ? Date.parse(activeLock.checkInRequestedAt) : 0;
+    const shouldNotify = !prevReqTime || nowMs - prevReqTime > 15000;
+
+    const updatedItem: DeviceEntryApproval = {
+      ...activeLock,
+      status: 'check_in_requested',
+      checkInRequestedAt: new Date().toISOString(),
+    };
+    if (idx >= 0) {
+      list[idx] = updatedItem;
+    } else {
+      list.unshift(updatedItem);
+    }
+    localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(list));
+
+    if (shouldNotify) {
+      this.addNotification({
+        type: 'device_alert',
+        title: 'İş Yeri Girişi İçin Yönetici Onayı Bekleniyor',
+        message: `${emp.fullName} (${emp.department}), yeni cihaz (${updatedItem.newDeviceName}) ile giriş yaptıktan sonraki 1 saatlik pencerede (${remainingMins} dk kaldı) ${sourceLabel} üzerinden iş yerine giriş denemesi yaptı. Onaylamanız bekleniyor.`,
+        employeeId: emp.id,
+        employeeName: emp.fullName,
+        department: emp.department,
+        severity: 'critical',
+        targetRole: 'ik_yoneticisi',
+        metadata: {
+          deviceApprovalId: updatedItem.id,
+          newDeviceName: updatedItem.newDeviceName,
+          expiresAt: updatedItem.expiresAt,
+        },
+      });
+    }
+
+    pushBatchToServer({
+      deviceApprovals: list,
+      notifications: this.getNotifications(),
+    });
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+
+    return {
+      blocked: true,
+      approval: updatedItem,
+      message: `Farklı cihazdan giriş yaptığınız için ${remainingMins} dakika boyunca ilk iş yeri girişiniz yalnızca yönetici tarafından onaylanabilir. Onay talebi yöneticiye iletildi.`,
+    };
+  },
+
+  requestNewDeviceCheckInApproval(employeeId: string): {
+    success: boolean;
+    message: string;
+    approval?: DeviceEntryApproval;
+  } {
+    const emp = this.getEmployees().find((e) => e.id === employeeId);
+    if (!emp) {
+      return { success: false, message: 'Personel bulunamadı.' };
+    }
+    const activeLock = this.getActiveNewDeviceLock(employeeId);
+    if (!activeLock) {
+      return { success: false, message: 'Aktif yeni cihaz bekleme kaydı bulunamadı.' };
+    }
+
+    const list = this.getDeviceEntryApprovals();
+    const idx = list.findIndex((x) => x.id === activeLock.id);
+    const updatedItem: DeviceEntryApproval = {
+      ...activeLock,
+      status: 'check_in_requested',
+      checkInRequestedAt: new Date().toISOString(),
+    };
+    if (idx >= 0) list[idx] = updatedItem;
+    localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(list));
+
+    const remainingMins = Math.max(1, Math.ceil((Date.parse(updatedItem.expiresAt) - Date.now()) / 60000));
+    this.addNotification({
+      type: 'device_alert',
+      title: 'Yeni Cihaz İlk İş Yeri Giriş Onay Talebi',
+      message: `${emp.fullName} (@${updatedItem.username}) yeni cihazından (${updatedItem.newDeviceName}) 1 saatlik süre içinde iş yerine ilk giriş için yönetici onayı talep etti. (Kalan süre: ${remainingMins} dk)`,
+      employeeId: emp.id,
+      employeeName: emp.fullName,
+      department: emp.department,
+      severity: 'critical',
+      targetRole: 'ik_yoneticisi',
+      metadata: {
+        deviceApprovalId: updatedItem.id,
+        newDeviceName: updatedItem.newDeviceName,
+        expiresAt: updatedItem.expiresAt,
+      },
+    });
+
+    pushBatchToServer({
+      deviceApprovals: list,
+      notifications: this.getNotifications(),
+    });
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+
+    return {
+      success: true,
+      message: 'İş yeri giriş onay talebiniz İK Yöneticisine iletildi. Yönetici onayladığında girişiniz tamamlanacaktır.',
+      approval: updatedItem,
+    };
+  },
+
+  approveDeviceEntryRequest(
+    requestId: string,
+    options?: { bindNewDevice?: boolean; actorName?: string }
+  ): { success: boolean; message: string; approval?: DeviceEntryApproval; record?: AttendanceRecord } {
+    const active = this.getActiveUser();
+    if (active?.role !== 'ik_yoneticisi') {
+      return { success: false, message: 'Yetkisiz İşlem: Yeni cihazdan iş yeri girişini yalnızca İK Yöneticisi onaylayabilir.' };
+    }
+
+    const list = this.getDeviceEntryApprovals();
+    const idx = list.findIndex((x) => x.id === requestId);
+    if (idx < 0) {
+      return { success: false, message: 'Onay talebi bulunamadı.' };
+    }
+
+    const req = { ...list[idx] };
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const timeStr = now.toTimeString().split(' ')[0];
+    const dateStr = getTodayString();
+    const actorName = options?.actorName || active.name || 'İK Yöneticisi';
+
+    req.status = 'approved';
+    req.resolvedAt = nowIso;
+    req.resolvedBy = actorName;
+    req.decisionNote = options?.bindNewDevice
+      ? 'İş yeri girişi onaylandı ve yeni cihaz kayıtlı cihaz olarak tanımlandı.'
+      : 'İlk iş yeri girişi yönetici tarafından onaylandı.';
+    list[idx] = req;
+    localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(list));
+
+    // Optionally bind the new device as registered device on the user account & employee profile
+    const accounts = this.getUserAccounts();
+    if (options?.bindNewDevice) {
+      const acc = accounts.find((a) => a.id === req.accountId || a.employeeId === req.employeeId);
+      if (acc) {
+        acc.registeredDeviceId = req.newDeviceId;
+        acc.registeredMacAddress = req.newMacAddress || acc.registeredMacAddress;
+        acc.registeredDeviceFingerprint = req.newDeviceFingerprint || acc.registeredDeviceFingerprint;
+        acc.registeredDeviceName = req.newDeviceName;
+        acc.registeredDeviceAt = nowIso;
+        localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+      }
+    }
+
+    // Perform the employee's first workplace check-in if currently outside
+    const employees = this.getEmployees();
+    const empIdx = employees.findIndex((e) => e.id === req.employeeId);
+    let createdRecord: AttendanceRecord | undefined;
+
+    if (empIdx >= 0) {
+      const emp = { ...employees[empIdx] };
+      if (options?.bindNewDevice) {
+        emp.registeredDeviceId = req.newDeviceId;
+        emp.registeredMacAddress = req.newMacAddress || emp.registeredMacAddress;
+        emp.registeredDeviceFingerprint = req.newDeviceFingerprint || emp.registeredDeviceFingerprint;
+        emp.registeredDeviceName = req.newDeviceName;
+        emp.registeredDeviceAt = nowIso;
+      }
+      if (emp.currentPresence === 'outside') {
+        const shifts = this.getShifts();
+        const shift = shifts.find((s) => s.id === emp.shiftId) || shifts[0];
+        let status: AttendanceStatus = 'on_time';
+        let lateMinutes = 0;
+        if (shift) {
+          const [startHour, startMin] = shift.startTime.split(':').map(Number);
+          const shiftStartMins = startHour * 60 + startMin;
+          const currentMinutes = now.getHours() * 60 + now.getMinutes();
+          const diff = currentMinutes - shiftStartMins;
+          if (diff > shift.toleranceMinutes) {
+            status = 'late';
+            lateMinutes = diff;
+          }
+        }
+
+        emp.currentPresence = 'inside';
+        emp.lastActionTime = timeStr;
+        employees[empIdx] = emp;
+        localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+
+        createdRecord = {
+          id: `DEVIN-${Date.now().toString().slice(-6)}`,
+          employeeId: emp.id,
+          employeeName: emp.fullName,
+          department: emp.department,
+          date: dateStr,
+          type: 'check_in',
+          timestamp: nowIso,
+          timeStr,
+          method: 'manual_admin',
+          status,
+          lateMinutes,
+          note: `Yeni cihaz (${req.newDeviceName}${req.newMacAddress ? ` · ${req.newMacAddress}` : ''}) ilk giriş yönetici onayı`,
+          terminal: `Yönetici Onaylı Giriş (${actorName})`,
+          deviceId: req.newDeviceId,
+          macAddress: req.newMacAddress,
+          deviceName: req.newDeviceName,
+        };
+
+        const records = this.getAttendanceRecords();
+        records.unshift(createdRecord);
+        localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
+      } else if (options?.bindNewDevice) {
+        employees[empIdx] = emp;
+        localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+      }
+
+      this.addNotification({
+        type: 'device_alert',
+        title: 'İş Yeri Girişiniz Onaylandı',
+        message: `${req.newDeviceName} cihazıyla giriş yaptıktan sonraki ilk iş yeri girişiniz ${actorName} tarafından onaylandı.${options?.bindNewDevice ? ' Ayrıca bu cihaz yeni kayıtlı cihazınız olarak tanımlandı.' : ''}`,
+        employeeId: emp.id,
+        employeeName: emp.fullName,
+        department: emp.department,
+        severity: 'info',
+        metadata: {
+          deviceApprovalId: req.id,
+          newDeviceName: req.newDeviceName,
+          macAddress: req.newMacAddress,
+          deviceId: req.newDeviceId,
+        },
+      });
+    }
+
+    pushBatchToServer({
+      deviceApprovals: this.getDeviceEntryApprovals(),
+      employees: this.getEmployees(),
+      records: this.getAttendanceRecords(),
+      accounts: this.getUserAccounts(),
+      notifications: this.getNotifications(),
+    });
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+
+    return {
+      success: true,
+      message: `${req.employeeName} için yeni cihaz ilk iş yeri girişi onaylandı.${options?.bindNewDevice ? ' Yeni cihaz kaydedildi.' : ''}`,
+      approval: req,
+      record: createdRecord,
+    };
+  },
+
+  rejectDeviceEntryRequest(
+    requestId: string,
+    reason?: string,
+    actorName?: string
+  ): { success: boolean; message: string; approval?: DeviceEntryApproval } {
+    const active = this.getActiveUser();
+    if (active?.role !== 'ik_yoneticisi') {
+      return { success: false, message: 'Yetkisiz İşlem: Bu işlem yalnızca İK Yöneticisine aittir.' };
+    }
+
+    const list = this.getDeviceEntryApprovals();
+    const idx = list.findIndex((x) => x.id === requestId);
+    if (idx < 0) {
+      return { success: false, message: 'Onay talebi bulunamadı.' };
+    }
+
+    const req = { ...list[idx] };
+    const actor = actorName || active.name || 'İK Yöneticisi';
+    req.status = 'rejected';
+    req.resolvedAt = new Date().toISOString();
+    req.resolvedBy = actor;
+    req.decisionNote = reason?.trim() || 'Yönetici tarafından reddedildi.';
+    list[idx] = req;
+    localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(list));
+
+    this.addNotification({
+      type: 'device_alert',
+      title: 'Yeni Cihaz İş Yeri Girişi Reddedildi',
+      message: `${req.newDeviceName} cihazıyla yaptığınız iş yeri giriş talebi ${actor} tarafından reddedildi.${reason ? ` Sebep: ${reason}` : ''}`,
+      employeeId: req.employeeId,
+      employeeName: req.employeeName,
+      department: (req.department || 'Genel') as any,
+      severity: 'critical',
+      metadata: {
+        deviceApprovalId: req.id,
+        newDeviceName: req.newDeviceName,
+        macAddress: req.newMacAddress,
+        deviceId: req.newDeviceId,
+      },
+    });
+
+    pushBatchToServer({
+      deviceApprovals: list,
+      notifications: this.getNotifications(),
+    });
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+
+    return {
+      success: true,
+      message: `${req.employeeName} için yeni cihaz giriş talebi reddedildi.`,
+      approval: req,
+    };
+  },
+
+  resetEmployeeRegisteredDevice(
+    employeeId: string,
+    actorName?: string
+  ): { success: boolean; message: string } {
+    const active = this.getActiveUser();
+    if (active?.role !== 'ik_yoneticisi') {
+      return { success: false, message: 'Yetkisiz İşlem: Cihaz sıfırlama yetkisi yalnızca İK Yöneticisine aittir.' };
+    }
+    const accounts = this.getUserAccounts();
+    const acc = accounts.find((a) => a.employeeId === employeeId);
+    const employees = this.getEmployees();
+    const emp = employees.find((e) => e.id === employeeId);
+
+    if (!acc && !emp) {
+      return { success: false, message: 'Personel veya giriş hesabı bulunamadı.' };
+    }
+
+    if (acc) {
+      delete acc.registeredDeviceId;
+      delete acc.registeredMacAddress;
+      delete acc.registeredDeviceFingerprint;
+      delete acc.registeredDeviceName;
+      delete acc.registeredDeviceAt;
+      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+    }
+
+    if (emp) {
+      delete emp.registeredDeviceId;
+      delete emp.registeredMacAddress;
+      delete emp.registeredDeviceFingerprint;
+      delete emp.registeredDeviceName;
+      delete emp.registeredDeviceAt;
+      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+    }
+
+    // Expire any active lock for this employee
+    const approvals = this.getDeviceEntryApprovals().map((item) =>
+      item.employeeId === employeeId &&
+      (item.status === 'pending' || item.status === 'check_in_requested' || item.status === 'rejected')
+        ? { ...item, status: 'expired' as const, resolvedAt: new Date().toISOString(), resolvedBy: actorName || active.name }
+        : item
+    );
+    localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(approvals));
+
+    pushBatchToServer({
+      accounts,
+      employees,
+      deviceApprovals: approvals,
+    });
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+
+    const displayName = acc?.name || emp?.fullName || employeeId;
+    return {
+      success: true,
+      message: `${displayName} personelin kayıtlı cihazı (MAC / Device ID) sıfırlandı. Bir sonraki giriş yaptığı cihaz otomatik tanımlanacaktır.`,
     };
   },
 
   logout(): void {
     localStorage.setItem(STORAGE_KEYS.IS_LOGGED_OUT, 'true');
     localStorage.removeItem(STORAGE_KEYS.ACTIVE_USER);
+    applyThemeToDocument(DEFAULT_THEME_ID);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: DEFAULT_THEME_ID }));
+    }
   },
 
   isLoggedIn(): boolean {
@@ -2597,6 +3997,9 @@ export const pdksStorage = {
       if (parsed.username === 'emre.demir' || parsed.employeeId === 'EMP-1003') {
         parsed.title = 'Finansal Kontrolör';
       }
+      if (!isValidThemeId(parsed.themeId)) {
+        parsed.themeId = this.getUserTheme(parsed);
+      }
       return parsed;
     } catch {
       return DEMO_USERS[0];
@@ -2605,21 +4008,216 @@ export const pdksStorage = {
 
   setActiveUser(user: CurrentUser): void {
     localStorage.removeItem(STORAGE_KEYS.IS_LOGGED_OUT);
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(user));
+    const resolvedTheme = isValidThemeId(user.themeId) ? user.themeId : this.getUserTheme(user);
+    const enrichedUser: CurrentUser = { ...user, themeId: resolvedTheme };
+    localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(enrichedUser));
+    applyThemeToDocument(resolvedTheme);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: resolvedTheme }));
+    }
+  },
+
+  // Per-User Personal Theme Management (Account-Scoped + Server + Firebase Sync)
+  getUserTheme(
+    targetUser?: Partial<Pick<CurrentUser, 'id' | 'username' | 'employeeId' | 'themeId'>> | null
+  ): ThemeId {
+    const refUser = targetUser || (this.isLoggedIn() ? this.getActiveUser() : null);
+    if (!refUser) return DEFAULT_THEME_ID;
+
+    try {
+      const accounts = this.getUserAccounts();
+      const normUser = normalizeUsername(refUser.username || '');
+      const matched = accounts.find(
+        (a) =>
+          (refUser.id && a.id === refUser.id) ||
+          (normUser && normalizeUsername(a.username) === normUser) ||
+          (refUser.employeeId && a.employeeId === refUser.employeeId)
+      );
+      if (matched && isValidThemeId(matched.themeId)) {
+        return matched.themeId;
+      }
+    } catch {}
+
+    if (isValidThemeId(refUser.themeId)) {
+      return refUser.themeId;
+    }
+
+    try {
+      const keySuffix = normalizeUsername(refUser.username || '') || refUser.id || refUser.employeeId || '';
+      if (keySuffix) {
+        const stored = localStorage.getItem(`pdks_user_theme_v1_${keySuffix}`);
+        if (isValidThemeId(stored)) {
+          return stored;
+        }
+      }
+    } catch {}
+
+    return DEFAULT_THEME_ID;
+  },
+
+  async saveUserTheme(
+    themeId: ThemeId,
+    targetUser?: CurrentUser | null
+  ): Promise<{ success: boolean; themeId: ThemeId; cloudSynced: boolean; message: string }> {
+    if (!isValidThemeId(themeId)) {
+      return {
+        success: false,
+        themeId: DEFAULT_THEME_ID,
+        cloudSynced: false,
+        message: 'Geçersiz tema seçimi.',
+      };
+    }
+
+    const active = targetUser || this.getActiveUser();
+    const nowIso = new Date().toISOString();
+    const normUser = normalizeUsername(active.username || '');
+
+    // 1. Update matching UserAccount in STORAGE_KEYS.ACCOUNTS
+    let matchedAccountId = active.id;
+    try {
+      const accounts = this.getUserAccounts();
+      const idx = accounts.findIndex(
+        (a) =>
+          (active.id && a.id === active.id) ||
+          (normUser && normalizeUsername(a.username) === normUser) ||
+          (active.employeeId && a.employeeId === active.employeeId)
+      );
+      if (idx >= 0) {
+        matchedAccountId = accounts[idx].id;
+        accounts[idx] = {
+          ...accounts[idx],
+          themeId,
+          themeUpdatedAt: nowIso,
+        };
+        localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+      }
+    } catch {}
+
+    // 2. Save per-account localStorage cache
+    try {
+      const keySuffix = normUser || matchedAccountId || active.employeeId || '';
+      if (keySuffix) {
+        localStorage.setItem(`pdks_user_theme_v1_${keySuffix}`, themeId);
+      }
+    } catch {}
+
+    // 3. Update active user record and immediately apply to DOM if saving for active user
+    try {
+      if (this.isLoggedIn()) {
+        const currentActive = this.getActiveUser();
+        const isSameUser =
+          currentActive.id === active.id ||
+          (normUser && normalizeUsername(currentActive.username) === normUser);
+        if (isSameUser) {
+          const updatedActive: CurrentUser = {
+            ...currentActive,
+            themeId,
+            themeUpdatedAt: nowIso,
+          };
+          localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(updatedActive));
+          applyThemeToDocument(themeId);
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: themeId }));
+          }
+        }
+      }
+    } catch {}
+
+    // 4. Persist to backend server DB (/api/user/theme) so other browsers/sessions on this account pick it up
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch('/api/user/theme', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accountId: matchedAccountId,
+            username: active.username,
+            employeeId: active.employeeId,
+            themeId,
+          }),
+        });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.version) {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+      } catch (err) {
+        console.warn('User theme API sync error:', err);
+      }
+    }
+
+    // 5. Also persist to Firebase Firestore if Google Auth is active
+    let cloudSynced = false;
+    if (auth.currentUser) {
+      try {
+        const accountKey = matchedAccountId || normUser || active.employeeId || 'default';
+        cloudSynced = await saveUserThemeToFirestore(accountKey, themeId);
+      } catch (err) {
+        console.warn('User theme Firestore sync error:', err);
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    }
+
+    return {
+      success: true,
+      themeId,
+      cloudSynced,
+      message: 'Hesap temanız kaydedildi ve profilinize uygulandı.',
+    };
+  },
+
+  async syncUserThemesFromCloud(): Promise<void> {
+    if (typeof window === 'undefined' || !auth.currentUser) return;
+    try {
+      const cloudMap = await fetchAllUserThemesFromFirestore();
+      const entries = Object.entries(cloudMap);
+      if (entries.length === 0) return;
+
+      const accounts = this.getUserAccounts();
+      let changed = false;
+      for (const [accountKey, cloudTheme] of entries) {
+        if (!isValidThemeId(cloudTheme)) continue;
+        const acc = accounts.find(
+          (a) =>
+            a.id === accountKey ||
+            normalizeUsername(a.username) === normalizeUsername(accountKey) ||
+            a.employeeId === accountKey
+        );
+        if (acc && !isValidThemeId(acc.themeId)) {
+          acc.themeId = cloudTheme;
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+        if (this.isLoggedIn()) {
+          const active = this.getActiveUser();
+          const refreshedTheme = this.getUserTheme(active);
+          applyThemeToDocument(refreshedTheme);
+          window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: refreshedTheme }));
+        }
+      }
+    } catch (err) {
+      console.warn('syncUserThemesFromCloud error:', err);
+    }
   },
 
   // Company Logo Management (Standard Dimensions & İK Authorization + Firestore Cloud Persistence)
   getCompanyLogo(): string {
     if (firestoreAuthoritativeLogo && firestoreAuthoritativeLogo.trim() && !firestoreAuthoritativeLogo.startsWith('blob:')) {
-      return firestoreAuthoritativeLogo.trim();
+      return normalizeCompanyLogoSrc(firestoreAuthoritativeLogo);
     }
     if (inMemoryCompanyLogo && inMemoryCompanyLogo.trim() && !inMemoryCompanyLogo.startsWith('blob:')) {
-      return inMemoryCompanyLogo;
+      return normalizeCompanyLogoSrc(inMemoryCompanyLogo);
     }
     try {
       const custom = localStorage.getItem(STORAGE_KEYS.COMPANY_LOGO);
       if (custom && custom.trim() && !custom.startsWith('blob:')) {
-        inMemoryCompanyLogo = custom.trim();
+        inMemoryCompanyLogo = normalizeCompanyLogoSrc(custom);
         return inMemoryCompanyLogo;
       }
     } catch {}
@@ -2688,7 +4286,7 @@ export const pdksStorage = {
   async saveCompanyLogoAsync(
     logoUrl: string | null
   ): Promise<{ success: boolean; message: string; logo: string; cloudSynced: boolean }> {
-    const rawTrimmed = logoUrl && logoUrl.trim() ? logoUrl.trim() : '';
+    const rawTrimmed = normalizeCompanyLogoSrc(logoUrl);
     if (rawTrimmed.startsWith('blob:')) {
       return {
         success: false,
@@ -3409,6 +5007,7 @@ export const pdksStorage = {
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(DEFAULT_ACCOUNTS));
     localStorage.setItem(STORAGE_KEYS.SUPERVISOR_ASSIGNMENTS, JSON.stringify(DEFAULT_SUPERVISOR_ASSIGNMENTS));
     localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(DEFAULT_COMPANY_WALL_QR));
+    localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify([]));
     localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(DEMO_USERS[0]));
     localStorage.removeItem(STORAGE_KEYS.IS_LOGGED_OUT);
 

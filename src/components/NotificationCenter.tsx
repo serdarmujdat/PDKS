@@ -20,7 +20,8 @@ import {
   Calendar,
   Sparkles,
   Info,
-  CalendarCheck
+  CalendarCheck,
+  Smartphone
 } from 'lucide-react';
 import { PDKSNotification, NotificationSettings, CurrentUser } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
@@ -75,15 +76,16 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   useEffect(() => {
     loadNotifications();
 
-    // Listen for custom realtime notifications
+    // Listen for custom realtime notifications & SSE data sync
     const handleLiveEvent = (e: Event) => {
       const customEvent = e as CustomEvent<PDKSNotification>;
       if (customEvent.detail) {
         const notif = customEvent.detail;
         loadNotifications();
 
-        // Only show toast if relevant to this view
-        if (!effectiveFilterId || notif.employeeId === effectiveFilterId || notif.employeeId === 'all') {
+        const roleAllowed = !notif.targetRole || notif.targetRole === effectiveUser?.role;
+        // Only show toast if relevant to this view and allowed for this role
+        if (roleAllowed && (!effectiveFilterId || notif.employeeId === effectiveFilterId || notif.employeeId === 'all')) {
           setActiveToast(notif);
 
           // Sound effect
@@ -103,22 +105,30 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       }
     };
 
+    const handleSync = () => {
+      loadNotifications();
+    };
+
     window.addEventListener('pdks-notification', handleLiveEvent);
+    window.addEventListener('pdks-data-synced', handleSync);
     return () => {
       window.removeEventListener('pdks-notification', handleLiveEvent);
+      window.removeEventListener('pdks-data-synced', handleSync);
     };
-  }, [settings.soundEnabled, effectiveFilterId]);
+  }, [settings.soundEnabled, effectiveFilterId, effectiveUser?.role]);
 
   // Filtered notifications
   const relevantNotifications = useMemo(() => {
-    let list = notifications;
+    let list = notifications.filter(
+      (n) => !n.targetRole || n.targetRole === effectiveUser?.role
+    );
     if (effectiveFilterId) {
       list = list.filter(
         (n) => n.employeeId === effectiveFilterId || n.employeeId === 'all'
       );
     }
     return list;
-  }, [notifications, effectiveFilterId]);
+  }, [notifications, effectiveFilterId, effectiveUser?.role]);
 
   const filteredNotifications = useMemo(() => {
     return relevantNotifications.filter((n) => {
@@ -128,7 +138,12 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
         const isShift = n.type === 'shift_reminder' || n.type === 'check_in' || n.type === 'check_out';
         if (!isShift) return false;
       } else if (selectedCategory === 'alerts') {
-        const isAlert = n.type === 'critical_late' || n.type === 'early_leave' || n.type === 'absence_alert' || n.type === 'overtime_alert';
+        const isAlert =
+          n.type === 'critical_late' ||
+          n.type === 'early_leave' ||
+          n.type === 'absence_alert' ||
+          n.type === 'overtime_alert' ||
+          n.type === 'device_alert';
         if (!isAlert) return false;
       } else if (selectedCategory === 'leaves') {
         const isLeave = n.type === 'leave_status' || n.title.toLowerCase().includes('izin');
@@ -203,6 +218,21 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
 
   // Helper icon for notification item
   const renderIcon = (notif: PDKSNotification) => {
+    if (notif.type === 'device_alert') {
+      return (
+        <div
+          className={`w-8 h-8 rounded-xl border flex items-center justify-center shrink-0 ${
+            notif.severity === 'critical'
+              ? 'bg-rose-100 text-rose-700 border-rose-200'
+              : notif.severity === 'warning'
+              ? 'bg-amber-100 text-amber-700 border-amber-200'
+              : 'bg-emerald-100 text-emerald-700 border-emerald-200'
+          }`}
+        >
+          <Smartphone className="w-4 h-4" />
+        </div>
+      );
+    }
     if (notif.severity === 'critical') {
       return (
         <div className="w-8 h-8 rounded-xl bg-rose-100 text-rose-700 border border-rose-200 flex items-center justify-center shrink-0">
@@ -382,6 +412,115 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                     {notif.message}
                   </p>
 
+                  {notif.metadata?.isCrossEmployeeDevice && (
+                    <div className="mt-2 p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-[11px] space-y-1 text-rose-950">
+                      <div className="font-bold text-rose-800 flex items-center gap-1">
+                        <ShieldAlert className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                        <span>Başka Personel Cihazı ile Giriş Uyarısı</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
+                        <div>
+                          <span className="text-rose-700">İşlemi Yapan: </span>
+                          <strong>{notif.metadata.actorEmployeeName || notif.employeeName}</strong>
+                        </div>
+                        <div>
+                          <span className="text-rose-700">Cihaz Sahibi: </span>
+                          <strong>{notif.metadata.ownerEmployeeName || '-'}</strong>
+                        </div>
+                        <div className="font-mono">
+                          <span className="text-rose-700 font-sans">MAC / ID: </span>
+                          <strong>{notif.metadata.macAddress || notif.metadata.deviceId || '-'}</strong>
+                        </div>
+                        <div className="font-mono">
+                          <span className="text-rose-700 font-sans">Tarih & Saat: </span>
+                          <strong>{notif.metadata.eventDateTime || new Date(notif.timestamp).toLocaleString('tr-TR')}</strong>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {!isRestrictedUser && notif.type === 'device_alert' && notif.metadata?.deviceApprovalId && (() => {
+                    const matchedApproval = pdksStorage
+                      .getDeviceEntryApprovals()
+                      .find((d) => d.id === notif.metadata?.deviceApprovalId);
+                    if (!matchedApproval) return null;
+                    const isUnexpired = Date.now() < Date.parse(matchedApproval.expiresAt);
+                    const isAwaiting =
+                      isUnexpired &&
+                      (matchedApproval.status === 'pending' ||
+                        matchedApproval.status === 'check_in_requested');
+                    if (isAwaiting) {
+                      return (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className="mt-2 flex flex-wrap items-center gap-1.5"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              pdksStorage.approveDeviceEntryRequest(matchedApproval.id, {
+                                bindNewDevice: false,
+                                actorName: effectiveUser?.name,
+                              });
+                              handleMarkAsRead(notif.id);
+                              loadNotifications();
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold shadow-2xs cursor-pointer"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>Girişi Onayla</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              pdksStorage.approveDeviceEntryRequest(matchedApproval.id, {
+                                bindNewDevice: true,
+                                actorName: effectiveUser?.name,
+                              });
+                              handleMarkAsRead(notif.id);
+                              loadNotifications();
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold shadow-2xs cursor-pointer"
+                          >
+                            <Smartphone className="w-3 h-3" />
+                            <span>Onayla + Cihazı Kaydet</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              pdksStorage.rejectDeviceEntryRequest(matchedApproval.id, undefined, effectiveUser?.name);
+                              handleMarkAsRead(notif.id);
+                              loadNotifications();
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-semibold cursor-pointer"
+                          >
+                            <X className="w-3 h-3" />
+                            <span>Reddet</span>
+                          </button>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="mt-1.5">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border ${
+                            matchedApproval.status === 'approved'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : matchedApproval.status === 'rejected'
+                              ? 'bg-rose-50 text-rose-700 border-rose-200'
+                              : 'bg-slate-100 text-slate-500 border-slate-200'
+                          }`}
+                        >
+                          {matchedApproval.status === 'approved'
+                            ? `Onaylandı (${matchedApproval.resolvedBy || 'Yönetici'})`
+                            : matchedApproval.status === 'rejected'
+                            ? `Reddedildi (${matchedApproval.resolvedBy || 'Yönetici'})`
+                            : '1 Saatlik Kilit Süresi Doldu'}
+                        </span>
+                      </div>
+                    );
+                  })()}
+
                   <div className="flex items-center gap-2 mt-1.5 text-[10px] text-slate-400 font-medium">
                     {notif.employeeName && notif.employeeName !== 'Sistem' && (
                       <span className="text-slate-600 font-semibold">{notif.employeeName}</span>
@@ -484,6 +623,13 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
               <span className="text-[10px] text-slate-400 font-mono">Şimdi</span>
             </div>
             <p className="text-xs text-slate-300 mt-1 leading-snug">{activeToast.message}</p>
+            {activeToast.metadata?.isCrossEmployeeDevice && (
+              <div className="mt-1.5 p-2 rounded-lg bg-rose-500/15 border border-rose-500/30 text-[10px] text-rose-200 space-y-0.5 font-mono">
+                <div>İşlem: {activeToast.metadata.actorEmployeeName || activeToast.employeeName}</div>
+                <div>Cihaz Sahibi: {activeToast.metadata.ownerEmployeeName}</div>
+                <div>MAC: {activeToast.metadata.macAddress || activeToast.metadata.deviceId}</div>
+              </div>
+            )}
             <div className="text-[10px] text-indigo-400 font-medium mt-1">
               {activeToast.employeeName || activeToast.department}
             </div>

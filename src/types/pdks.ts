@@ -37,6 +37,16 @@ export interface Employee {
   pendingAvatar?: string | null;
   pendingAvatarDate?: string | null;
   avatarStatus?: 'approved' | 'pending' | 'rejected';
+  // Device Security & MAC / Fingerprint Binding
+  registeredDeviceId?: string;
+  registeredMacAddress?: string;
+  registeredDeviceFingerprint?: string;
+  registeredDeviceName?: string;
+  registeredDeviceAt?: string;
+  lastLoginDeviceId?: string;
+  lastLoginMacAddress?: string;
+  lastLoginDeviceName?: string;
+  lastLoginAt?: string;
 }
 
 export type ActionType = 'check_in' | 'check_out' | 'break_start' | 'break_end';
@@ -44,6 +54,13 @@ export type ActionType = 'check_in' | 'check_out' | 'break_start' | 'break_end';
 export type AttendanceStatus = 'on_time' | 'late' | 'early_leave' | 'normal' | 'overtime';
 
 export type UserRole = 'ik_yoneticisi' | 'birim_amiri' | 'yonetici' | 'personel' | 'guvenlik';
+
+export type ThemeId =
+  | 'kurumsal_saf'
+  | 'sicak_kagit'
+  | 'serin_sis'
+  | 'gece_arduvaz'
+  | 'komur_orman';
 
 export interface SupervisorAssignment {
   id: string; // e.g. "SUP-1001"
@@ -80,6 +97,55 @@ export interface UserAccount {
   // Supervisor / Birim Amiri Vardiya Yetkilendirme
   assignedEmployeeIds?: string[]; // Sorumlu olduğu personellerin sicil no listesi
   isShiftSupervisor?: boolean;     // Vardiya ayarlama yetkisi verildi mi
+  // Per-user visual theme preference
+  themeId?: ThemeId;
+  themeUpdatedAt?: string;
+  // First-login Device Registration & Multi-Device Tracking
+  registeredDeviceId?: string;
+  registeredMacAddress?: string;
+  registeredDeviceFingerprint?: string;
+  registeredDeviceName?: string;
+  registeredDeviceAt?: string;
+  lastLoginDeviceId?: string;
+  lastLoginMacAddress?: string;
+  lastLoginDeviceFingerprint?: string;
+  lastLoginDeviceName?: string;
+}
+
+export interface DeviceIdentity {
+  deviceId: string;
+  macAddress: string;
+  fingerprint: string;
+  deviceName: string;
+  platform: string;
+  browser: string;
+  createdAt: string;
+}
+
+export type DeviceApprovalStatus = 'pending' | 'check_in_requested' | 'approved' | 'rejected' | 'expired';
+
+export interface DeviceEntryApproval {
+  id: string;
+  employeeId: string;
+  accountId: string;
+  username: string;
+  employeeName: string;
+  department: Department | string;
+  registeredDeviceId: string;
+  registeredMacAddress?: string;
+  registeredDeviceName: string;
+  newDeviceId: string;
+  newMacAddress?: string;
+  newDeviceFingerprint?: string;
+  newDeviceName: string;
+  loginAt: string;
+  expiresAt: string; // 1 hour (3600s) window for manager-only first check-in approval
+  checkInRequestedAt?: string;
+  status: DeviceApprovalStatus;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  decisionNote?: string;
+  notificationId?: string;
 }
 
 export interface CurrentUser {
@@ -100,17 +166,35 @@ export interface CurrentUser {
   // Supervisor / Birim Amiri Vardiya Yetkilendirme
   assignedEmployeeIds?: string[];
   isShiftSupervisor?: boolean;
+  // Per-user visual theme preference
+  themeId?: ThemeId;
+  themeUpdatedAt?: string;
+  // Active / registered device info
+  registeredDeviceId?: string;
+  registeredMacAddress?: string;
+  registeredDeviceFingerprint?: string;
+  registeredDeviceName?: string;
+  registeredDeviceAt?: string;
+  lastLoginDeviceId?: string;
+  lastLoginMacAddress?: string;
+  lastLoginDeviceFingerprint?: string;
+  lastLoginDeviceName?: string;
 }
 
 export interface LoginResult {
   success: boolean;
   message: string;
   user?: CurrentUser;
+  firstDeviceRegistered?: boolean;
+  newDeviceDetected?: boolean;
+  crossEmployeeDeviceDetected?: boolean;
+  crossEmployeeOwnerName?: string;
+  deviceApproval?: DeviceEntryApproval;
 }
 
 export interface PDKSNotification {
   id: string;
-  type: 'critical_late' | 'early_leave' | 'overtime_alert' | 'absence_alert' | 'check_in' | 'check_out' | 'shift_reminder' | 'leave_status' | 'system_alert' | 'excel_import' | string;
+  type: 'critical_late' | 'early_leave' | 'overtime_alert' | 'absence_alert' | 'check_in' | 'check_out' | 'shift_reminder' | 'leave_status' | 'system_alert' | 'excel_import' | 'device_alert' | string;
   title: string;
   message: string;
   employeeId: string;
@@ -119,6 +203,20 @@ export interface PDKSNotification {
   timestamp: string;
   severity: 'info' | 'warning' | 'critical';
   read: boolean;
+  targetRole?: UserRole;
+  metadata?: {
+    deviceApprovalId?: string;
+    newDeviceName?: string;
+    expiresAt?: string;
+    isCrossEmployeeDevice?: boolean;
+    actorEmployeeName?: string;
+    ownerEmployeeId?: string;
+    ownerEmployeeName?: string;
+    macAddress?: string;
+    deviceId?: string;
+    deviceName?: string;
+    eventDateTime?: string;
+  };
 }
 
 export interface NotificationSettings {
@@ -186,7 +284,7 @@ export interface AttendanceRecord {
   employeeName: string;
   department: Department;
   date: string; // "YYYY-MM-DD"
-  type: ActionType;
+  type: ActionType | 'security_alert';
   timestamp: string; // ISO
   timeStr: string;   // "08:32:15"
   method: 'kiosk_camera' | 'mobile_scanner' | 'manual_admin';
@@ -197,6 +295,17 @@ export interface AttendanceRecord {
   userLocation?: { latitude: number; longitude: number };
   distanceMeters?: number;
   geofenceVerified?: boolean;
+  // Device & Cross-Employee Security Tracking
+  deviceId?: string;
+  macAddress?: string;
+  deviceName?: string;
+  deviceFingerprint?: string;
+  isSuspiciousDevice?: boolean;
+  securityEventKind?: 'login_cross_device' | 'scan_cross_device';
+  securityWarning?: string;
+  deviceOwnerEmployeeId?: string;
+  deviceOwnerEmployeeName?: string;
+  deviceOwnerMacAddress?: string;
 }
 
 export interface LeaveRequest {
@@ -273,5 +382,7 @@ export interface MobileScanResult {
   distanceMeters?: number;
   allowedRadiusMeters?: number;
   userLocation?: { latitude: number; longitude: number; accuracy?: number };
+  awaitingManagerApproval?: boolean;
+  deviceApproval?: DeviceEntryApproval;
 }
 

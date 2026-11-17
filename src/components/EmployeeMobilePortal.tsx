@@ -35,6 +35,9 @@ import {
   Bell,
   Timer,
   ExternalLink,
+  Palette,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import {
   Employee,
@@ -46,11 +49,14 @@ import {
   MobileScanMode,
   MobileScanResult,
   CompanyWallQRConfig,
+  ThemeId,
+  DeviceEntryApproval,
 } from '../types/pdks';
 import { pdksStorage, getTodayString } from '../services/storage';
 import { generateQRDataURL } from '../utils/qr';
 import { playSuccessChime, playErrorBuzzer } from '../utils/audio';
 import { NotificationCenter } from './NotificationCenter';
+import { APP_THEMES, getThemeById } from '../themes/themes';
 
 interface EmployeeMobilePortalProps {
   currentUser?: CurrentUser;
@@ -82,6 +88,9 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
   // Success Feedback Overlay & Animation
   const [scanSuccessResult, setScanSuccessResult] = useState<MobileScanResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [activeDeviceLock, setActiveDeviceLock] = useState<DeviceEntryApproval | null>(null);
+  const [deviceLockNotice, setDeviceLockNotice] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
 
   // Leave Modal State
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
@@ -111,6 +120,9 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
 
   // Current Company Wall QR configuration
   const [companyQR, setCompanyQR] = useState<CompanyWallQRConfig>(pdksStorage.getCompanyWallQR());
+  const [activeUserTheme, setActiveUserTheme] = useState<ThemeId>(() =>
+    pdksStorage.getUserTheme(currentUser || pdksStorage.getActiveUser())
+  );
 
   // GPS & Live Workplace Location Verification State (Strictly confidential)
   // GPS & Live Workplace Location Verification State (Strictly confidential)
@@ -182,15 +194,25 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     };
     const handleSyncEvent = () => {
       setCompanyQR(pdksStorage.getCompanyWallQR());
+      setActiveUserTheme(pdksStorage.getUserTheme(currentUser || pdksStorage.getActiveUser()));
+    };
+    const handleThemeEvent = (e: any) => {
+      if (e?.detail) {
+        setActiveUserTheme(e.detail as ThemeId);
+      } else {
+        setActiveUserTheme(pdksStorage.getUserTheme(currentUser || pdksStorage.getActiveUser()));
+      }
     };
     window.addEventListener('pdks-wall-qr-updated', handleWallQREvent);
     window.addEventListener('pdks-data-synced', handleSyncEvent);
+    window.addEventListener('pdks-theme-updated', handleThemeEvent);
 
     return () => {
       window.removeEventListener('pdks-wall-qr-updated', handleWallQREvent);
       window.removeEventListener('pdks-data-synced', handleSyncEvent);
+      window.removeEventListener('pdks-theme-updated', handleThemeEvent);
     };
-  }, []);
+  }, [currentUser]);
 
   // Observe device GPS location ONLY while GPS Doğrulaması (enableGeofence) is enabled
   useEffect(() => {
@@ -249,28 +271,55 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     setRecentRecords(allRecords.filter((r) => r.employeeId === targetId));
 
     // Update unread notifications count for active employee
+    const activeRole = currentUser?.role || pdksStorage.getActiveUser()?.role;
     const notifs = pdksStorage.getNotifications().filter(
-      (n) => (n.employeeId === targetId || n.employeeId === 'all' || !n.employeeId) && !n.read
+      (n) =>
+        (!n.targetRole || n.targetRole === activeRole) &&
+        (n.employeeId === targetId || n.employeeId === 'all' || !n.employeeId) &&
+        !n.read
     );
     setEmployeeUnreadCount(notifs.length);
+
+    if (targetId) {
+      setActiveDeviceLock(pdksStorage.getActiveNewDeviceLock(targetId));
+    } else {
+      setActiveDeviceLock(null);
+    }
+    setNowTick(Date.now());
   };
 
   useEffect(() => {
+    const timer = setInterval(() => {
+      setNowTick(Date.now());
+    }, 10000);
     const handleLiveEvent = () => {
       const targetId = isRestrictedPersonnel && currentUser?.employeeId ? currentUser.employeeId : selectedEmpId;
+      const activeRole = currentUser?.role || pdksStorage.getActiveUser()?.role;
       const notifs = pdksStorage.getNotifications().filter(
-        (n) => (n.employeeId === targetId || n.employeeId === 'all' || !n.employeeId) && !n.read
+        (n) =>
+          (!n.targetRole || n.targetRole === activeRole) &&
+          (n.employeeId === targetId || n.employeeId === 'all' || !n.employeeId) &&
+          !n.read
       );
       setEmployeeUnreadCount(notifs.length);
     };
+    const handleSync = () => {
+      loadData();
+    };
     window.addEventListener('pdks-notification', handleLiveEvent);
-    return () => window.removeEventListener('pdks-notification', handleLiveEvent);
+    window.addEventListener('pdks-data-synced', handleSync);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('pdks-notification', handleLiveEvent);
+      window.removeEventListener('pdks-data-synced', handleSync);
+    };
   }, [selectedEmpId, isRestrictedPersonnel, currentUser]);
 
   useEffect(() => {
     if (isRestrictedPersonnel && currentUser?.employeeId) {
       setSelectedEmpId(currentUser.employeeId);
     }
+    setActiveUserTheme(pdksStorage.getUserTheme(currentUser || pdksStorage.getActiveUser()));
   }, [currentUser, isRestrictedPersonnel]);
 
   useEffect(() => {
@@ -351,10 +400,14 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
         } else {
           playErrorBuzzer();
           setErrorMessage(result.message);
+          loadData();
+          if (result.awaitingManagerApproval) {
+            stopCamera();
+          }
           setTimeout(() => {
             setErrorMessage(null);
             scanLockRef.current = false;
-          }, 5000);
+          }, 5500);
         }
       };
 
@@ -1035,6 +1088,132 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
         </div>
       )}
 
+      {/* REGISTERED DEVICE & 1-HOUR NEW DEVICE MANAGER APPROVAL GATE */}
+      {(() => {
+        const localDevice = pdksStorage.getDeviceIdentity();
+        const linkedAccount = pdksStorage.getUserAccountByEmployeeId(currentEmp.id);
+        const lockActive =
+          activeDeviceLock &&
+          isOutside &&
+          nowTick < Date.parse(activeDeviceLock.expiresAt) &&
+          currentUser?.role !== 'ik_yoneticisi';
+        const remainingMins = lockActive
+          ? Math.max(1, Math.ceil((Date.parse(activeDeviceLock.expiresAt) - nowTick) / 60000))
+          : 0;
+
+        if (lockActive && activeDeviceLock) {
+          const isRequested = activeDeviceLock.status === 'check_in_requested';
+          const isRejected = activeDeviceLock.status === 'rejected';
+          return (
+            <div
+              className={`rounded-2xl p-4 border-2 shadow-xs space-y-3 animate-fade-in ${
+                isRejected
+                  ? 'bg-rose-50 border-rose-300 text-rose-950'
+                  : 'bg-amber-50 border-amber-300 text-amber-950'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-white ${
+                      isRejected ? 'bg-rose-600' : 'bg-amber-600'
+                    }`}
+                  >
+                    <ShieldAlert className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs sm:text-sm font-bold leading-tight">
+                      {isRejected
+                        ? 'Yeni Cihaz Giriş Talebi Reddedildi'
+                        : 'Yeni Cihazdan İlk İş Yeri Girişi Yönetici Onayında'}
+                    </h3>
+                    <p className="text-[11px] opacity-85 mt-0.5">
+                      Farklı bir cihazdan giriş yaptığınız için <strong>1 saat</strong> boyunca ilk iş yeri girişinizi yalnızca yönetici onaylayabilir.
+                    </p>
+                  </div>
+                </div>
+                <span className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-white/80 border border-amber-300 text-amber-900">
+                  {remainingMins} dk
+                </span>
+              </div>
+
+              <div className="bg-white/80 rounded-xl p-2.5 border border-amber-200/80 text-[11px] space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500">Kayıtlı Cihaz:</span>
+                  <span className="font-mono font-semibold text-slate-800 text-right">
+                    {activeDeviceLock.registeredDeviceName}
+                    {activeDeviceLock.registeredMacAddress ? ` (${activeDeviceLock.registeredMacAddress})` : ''}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500">Aktif Cihaz:</span>
+                  <span className="font-mono font-bold text-rose-700 text-right">
+                    {activeDeviceLock.newDeviceName}
+                    {activeDeviceLock.newMacAddress ? ` (${activeDeviceLock.newMacAddress})` : ''}
+                  </span>
+                </div>
+              </div>
+
+              {deviceLockNotice && (
+                <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-[11px] font-semibold">
+                  {deviceLockNotice}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] font-semibold">
+                  {isRejected
+                    ? 'Durum: Yönetici reddetti (yalnızca yönetici onaylarsa giriş açılır)'
+                    : isRequested
+                    ? 'Durum: Yönetici onayı bekleniyor...'
+                    : 'Durum: İlk iş yeri girişi için yönetici onayı gerekli'}
+                </span>
+                {!isRejected && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const res = pdksStorage.requestNewDeviceCheckInApproval(currentEmp.id);
+                      setDeviceLockNotice(res.message);
+                      loadData();
+                      setTimeout(() => setDeviceLockNotice(null), 5000);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-xs cursor-pointer transition-colors"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>{isRequested ? 'Yöneticiye Tekrar Hatırlat' : 'Yöneticiye Onay Talebi Gönder'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        }
+
+        const regMac = linkedAccount?.registeredMacAddress || currentEmp.registeredMacAddress || localDevice.macAddress;
+        const regDevId = linkedAccount?.registeredDeviceId || currentEmp.registeredDeviceId || localDevice.deviceId;
+        const regDevName = linkedAccount?.registeredDeviceName || currentEmp.registeredDeviceName || localDevice.deviceName;
+
+        return (
+          <div className="bg-white rounded-2xl px-3.5 py-2.5 border border-slate-200 shadow-2xs flex items-center justify-between gap-2 text-[11px]">
+            <div className="flex items-center gap-2 min-w-0">
+              <Smartphone className="w-4 h-4 text-indigo-600 shrink-0" />
+              <div className="min-w-0">
+                <div className="truncate">
+                  <span className="text-slate-500">Kayıtlı Cihaz: </span>
+                  <span className="font-mono font-semibold text-slate-800">{regDevName}</span>
+                </div>
+                <div className="text-[10px] font-mono text-slate-400 truncate">
+                  MAC: {regMac} · ID: {regDevId}
+                </div>
+              </div>
+            </div>
+            <span className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-semibold">
+              <Check className="w-3 h-3" />
+              <span>Doğrulanmış</span>
+            </span>
+          </div>
+        );
+      })()}
+
       {/* CANLI KONUM & İŞYERİ GEOFENCE DOĞRULAMA KARTI (GPS Doğrulaması ayarına göre dinamik) */}
       <div
         className={`rounded-2xl p-4 border transition-all shadow-xs space-y-3 ${
@@ -1645,6 +1824,79 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
               </div>
             </div>
 
+            {/* PERSONAL ACCOUNT THEME PICKER */}
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  <Palette className="w-4 h-4 text-indigo-600" />
+                  <span>Kişisel Hesap Temam</span>
+                </span>
+                <span className="text-[10px] font-semibold text-slate-500">
+                  {getThemeById(activeUserTheme).name}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-snug">
+                Seçtiğiniz tema yalnızca sizin hesabınıza kaydedilir ve göz yormayan dengeli kontrast sunar.
+              </p>
+              <div className="grid grid-cols-1 gap-1.5">
+                {APP_THEMES.map((theme) => {
+                  const selected = activeUserTheme === theme.id;
+                  return (
+                    <button
+                      key={theme.id}
+                      type="button"
+                      onClick={() => {
+                        setActiveUserTheme(theme.id);
+                        void pdksStorage.saveUserTheme(theme.id, currentUser || pdksStorage.getActiveUser());
+                      }}
+                      className={`w-full flex items-center justify-between p-2 rounded-xl border text-left transition-all cursor-pointer ${
+                        selected
+                          ? 'border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-500'
+                          : 'border-slate-200 bg-white hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span
+                          data-theme-keep="true"
+                          className="w-8 h-8 rounded-lg border shrink-0 flex flex-col justify-between p-1"
+                          style={{
+                            backgroundColor: theme.preview.bg,
+                            borderColor: theme.preview.border,
+                          }}
+                        >
+                          <span
+                            className="w-full h-2 rounded-xs"
+                            style={{ backgroundColor: theme.preview.surface }}
+                          />
+                          <span
+                            className="w-3.5 h-1.5 rounded-xs"
+                            style={{ backgroundColor: theme.preview.accent }}
+                          />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                            <span>{theme.name}</span>
+                            <span className="text-[10px] font-medium text-slate-500 flex items-center gap-0.5">
+                              {theme.mode === 'dark' ? (
+                                <Moon className="w-3 h-3" />
+                              ) : (
+                                <Sun className="w-3 h-3" />
+                              )}
+                              {theme.mode === 'dark' ? 'Koyu' : 'Açık'}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-500 truncate">{theme.subtitle}</div>
+                        </div>
+                      </div>
+                      {selected && (
+                        <CheckCircle2 className="w-4 h-4 text-indigo-600 shrink-0" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* PENDING PHOTO STATUS (Eğer İK Onayı Bekleyen Fotoğraf Varsa) */}
             {currentEmp.avatarStatus === 'pending' && currentEmp.pendingAvatar && (
               <div className="p-3.5 bg-amber-50 rounded-xl border-2 border-amber-300 space-y-2.5">
@@ -1878,17 +2130,22 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
                   const isCheckOut = rec.type === 'check_out';
                   const isBreakStart = rec.type === 'break_start';
                   const isBreakEnd = rec.type === 'break_end';
+                  const isSecurityAlert = rec.type === 'security_alert';
 
                   return (
                     <div
                       key={rec.id}
-                      className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between text-xs"
+                      className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
+                        rec.isSuspiciousDevice || isSecurityAlert
+                          ? 'bg-rose-50/70 border-rose-200'
+                          : 'bg-slate-50 border-slate-200'
+                      }`}
                     >
-                      <div className="flex items-center gap-2.5">
-                        <span className="font-mono font-bold text-slate-900 text-sm">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="font-mono font-bold text-slate-900 text-sm shrink-0">
                           {rec.timeStr}
                         </span>
-                        <div>
+                        <div className="min-w-0">
                           {isCheckIn && (
                             <span className="inline-flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md">
                               <ArrowDownRight className="w-3.5 h-3.5" /> Vardiya Girişi
@@ -1909,10 +2166,15 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
                               <RefreshCw className="w-3.5 h-3.5" /> Moladan Dönüş
                             </span>
                           )}
+                          {isSecurityAlert && (
+                            <span className="inline-flex items-center gap-1 font-bold text-rose-700 bg-rose-100 px-2 py-0.5 rounded-md">
+                              <ShieldAlert className="w-3.5 h-3.5" /> Cihaz Güvenlik Kaydı
+                            </span>
+                          )}
                         </div>
                       </div>
 
-                      <span className="text-[11px] text-slate-500 font-medium">
+                      <span className="text-[11px] text-slate-500 font-medium shrink-0 ml-2">
                         {rec.terminal || 'Mobil QR'}
                       </span>
                     </div>

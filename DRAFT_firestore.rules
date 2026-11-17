@@ -65,6 +65,21 @@ service cloud.firestore {
         data.grantedAt == request.time;
     }
 
+    function isValidUserAccountTheme(data) {
+      return data.keys().hasAll(['themeId', 'updatedAt', 'ownerUid']) &&
+        data.keys().hasOnly(['themeId', 'updatedAt', 'ownerUid']) &&
+        data.themeId is string &&
+        data.themeId.size() >= 5 &&
+        data.themeId.size() <= 32 &&
+        data.themeId in ['kurumsal_saf', 'sicak_kagit', 'serin_sis', 'gece_arduvaz', 'komur_orman'] &&
+        data.updatedAt is timestamp &&
+        data.updatedAt == request.time &&
+        data.ownerUid is string &&
+        data.ownerUid.size() >= 1 &&
+        data.ownerUid.size() <= 128 &&
+        data.ownerUid == request.auth.uid;
+    }
+
     // ==========================================
     // Collection Rules
     // ==========================================
@@ -109,6 +124,37 @@ service cloud.firestore {
       allow delete: if isAdmin() &&
         isValidId(uid) &&
         uid != request.auth.uid;
+    }
+
+    match /user_preferences/{uid}/account_themes/{accountKey} {
+      allow get: if isVerified() &&
+        isValidId(uid) &&
+        isValidId(accountKey) &&
+        request.auth.uid == uid;
+
+      allow list: if isVerified() &&
+        isValidId(uid) &&
+        request.auth.uid == uid &&
+        resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isVerified() &&
+        isValidId(uid) &&
+        isValidId(accountKey) &&
+        request.auth.uid == uid &&
+        isValidUserAccountTheme(incoming());
+
+      allow update: if isVerified() &&
+        isValidId(uid) &&
+        isValidId(accountKey) &&
+        request.auth.uid == uid &&
+        isValidUserAccountTheme(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['themeId', 'updatedAt', 'ownerUid']);
+
+      allow delete: if isVerified() &&
+        isValidId(uid) &&
+        isValidId(accountKey) &&
+        request.auth.uid == uid;
     }
   }
 }

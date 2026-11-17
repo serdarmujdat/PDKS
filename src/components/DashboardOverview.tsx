@@ -24,8 +24,10 @@ import {
   Check,
   X,
   FileCheck2,
+  Smartphone,
+  ShieldAlert,
 } from 'lucide-react';
-import { Employee, AttendanceRecord, Department, OvertimeRequest, LeaveRequest } from '../types/pdks';
+import { Employee, AttendanceRecord, Department, OvertimeRequest, LeaveRequest, DeviceEntryApproval, PDKSNotification } from '../types/pdks';
 import { pdksStorage, getTodayString } from '../services/storage';
 import { NotificationCenter } from './NotificationCenter';
 import { CompanyLogoImage } from './CompanyLogoImage';
@@ -57,8 +59,11 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [overtimeRequests, setOvertimeRequests] = useState<OvertimeRequest[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
+  const [deviceApprovals, setDeviceApprovals] = useState<DeviceEntryApproval[]>([]);
+  const [crossDeviceAlerts, setCrossDeviceAlerts] = useState<PDKSNotification[]>([]);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
   const [statusFilter, setStatusFilter] = useState<'all' | 'inside' | 'break' | 'outside' | 'leave'>('all');
-  const [approvalFilter, setApprovalFilter] = useState<'all' | 'overtime' | 'leave'>('all');
+  const [approvalFilter, setApprovalFilter] = useState<'all' | 'device' | 'overtime' | 'leave'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
   const [unreadAlertCount, setUnreadAlertCount] = useState(0);
@@ -74,13 +79,25 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
     setRecords(pdksStorage.getAttendanceRecords());
     setOvertimeRequests(pdksStorage.getOvertimeRequests());
     setLeaveRequests(pdksStorage.getLeaveRequests());
+    setDeviceApprovals(pdksStorage.getDeviceEntryApprovals());
+    setNowTick(Date.now());
     setCompanyLogo(pdksStorage.getCompanyLogo());
-    const notifs = pdksStorage.getNotifications().filter((n) => !n.read);
+    const allNotifs = pdksStorage.getNotifications();
+    const notifs = allNotifs.filter((n) => !n.read && (!n.targetRole || n.targetRole === activeUser.role));
     setUnreadAlertCount(notifs.length);
+    setCrossDeviceAlerts(
+      allNotifs
+        .filter((n) => n.metadata?.isCrossEmployeeDevice && !n.read && (!n.targetRole || n.targetRole === activeUser.role))
+        .slice(0, 4)
+    );
   };
 
   useEffect(() => {
     loadData();
+
+    const timer = setInterval(() => {
+      setNowTick(Date.now());
+    }, 10000);
 
     const handleLiveEvent = () => {
       loadData();
@@ -96,11 +113,34 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
     window.addEventListener('pdks-data-synced', handleLiveEvent);
     window.addEventListener('pdks-logo-updated', handleLogoEvent);
     return () => {
+      clearInterval(timer);
       window.removeEventListener('pdks-notification', handleLiveEvent);
       window.removeEventListener('pdks-data-synced', handleLiveEvent);
       window.removeEventListener('pdks-logo-updated', handleLogoEvent);
     };
   }, []);
+
+  // Handlers for New Device Entry Approvals
+  const handleApproveDeviceEntry = (id: string, bindNewDevice: boolean) => {
+    const res = pdksStorage.approveDeviceEntryRequest(id, {
+      bindNewDevice,
+      actorName: activeUser.name,
+    });
+    if (res.success) {
+      loadData();
+      setApprovalFeedback(`✅ ${res.message}`);
+      setTimeout(() => setApprovalFeedback(null), 5000);
+    }
+  };
+
+  const handleRejectDeviceEntry = (id: string) => {
+    const res = pdksStorage.rejectDeviceEntryRequest(id, undefined, activeUser.name);
+    if (res.success) {
+      loadData();
+      setApprovalFeedback(`❌ ${res.message}`);
+      setTimeout(() => setApprovalFeedback(null), 4500);
+    }
+  };
 
   // Handlers for Overtime Approval
   const handleApproveOvertime = (id: string) => {
@@ -143,10 +183,16 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   const leaveEmployees = employees.filter((e) => e.status === 'leave');
   const outsideEmployees = employees.filter((e) => e.currentPresence === 'outside' && e.status !== 'leave');
 
-  // Pending Approvals (Fazla Mesai ve İzin Talepleri)
+  // Pending Approvals (Yeni Cihaz Güvenlik Onayları, Fazla Mesai ve İzin Talepleri)
+  const activeDeviceApprovals = deviceApprovals.filter(
+    (d) =>
+      (d.status === 'pending' || d.status === 'check_in_requested') &&
+      nowTick < Date.parse(d.expiresAt)
+  );
   const pendingOvertimes = overtimeRequests.filter((r) => r.status === 'pending');
   const pendingLeaves = leaveRequests.filter((l) => l.status === 'pending');
-  const totalPendingApprovals = pendingOvertimes.length + pendingLeaves.length;
+  const totalPendingApprovals =
+    activeDeviceApprovals.length + pendingOvertimes.length + pendingLeaves.length;
   
   // Late today check (local date matching storage & server /api/scan)
   const todayStr = getTodayString();
@@ -199,8 +245,20 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       r.department,
       r.date,
       r.timeStr,
-      r.type === 'check_in' ? 'Giriş' : r.type === 'check_out' ? 'Çıkış' : 'Mola',
-      r.status === 'late' ? `Geç (${r.lateMinutes} dk)` : r.status === 'early_leave' ? 'Erken Çıkış' : 'Zamanında',
+      r.type === 'check_in'
+        ? 'Giriş'
+        : r.type === 'check_out'
+        ? 'Çıkış'
+        : r.type === 'security_alert'
+        ? 'Güvenlik Uyarısı'
+        : 'Mola',
+      r.isSuspiciousDevice
+        ? 'Şüpheli Cihaz'
+        : r.status === 'late'
+        ? `Geç (${r.lateMinutes} dk)`
+        : r.status === 'early_leave'
+        ? 'Erken Çıkış'
+        : 'Zamanında',
       r.terminal || '-',
     ]);
 
@@ -455,6 +513,73 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         </div>
       )}
 
+      {/* KRİTİK CİHAZ GÜVENLİĞİ BİLDİRİMLERİ: Başka Personel Cihazı ile Giriş */}
+      {isHRManager && crossDeviceAlerts.length > 0 && (
+        <div className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3 animate-fade-in">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0">
+                <ShieldAlert className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-rose-950 flex items-center gap-2 flex-wrap">
+                  <span>Başka Personel Cihazı ile Giriş Tespit Edildi</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-200 text-rose-900">
+                    {crossDeviceAlerts.length} Anlık Uyarı
+                  </span>
+                </h2>
+                <p className="text-xs text-rose-800">
+                  Bir personel, veritabanında başka bir personele kayıtlı cihaz üzerinden giriş/vardiya işlemi gerçekleştirdi.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={onNavigateToRecords}
+                className="px-3 py-1.5 rounded-lg bg-white hover:bg-rose-100 text-rose-800 border border-rose-300 text-xs font-bold cursor-pointer"
+              >
+                Hareket Kayıtlarını Aç
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  crossDeviceAlerts.forEach((a) => pdksStorage.markNotificationAsRead(a.id));
+                  loadData();
+                }}
+                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer"
+              >
+                Okundu İşaretle
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+            {crossDeviceAlerts.map((alert) => (
+              <div
+                key={alert.id}
+                className="bg-white rounded-xl p-3 border border-rose-200 text-xs space-y-1.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-rose-900">{alert.metadata?.actorEmployeeName || alert.employeeName}</span>
+                  <span className="text-[10px] font-mono text-slate-500">
+                    {alert.metadata?.eventDateTime || new Date(alert.timestamp).toLocaleString('tr-TR')}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-700 space-y-0.5">
+                  <div>
+                    Cihazın Asıl Sahibi: <strong className="text-rose-700">{alert.metadata?.ownerEmployeeName || '-'}</strong>
+                  </div>
+                  <div className="font-mono text-[10px] text-slate-600">
+                    MAC / ID: <strong className="text-slate-900">{alert.metadata?.macAddress || alert.metadata?.deviceId || '-'}</strong>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* İK ONAY BEKLEYENLER LİSTESİ: Fazla Mesai & İzin Talepleri */}
       <div id="pending-approvals-section" className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-xs space-y-5">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
@@ -464,7 +589,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                 <FileCheck2 className="w-4 h-4" />
               </div>
               <h2 className="text-lg font-bold text-slate-900">
-                Onay Bekleyen Talepler (Fazla Mesai & İzinler)
+                Onay Bekleyen Talepler (Yeni Cihaz, Fazla Mesai & İzinler)
               </h2>
               {totalPendingApprovals > 0 ? (
                 <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
@@ -478,7 +603,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               )}
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              Personel mobil portalı üzerinden talep edilen fazla mesailer ve izinler buraya düşer. İK onayladığında sistem içi <strong>Bildirim Merkezi</strong>'ne ve personele anlık bildirim düşer.
+              Farklı cihazdan giriş yapan personellerin 1 saat içerisindeki ilk iş yeri giriş onayları, fazla mesailer ve izinler anlık olarak buraya düşer.
             </p>
           </div>
 
@@ -493,6 +618,17 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               }`}
             >
               Tümü ({totalPendingApprovals})
+            </button>
+            <button
+              onClick={() => setApprovalFilter('device')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
+                approvalFilter === 'device'
+                  ? 'bg-rose-600 text-white shadow-xs'
+                  : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
+              }`}
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>Yeni Cihaz ({activeDeviceApprovals.length})</span>
             </button>
             <button
               onClick={() => setApprovalFilter('overtime')}
@@ -521,6 +657,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
         {/* List of Requests */}
         {totalPendingApprovals === 0 ||
+        (approvalFilter === 'device' && activeDeviceApprovals.length === 0) ||
         (approvalFilter === 'overtime' && pendingOvertimes.length === 0) ||
         (approvalFilter === 'leave' && pendingLeaves.length === 0) ? (
           <div className="py-8 text-center bg-slate-50/70 border border-dashed border-slate-200 rounded-xl space-y-2">
@@ -528,18 +665,139 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               <Check className="w-5 h-5" />
             </div>
             <p className="font-semibold text-xs text-slate-800">
-              {approvalFilter === 'overtime'
+              {approvalFilter === 'device'
+                ? 'Onay bekleyen yeni cihaz iş yeri girişi bulunmuyor.'
+                : approvalFilter === 'overtime'
                 ? 'Onay bekleyen fazla mesai talebi bulunmuyor.'
                 : approvalFilter === 'leave'
                 ? 'Onay bekleyen izin talebi bulunmuyor.'
-                : 'Şu an İK onayını bekleyen fazla mesai veya izin talebi bulunmamaktadır.'}
+                : 'Şu an İK onayını bekleyen yeni cihaz girişi, fazla mesai veya izin talebi bulunmamaktadır.'}
             </p>
             <p className="text-[11px] text-slate-400 max-w-md mx-auto">
-              Personel mobil portalı üzerinden yeni bir fazla mesai veya izin formu gönderildiğinde anlık olarak burada listelenecektir.
+              Personel farklı bir cihazdan giriş yaptığında veya fazla mesai / izin formu gönderdiğinde anlık olarak burada listelenecektir.
             </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            {/* 0. NEW DEVICE 1-HOUR ENTRY APPROVAL REQUESTS */}
+            {(approvalFilter === 'all' || approvalFilter === 'device') &&
+              activeDeviceApprovals.map((devReq) => {
+                const remainingMins = Math.max(
+                  1,
+                  Math.ceil((Date.parse(devReq.expiresAt) - nowTick) / 60000)
+                );
+                const isRequested = devReq.status === 'check_in_requested';
+                return (
+                  <div
+                    key={devReq.id}
+                    className={`rounded-xl p-4 shadow-2xs space-y-3 flex flex-col justify-between transition-colors border ${
+                      isRequested
+                        ? 'bg-rose-50/60 border-rose-300 hover:border-rose-400'
+                        : 'bg-amber-50/50 border-amber-300 hover:border-amber-400'
+                    }`}
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                            isRequested
+                              ? 'bg-rose-100 text-rose-800 border-rose-200'
+                              : 'bg-amber-100 text-amber-800 border-amber-200'
+                          }`}
+                        >
+                          <ShieldAlert className="w-3 h-3" />
+                          {isRequested ? 'İş Yeri Girişi Denendi (Acil)' : 'Farklı Cihazdan Giriş'}
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-rose-700 bg-white px-2 py-0.5 rounded border border-rose-200">
+                          {remainingMins} dk kaldı
+                        </span>
+                      </div>
+
+                      <div>
+                        <div className="font-bold text-sm text-slate-900">{devReq.employeeName}</div>
+                        <div className="text-[11px] text-slate-500 font-mono">
+                          @{devReq.username} · {devReq.department}
+                        </div>
+                      </div>
+
+                      <div className="p-2.5 rounded-lg bg-white border border-slate-200 space-y-1.5 text-xs">
+                        <div className="flex justify-between items-center gap-2 text-slate-700">
+                          <span className="text-slate-500 shrink-0">Kayıtlı Cihaz:</span>
+                          <span className="font-mono font-semibold text-slate-800 truncate">
+                            {devReq.registeredDeviceName}
+                            {devReq.registeredMacAddress ? ` (${devReq.registeredMacAddress})` : ''}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center gap-2 text-slate-700">
+                          <span className="text-slate-500 shrink-0">Yeni Cihaz:</span>
+                          <span className="font-mono font-bold text-rose-700 truncate">
+                            {devReq.newDeviceName}
+                            {devReq.newMacAddress ? ` (${devReq.newMacAddress})` : ''}
+                          </span>
+                        </div>
+                        <div className="pt-1.5 border-t border-slate-100 text-[11px] text-slate-600">
+                          Yeni cihazdan giriş sonrası <strong>1 saat</strong> içindeki ilk iş yeri girişi yalnızca yönetici onayına tabidir.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-200/70 space-y-2">
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                        <span>
+                          Giriş:{' '}
+                          {new Date(devReq.loginAt).toLocaleTimeString('tr-TR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                        <span>
+                          Kilit Bitişi:{' '}
+                          {new Date(devReq.expiresAt).toLocaleTimeString('tr-TR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                      {isHRManager ? (
+                        <div className="flex flex-wrap items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleRejectDeviceEntry(devReq.id)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                            title="Yeni cihazdan iş yeri girişini reddet"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                            <span>Reddet</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleApproveDeviceEntry(devReq.id, false)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors cursor-pointer"
+                            title="Sadece bugünkü ilk iş yeri girişini onayla"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Girişi Onayla</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleApproveDeviceEntry(devReq.id, true)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs transition-colors cursor-pointer"
+                            title="İş yeri girişini onayla ve yeni cihazı kullanıcının ana cihazı olarak kaydet"
+                          >
+                            <Smartphone className="w-3.5 h-3.5" />
+                            <span>Onayla + Cihazı Kaydet</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-amber-700 font-semibold text-right">
+                          Yalnızca İK Yöneticisi onaylayabilir
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
             {/* 1. OVERTIME REQUESTS */}
             {(approvalFilter === 'all' || approvalFilter === 'overtime') &&
               pendingOvertimes.map((ot) => (
@@ -713,11 +971,16 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                 const isCheckIn = rec.type === 'check_in';
                 const isCheckOut = rec.type === 'check_out';
                 const isBreak = rec.type.startsWith('break');
+                const isSecurityAlert = rec.type === 'security_alert';
 
                 return (
                   <div
                     key={rec.id}
-                    className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between gap-2.5"
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-2.5 ${
+                      rec.isSuspiciousDevice || isSecurityAlert
+                        ? 'bg-rose-50/70 border-rose-300'
+                        : 'bg-slate-50 border-slate-200/80'
+                    }`}
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 mb-0.5">
@@ -731,6 +994,11 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                         {rec.employeeName}
                       </div>
                       <div className="text-[10px] text-slate-500 truncate">{rec.department}</div>
+                      {rec.isSuspiciousDevice && (
+                        <div className="text-[10px] font-semibold text-rose-700 truncate mt-0.5">
+                          Başka Cihaz ({rec.deviceOwnerEmployeeName || '-'})
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex flex-col items-end gap-1 shrink-0">
@@ -750,9 +1018,16 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                           {rec.type === 'break_start' ? 'Mola Başla' : 'Mola Bitir'}
                         </span>
                       )}
+                      {isSecurityAlert && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                          <ShieldAlert className="w-3 h-3 text-rose-600" /> Güvenlik
+                        </span>
+                      )}
 
                       <span className="text-[10px]">
-                        {rec.status === 'late' ? (
+                        {rec.isSuspiciousDevice ? (
+                          <span className="text-rose-700 font-bold">Şüpheli Cihaz</span>
+                        ) : rec.status === 'late' ? (
                           <span className="text-amber-700 font-semibold">Geç (+{rec.lateMinutes} dk)</span>
                         ) : rec.status === 'on_time' ? (
                           <span className="text-emerald-700 font-medium">Zamanında</span>
@@ -779,7 +1054,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                   <th className="py-2.5 px-3">Departman</th>
                   <th className="py-2.5 px-3">Hareket Tipi</th>
                   <th className="py-2.5 px-3">Durum</th>
-                  <th className="py-2.5 px-3">Terminal</th>
+                  <th className="py-2.5 px-3">Terminal / Cihaz</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -794,9 +1069,17 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                     const isCheckIn = rec.type === 'check_in';
                     const isCheckOut = rec.type === 'check_out';
                     const isBreak = rec.type.startsWith('break');
+                    const isSecurityAlert = rec.type === 'security_alert';
 
                     return (
-                      <tr key={rec.id} className="hover:bg-slate-50/70 transition-colors">
+                      <tr
+                        key={rec.id}
+                        className={`transition-colors ${
+                          rec.isSuspiciousDevice || isSecurityAlert
+                            ? 'bg-rose-50/60 hover:bg-rose-50'
+                            : 'hover:bg-slate-50/70'
+                        }`}
+                      >
                         <td className="py-2.5 px-3 font-mono font-medium text-slate-900 tabular-nums">
                           {rec.timeStr}
                         </td>
@@ -824,23 +1107,46 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                                 <Coffee className="w-3 h-3" /> {rec.type === 'break_start' ? 'Mola Başlangıç' : 'Mola Bitiş'}
                               </span>
                             )}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <span className="text-slate-600 font-medium">
-                            {rec.status === 'late' ? (
-                              <span className="text-amber-700">Geç ({rec.lateMinutes} dk)</span>
-                            ) : rec.status === 'on_time' ? (
-                              <span className="text-emerald-700">Zamanında</span>
-                            ) : rec.status === 'early_leave' ? (
-                              <span className="text-orange-700">Erken Çıkış</span>
-                            ) : (
-                              <span>Normal</span>
+                            {isSecurityAlert && (
+                              <span className="text-rose-700 flex items-center gap-1 font-semibold">
+                                <ShieldAlert className="w-3 h-3" /> Güvenlik Uyarısı
+                              </span>
                             )}
                           </span>
                         </td>
+                        <td className="py-2.5 px-3">
+                          {rec.isSuspiciousDevice ? (
+                            <div>
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200 text-[10px] font-bold">
+                                Başka Personel Cihazı
+                              </span>
+                              {rec.deviceOwnerEmployeeName && (
+                                <div className="text-[10px] text-rose-700 font-medium mt-0.5">
+                                  Sahip: {rec.deviceOwnerEmployeeName}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-600 font-medium">
+                              {rec.status === 'late' ? (
+                                <span className="text-amber-700">Geç ({rec.lateMinutes} dk)</span>
+                              ) : rec.status === 'on_time' ? (
+                                <span className="text-emerald-700">Zamanında</span>
+                              ) : rec.status === 'early_leave' ? (
+                                <span className="text-orange-700">Erken Çıkış</span>
+                              ) : (
+                                <span>Normal</span>
+                              )}
+                            </span>
+                          )}
+                        </td>
                         <td className="py-2.5 px-3 text-slate-500 text-[11px]">
-                          {rec.terminal || 'Kiosk Giriş'}
+                          <div>{rec.terminal || 'Kiosk Giriş'}</div>
+                          {rec.macAddress && (
+                            <div className="text-[10px] font-mono text-slate-400">
+                              MAC: {rec.macAddress}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );

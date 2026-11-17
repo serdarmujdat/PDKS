@@ -9,6 +9,7 @@
 6. `updatedByUid` must equal `request.auth.uid` on both create and update (no identity spoofing).
 7. Strict key allowlists (`hasAll` + `hasOnly` on create, `affectedKeys().hasOnly(...)` on update) block shadow/ghost fields.
 8. Document IDs are validated via `isValidId()` matching `^[a-zA-Z0-9_\-]+$` (max 128 chars).
+9. Per-user theme preferences at `/user_preferences/{uid}/account_themes/{accountKey}` are strictly readable and writable only by `request.auth.uid == uid` with verified email (`isVerified()`), `ownerUid == request.auth.uid`, and `themeId` constrained strictly to the 5 allowlisted theme IDs.
 
 ## 2. Dirty Dozen Attack Payloads (Expected: PERMISSION_DENIED)
 1. Unauthenticated write to `/company_branding/logo` -> DENIED (`!isAdmin()`).
@@ -22,4 +23,6 @@
 9. Client-forged `updatedAt != request.time` -> DENIED (`updatedAt == request.time`).
 10. Collection listing on `/company_branding` (`list`) -> DENIED (`allow list: if false`).
 11. Unauthenticated or non-admin read of `/admins/{otherUid}` -> DENIED (`request.auth.uid == uid || isAdmin()`).
-12. Path ID poisoning `/company_branding/logo..slash` -> DENIED (`isValidId`).
+12. Path ID poisoning `/company_branding/logo..slash` or cross-user `/user_preferences/{otherUid}/account_themes/ACC-1001` read/write -> DENIED (`isValidId` & `request.auth.uid == uid`).
+13. Arbitrary unallowlisted themeId `{ themeId: "rainbow_neon", ownerUid: uid, updatedAt: request.time }` -> DENIED (`themeId in [...]`).
+14. Shadow field on theme doc `{ themeId: "gece_arduvaz", ownerUid: uid, updatedAt: request.time, role: "ik_yoneticisi" }` -> DENIED (`hasOnly`).

@@ -12,8 +12,10 @@ import { LandingLoginPage } from './components/LandingLoginPage';
 import { CompanyLogoModal } from './components/CompanyLogoModal';
 import { LoginModal } from './components/LoginModal';
 import { CompanyWallQRModal } from './components/CompanyWallQRModal';
-import { CurrentUser } from './types/pdks';
+import { ThemeSettingsModal } from './components/ThemeSettingsModal';
+import { CurrentUser, ThemeId } from './types/pdks';
 import { pdksStorage } from './services/storage';
+import { applyThemeToDocument, DEFAULT_THEME_ID, isValidThemeId } from './themes/themes';
 import { RotateCcw, Key, Printer, Image as ImageIcon, AlertTriangle, RefreshCw } from 'lucide-react';
 
 interface ErrorBoundaryProps {
@@ -83,6 +85,14 @@ export default function App() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isLogoModalOpen, setIsLogoModalOpen] = useState(false);
   const [isWallQRModalOpen, setIsWallQRModalOpen] = useState(false);
+  const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
+  const [activeTheme, setActiveTheme] = useState<ThemeId>(() => {
+    const initialTheme = pdksStorage.isLoggedIn()
+      ? pdksStorage.getUserTheme(pdksStorage.getActiveUser())
+      : DEFAULT_THEME_ID;
+    applyThemeToDocument(initialTheme);
+    return initialTheme;
+  });
 
   // If active user is not ik_yoneticisi, ensure restricted access (Birim Amirleri can access shifts, portal, kiosk)
   useEffect(() => {
@@ -103,11 +113,20 @@ export default function App() {
     });
     const unsubscribeCloudLogo = pdksStorage.subscribeToCloudLogo();
 
+    // Hydrate per-user cloud themes if signed into Google Firebase Auth
+    void pdksStorage.syncUserThemesFromCloud();
+
     let debounceTimer: any = null;
     const handleSync = () => {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         setCompanyLogo(pdksStorage.getCompanyLogo());
+        if (pdksStorage.isLoggedIn()) {
+          const usr = pdksStorage.getActiveUser();
+          const usrTheme = pdksStorage.getUserTheme(usr);
+          setActiveTheme(usrTheme);
+          applyThemeToDocument(usrTheme);
+        }
       }, 300);
     };
 
@@ -117,14 +136,23 @@ export default function App() {
       }
     };
 
+    const handleThemeUpdate = (e: any) => {
+      if (e?.detail && isValidThemeId(e.detail)) {
+        setActiveTheme(e.detail);
+        applyThemeToDocument(e.detail);
+      }
+    };
+
     window.addEventListener('pdks-data-synced', handleSync);
     window.addEventListener('pdks-logo-updated', handleLogoUpdate);
+    window.addEventListener('pdks-theme-updated', handleThemeUpdate);
 
     return () => {
       clearTimeout(debounceTimer);
       unsubscribeCloudLogo();
       window.removeEventListener('pdks-data-synced', handleSync);
       window.removeEventListener('pdks-logo-updated', handleLogoUpdate);
+      window.removeEventListener('pdks-theme-updated', handleThemeUpdate);
     };
   }, []);
 
@@ -135,7 +163,11 @@ export default function App() {
 
   const handleSwitchUser = (user: CurrentUser) => {
     pdksStorage.setActiveUser(user);
-    setCurrentUser(user);
+    const updatedUser = pdksStorage.getActiveUser();
+    const userTheme = pdksStorage.getUserTheme(updatedUser);
+    setCurrentUser(updatedUser);
+    setActiveTheme(userTheme);
+    applyThemeToDocument(userTheme);
     setIsLoggedIn(true);
     if (user.role === 'ik_yoneticisi') {
       setActiveTab('dashboard');
@@ -148,7 +180,10 @@ export default function App() {
   };
 
   const handleLoginSuccess = (user: CurrentUser) => {
+    const userTheme = pdksStorage.getUserTheme(user);
     setCurrentUser(user);
+    setActiveTheme(userTheme);
+    applyThemeToDocument(userTheme);
     setIsLoggedIn(true);
     if (user.role === 'ik_yoneticisi') {
       setActiveTab('dashboard');
@@ -163,6 +198,8 @@ export default function App() {
   const handleLogout = () => {
     pdksStorage.logout();
     setIsLoggedIn(false);
+    setActiveTheme(DEFAULT_THEME_ID);
+    applyThemeToDocument(DEFAULT_THEME_ID);
     setRefreshKey((prev) => prev + 1);
   };
 
@@ -197,7 +234,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-900 selection:bg-indigo-600 selection:text-white">
-      {/* Top Navbar with Active User Switcher, Logo Manager and Notification Center */}
+      {/* Top Navbar with Active User Switcher, Logo Manager, Personal Theme & Notification Center */}
       {!isFullscreenKiosk && (
         <Navbar
           activeTab={activeTab}
@@ -209,6 +246,8 @@ export default function App() {
           onLogout={handleLogout}
           onOpenWallQR={currentUser.role === 'ik_yoneticisi' ? () => setIsWallQRModalOpen(true) : undefined}
           onOpenLogoManager={() => setIsLogoModalOpen(true)}
+          onOpenThemeSettings={() => setIsThemeModalOpen(true)}
+          activeTheme={activeTheme}
           companyLogo={companyLogo}
         />
       )}
@@ -345,6 +384,19 @@ export default function App() {
           currentUser={currentUser}
         />
       )}
+
+      {/* Personal Account Theme Selector Modal (Available to Every User) */}
+      <ThemeSettingsModal
+        isOpen={isThemeModalOpen}
+        onClose={() => setIsThemeModalOpen(false)}
+        currentUser={currentUser}
+        activeTheme={activeTheme}
+        onThemeChanged={(newTheme) => {
+          setActiveTheme(newTheme);
+          applyThemeToDocument(newTheme);
+          setCurrentUser((prev) => ({ ...prev, themeId: newTheme }));
+        }}
+      />
     </div>
   );
 }

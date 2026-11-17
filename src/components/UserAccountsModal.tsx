@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Key, User, Plus, Search, Check, Copy, X, Lock, Shield, ShieldAlert, CheckCircle2, AlertCircle, RefreshCw, Trash2, Power, Eye, EyeOff, UserCheck } from 'lucide-react';
+import { Key, User, Plus, Search, Check, Copy, X, Lock, Shield, ShieldAlert, CheckCircle2, AlertCircle, RefreshCw, Trash2, Power, Eye, EyeOff, UserCheck, Smartphone, RotateCcw } from 'lucide-react';
 import { Employee, UserAccount, UserRole, CurrentUser } from '../types/pdks';
 import { pdksStorage, slugifyNameToUsername, normalizeUsername } from '../services/storage';
 
@@ -189,6 +189,17 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
       setNewPasswordValue('');
       onAccountsUpdated();
       setTimeout(() => setFeedback(null), 3000);
+    } else {
+      setFeedback({ type: 'error', message: res.message });
+    }
+  };
+
+  const handleResetAccountDevice = (acc: UserAccount) => {
+    const res = pdksStorage.resetEmployeeRegisteredDevice(acc.employeeId, currentUser.name);
+    if (res.success) {
+      onAccountsUpdated();
+      setFeedback({ type: 'success', message: res.message });
+      setTimeout(() => setFeedback(null), 4000);
     } else {
       setFeedback({ type: 'error', message: res.message });
     }
@@ -441,6 +452,37 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                           )}
                         </div>
 
+                        {/* Registered & Last Login Device Info */}
+                        {(acc.registeredDeviceName || acc.registeredMacAddress || acc.registeredDeviceId) && (
+                          <div className="p-2 bg-slate-50 rounded-lg border border-slate-200/80 text-[10px] space-y-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="inline-flex items-center gap-1 font-semibold text-slate-700 truncate">
+                                <Smartphone className="w-3 h-3 text-indigo-500 shrink-0" />
+                                <span className="truncate">{acc.registeredDeviceName || 'Kayıtlı Cihaz'}</span>
+                              </span>
+                              {canManage && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleResetAccountDevice(acc)}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 hover:border-rose-200 text-[10px] font-semibold cursor-pointer shrink-0"
+                                >
+                                  <RotateCcw className="w-2.5 h-2.5" />
+                                  <span>Cihazı Sıfırla</span>
+                                </button>
+                              )}
+                            </div>
+                            <div className="font-mono text-slate-500 flex flex-wrap gap-x-2">
+                              {acc.registeredMacAddress && <span>MAC: <strong className="text-slate-700">{acc.registeredMacAddress}</strong></span>}
+                              {acc.registeredDeviceId && <span>ID: <strong className="text-slate-700">{acc.registeredDeviceId}</strong></span>}
+                            </div>
+                            {(acc.lastLoginDeviceName || acc.lastLoginMacAddress) && (
+                              <div className="text-[9px] font-mono text-slate-400">
+                                Son Giriş: {acc.lastLoginDeviceName || '-'} {acc.lastLoginMacAddress ? `(${acc.lastLoginMacAddress})` : ''}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {/* Role & Permissions Badge */}
                         <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px]">
                           <span
@@ -517,6 +559,7 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                       <th className="py-2.5 px-3">Kullanıcı Adı</th>
                       <th className="py-2.5 px-3">Şifre</th>
                       <th className="py-2.5 px-3">Rol & Yetki Seviyesi</th>
+                      <th className="py-2.5 px-3">Kayıtlı Cihaz (MAC / ID)</th>
                       <th className="py-2.5 px-3">İzinler (Giriş/Mola)</th>
                       <th className="py-2.5 px-3 text-center">Durum</th>
                       <th className="py-2.5 px-3 text-right">İşlemler</th>
@@ -626,6 +669,28 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                           </td>
 
                           <td className="py-2.5 px-3">
+                            {acc.registeredDeviceName || acc.registeredMacAddress || acc.registeredDeviceId ? (
+                              <div className="space-y-0.5 max-w-[200px]">
+                                <div className="flex items-center gap-1 text-[11px] font-semibold text-slate-800 truncate">
+                                  <Smartphone className="w-3 h-3 text-indigo-500 shrink-0" />
+                                  <span className="truncate">{acc.registeredDeviceName || 'Kayıtlı Cihaz'}</span>
+                                </div>
+                                <div className="font-mono text-[9px] text-slate-500 leading-tight">
+                                  {acc.registeredMacAddress && <div>MAC: {acc.registeredMacAddress}</div>}
+                                  {acc.registeredDeviceId && <div>ID: {acc.registeredDeviceId}</div>}
+                                  {(acc.lastLoginDeviceName || acc.lastLoginMacAddress) && (
+                                    <div className="text-slate-400">
+                                      Son: {acc.lastLoginMacAddress || acc.lastLoginDeviceName}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-slate-400">Henüz tanımlı değil</span>
+                            )}
+                          </td>
+
+                          <td className="py-2.5 px-3">
                             <div className="flex flex-wrap items-center gap-1 text-[10px]">
                               {acc.canCheckInOut && (
                                 <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200" title="Giriş / Çıkış Yapabilir">
@@ -686,6 +751,16 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
 
                               {canManage && (
                                 <>
+                                  {(acc.registeredDeviceId || acc.registeredMacAddress) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleResetAccountDevice(acc)}
+                                      className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 cursor-pointer"
+                                      title="Kayıtlı Cihazı Sıfırla"
+                                    >
+                                      <RotateCcw className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
                                   <button
                                     onClick={() => handleToggleStatus(acc.id)}
                                     className="p-1 rounded text-slate-400 hover:text-amber-600 hover:bg-amber-50"

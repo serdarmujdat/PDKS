@@ -44,6 +44,38 @@
         }
       },
       "required": ["email", "grantedAt"]
+    },
+    "UserAccountTheme": {
+      "title": "UserAccountTheme",
+      "description": "Stores a verified user's personal UI theme preference (eye-friendly light or dark palette) scoped per PDKS account key.",
+      "type": "object",
+      "properties": {
+        "themeId": {
+          "type": "string",
+          "enum": [
+            "kurumsal_saf",
+            "sicak_kagit",
+            "serin_sis",
+            "gece_arduvaz",
+            "komur_orman"
+          ],
+          "description": "Selected calibrated visual theme identifier",
+          "minLength": 5,
+          "maxLength": 32
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last theme update"
+        },
+        "ownerUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the signed-in owner",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": ["themeId", "updatedAt", "ownerUid"]
     }
   },
   "firestore": {
@@ -54,6 +86,10 @@
     "/admins/{uid}": {
       "schema": { "$ref": "#/entities/AdminRole" },
       "description": "Verified administrator registry keyed by Firebase Auth UID"
+    },
+    "/user_preferences/{uid}/account_themes/{accountKey}": {
+      "schema": { "$ref": "#/entities/UserAccountTheme" },
+      "description": "Per-account UI theme preferences strictly owned by the authenticated Firebase user UID"
     }
   }
 }

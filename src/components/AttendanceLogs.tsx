@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Search, Filter, Plus, ArrowDownRight, ArrowUpRight, Coffee, Calendar, Shield, Clock, X, Check } from 'lucide-react';
+import { Download, Search, Filter, Plus, ArrowDownRight, ArrowUpRight, Coffee, Calendar, Shield, ShieldAlert, Smartphone, Clock, X, Check } from 'lucide-react';
 import { AttendanceRecord, Employee, Department, ActionType } from '../types/pdks';
 import { pdksStorage, getTodayString } from '../services/storage';
 
@@ -40,14 +40,26 @@ export const AttendanceLogs: React.FC = () => {
     };
   }, []);
 
+  const suspiciousCount = records.filter((r) => r.isSuspiciousDevice || r.type === 'security_alert').length;
+
   const filteredRecords = records.filter((rec) => {
+    const q = searchQuery.toLowerCase().trim();
     const matchesSearch =
-      rec.employeeName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      rec.employeeId.toLowerCase().includes(searchQuery.toLowerCase());
+      !q ||
+      rec.employeeName.toLowerCase().includes(q) ||
+      rec.employeeId.toLowerCase().includes(q) ||
+      (rec.macAddress && rec.macAddress.toLowerCase().includes(q)) ||
+      (rec.deviceId && rec.deviceId.toLowerCase().includes(q)) ||
+      (rec.deviceOwnerEmployeeName && rec.deviceOwnerEmployeeName.toLowerCase().includes(q)) ||
+      (rec.securityWarning && rec.securityWarning.toLowerCase().includes(q));
 
     const matchesDept = selectedDept === 'all' || rec.department === selectedDept;
     const matchesType = selectedType === 'all' || rec.type === selectedType;
-    const matchesStatus = selectedStatus === 'all' || rec.status === selectedStatus;
+    const matchesStatus =
+      selectedStatus === 'all' ||
+      (selectedStatus === 'suspicious'
+        ? Boolean(rec.isSuspiciousDevice || rec.type === 'security_alert')
+        : rec.status === selectedStatus);
     const matchesDate = !selectedDate || rec.date === selectedDate;
 
     return matchesSearch && matchesDept && matchesType && matchesStatus && matchesDate;
@@ -98,6 +110,10 @@ export const AttendanceLogs: React.FC = () => {
       'Durum',
       'Gecikme (Dk)',
       'Yöntem',
+      'MAC Adresi',
+      'Device ID',
+      'Cihaz Modeli',
+      'Güvenlik Uyarısı / Cihaz Sahibi',
       'Terminal / Not',
     ];
 
@@ -108,10 +124,22 @@ export const AttendanceLogs: React.FC = () => {
       r.department,
       r.date,
       r.timeStr,
-      r.type === 'check_in' ? 'Giriş' : r.type === 'check_out' ? 'Çıkış' : 'Mola',
-      r.status,
+      r.type === 'check_in'
+        ? 'Giriş'
+        : r.type === 'check_out'
+        ? 'Çıkış'
+        : r.type === 'security_alert'
+        ? 'Güvenlik Uyarısı (Cihaz)'
+        : 'Mola',
+      r.isSuspiciousDevice ? 'Şüpheli Cihaz' : r.status,
       r.lateMinutes,
       r.method,
+      r.macAddress || '-',
+      r.deviceId || '-',
+      r.deviceName || '-',
+      r.isSuspiciousDevice
+        ? `${r.securityWarning || 'Başka Personel Cihazı ile Giriş'} (${r.deviceOwnerEmployeeName || '-'})`
+        : '-',
       r.note || r.terminal || '-',
     ]);
 
@@ -165,6 +193,36 @@ export const AttendanceLogs: React.FC = () => {
         </div>
       </div>
 
+      {/* Security Alert Summary Banner if suspicious cross-device logs exist */}
+      {suspiciousCount > 0 && (
+        <div className="bg-rose-50 border border-rose-200 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-rose-600 text-white flex items-center justify-center shrink-0">
+              <ShieldAlert className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-rose-900">
+                Başka Personel Cihazı ile Giriş / İşlem Tespit Edildi ({suspiciousCount} Kayıt)
+              </h3>
+              <p className="text-[11px] text-rose-700">
+                Sistemde başka bir personele kayıtlı MAC / Device ID üzerinden gerçekleştirilen şüpheli işlemler aşağıda kırmızı uyarı ile işaretlenmiştir.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSelectedStatus(selectedStatus === 'suspicious' ? 'all' : 'suspicious')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors shrink-0 cursor-pointer ${
+              selectedStatus === 'suspicious'
+                ? 'bg-rose-600 text-white border-rose-600'
+                : 'bg-white text-rose-700 border-rose-300 hover:bg-rose-100'
+            }`}
+          >
+            {selectedStatus === 'suspicious' ? 'Tüm Kayıtları Göster' : `Şüpheli Kayıtları Filtrele (${suspiciousCount})`}
+          </button>
+        </div>
+      )}
+
       {/* Filter Toolbar */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs grid grid-cols-1 md:grid-cols-5 gap-3">
         {/* Search */}
@@ -172,7 +230,7 @@ export const AttendanceLogs: React.FC = () => {
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
-            placeholder="Personel adı veya Sicil No ile filtrele..."
+            placeholder="Personel, Sicil, MAC Adresi veya Device ID ara..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50"
@@ -201,6 +259,7 @@ export const AttendanceLogs: React.FC = () => {
             <option value="check_out">Sadece Çıkışlar</option>
             <option value="break_start">Mola Başlangıç</option>
             <option value="break_end">Mola Dönüş</option>
+            <option value="security_alert">Güvenlik Uyarısı (Cihaz)</option>
           </select>
         </div>
 
@@ -215,6 +274,7 @@ export const AttendanceLogs: React.FC = () => {
             <option value="on_time">Zamanında</option>
             <option value="late">Gecikmeli</option>
             <option value="early_leave">Erken Çıkış</option>
+            <option value="suspicious">Şüpheli / Başka Personel Cihazı</option>
           </select>
         </div>
       </div>
@@ -232,9 +292,15 @@ export const AttendanceLogs: React.FC = () => {
               const isCheckIn = r.type === 'check_in';
               const isCheckOut = r.type === 'check_out';
               const isBreak = r.type.startsWith('break');
+              const isSecurityAlert = r.type === 'security_alert';
 
               return (
-                <div key={r.id} className="p-3.5 space-y-2">
+                <div
+                  key={r.id}
+                  className={`p-3.5 space-y-2 ${
+                    r.isSuspiciousDevice || isSecurityAlert ? 'bg-rose-50/60 border-l-4 border-l-rose-500' : ''
+                  }`}
+                >
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="font-bold text-xs text-slate-900">{r.employeeName}</div>
@@ -250,6 +316,20 @@ export const AttendanceLogs: React.FC = () => {
                       <div className="text-[10px] text-slate-400 font-mono">{r.date}</div>
                     </div>
                   </div>
+
+                  {r.isSuspiciousDevice && (
+                    <div className="p-2 rounded-lg bg-rose-100/80 border border-rose-200 text-rose-900 text-[10px] space-y-0.5">
+                      <div className="font-bold flex items-center gap-1">
+                        <ShieldAlert className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                        <span>{r.securityWarning || 'Başka Personel Cihazı ile Giriş'}</span>
+                      </div>
+                      {r.deviceOwnerEmployeeName && (
+                        <div>
+                          Cihaz Sahibi: <strong>{r.deviceOwnerEmployeeName}</strong>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1.5 border-t border-slate-100 text-[11px]">
                     <div>
@@ -269,10 +349,17 @@ export const AttendanceLogs: React.FC = () => {
                           {r.type === 'break_start' ? 'Molaya Çıktı' : 'Moladan Döndü'}
                         </span>
                       )}
+                      {isSecurityAlert && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                          <ShieldAlert className="w-3 h-3 text-rose-600" /> Güvenlik Uyarısı
+                        </span>
+                      )}
                     </div>
 
                     <div>
-                      {r.status === 'late' ? (
+                      {r.isSuspiciousDevice ? (
+                        <span className="text-rose-700 font-bold text-[10px]">Şüpheli Cihaz</span>
+                      ) : r.status === 'late' ? (
                         <span className="text-amber-700 font-bold text-[10px]">Geç (+{r.lateMinutes} dk)</span>
                       ) : r.status === 'on_time' ? (
                         <span className="text-emerald-700 font-semibold text-[10px]">Zamanında</span>
@@ -284,9 +371,12 @@ export const AttendanceLogs: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1">
-                    <span>{r.terminal || 'Kiosk'}</span>
-                    <span className="truncate max-w-[200px]">{r.note || '-'}</span>
+                  <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-500 pt-1">
+                    <span className="font-mono">
+                      {r.terminal || 'Kiosk'}
+                      {r.macAddress ? ` · MAC: ${r.macAddress}` : ''}
+                    </span>
+                    <span className="truncate max-w-[240px]">{r.note || '-'}</span>
                   </div>
                 </div>
               );
@@ -303,8 +393,8 @@ export const AttendanceLogs: React.FC = () => {
                 <th className="py-3 px-4">Personel</th>
                 <th className="py-3 px-4">Departman</th>
                 <th className="py-3 px-4">İşlem Türü</th>
-                <th className="py-3 px-4">Zaman Durumu</th>
-                <th className="py-3 px-4">Yöntem & Terminal</th>
+                <th className="py-3 px-4">Zaman / Güvenlik Durumu</th>
+                <th className="py-3 px-4">Cihaz & MAC / Terminal</th>
                 <th className="py-3 px-4">Not / Açıklama</th>
               </tr>
             </thead>
@@ -320,9 +410,17 @@ export const AttendanceLogs: React.FC = () => {
                   const isCheckIn = r.type === 'check_in';
                   const isCheckOut = r.type === 'check_out';
                   const isBreak = r.type.startsWith('break');
+                  const isSecurityAlert = r.type === 'security_alert';
 
                   return (
-                    <tr key={r.id} className="hover:bg-slate-50/60 transition-colors">
+                    <tr
+                      key={r.id}
+                      className={`transition-colors ${
+                        r.isSuspiciousDevice || isSecurityAlert
+                          ? 'bg-rose-50/60 hover:bg-rose-50 border-l-4 border-l-rose-500'
+                          : 'hover:bg-slate-50/60'
+                      }`}
+                    >
                       <td className="py-3 px-4 whitespace-nowrap">
                         <div className="font-mono font-medium text-slate-900 tabular-nums text-sm">
                           {r.timeStr}
@@ -355,11 +453,28 @@ export const AttendanceLogs: React.FC = () => {
                               {r.type === 'break_start' ? 'Molaya Çıktı' : 'Moladan Döndü'}
                             </span>
                           )}
+                          {isSecurityAlert && (
+                            <span className="text-rose-700 flex items-center gap-1">
+                              <ShieldAlert className="w-3.5 h-3.5" /> Güvenlik Uyarısı
+                            </span>
+                          )}
                         </span>
                       </td>
 
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        {r.status === 'late' ? (
+                      <td className="py-3 px-4">
+                        {r.isSuspiciousDevice ? (
+                          <div className="space-y-1">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 border border-rose-200 text-[10px] font-bold">
+                              <ShieldAlert className="w-3 h-3 shrink-0" />
+                              <span>Başka Personel Cihazı</span>
+                            </span>
+                            {r.deviceOwnerEmployeeName && (
+                              <div className="text-[10px] text-rose-700 font-semibold">
+                                Cihaz Sahibi: {r.deviceOwnerEmployeeName}
+                              </div>
+                            )}
+                          </div>
+                        ) : r.status === 'late' ? (
                           <div className="text-amber-700 font-medium">
                             Geç Kaldı ({r.lateMinutes} dk)
                           </div>
@@ -375,16 +490,35 @@ export const AttendanceLogs: React.FC = () => {
                       <td className="py-3 px-4">
                         <div className="text-slate-800 font-medium">{r.terminal || 'Kiosk'}</div>
                         <div className="text-[10px] text-slate-400">
-                          {r.method === 'kiosk_camera'
+                          {r.type === 'security_alert'
+                            ? 'Sistem Hesap Girişi'
+                            : r.method === 'kiosk_camera'
                             ? 'Kamera QR Tarama'
                             : r.method === 'mobile_scanner'
                             ? 'Mobil Cihaz'
                             : 'Yönetici Manuel'}
                         </div>
+                        {(r.macAddress || r.deviceId || r.deviceName) && (
+                          <div className="mt-1 text-[10px] font-mono text-slate-600 space-y-0.5">
+                            {r.deviceName && (
+                              <div className="flex items-center gap-1 text-slate-700 font-sans font-medium">
+                                <Smartphone className="w-3 h-3 text-indigo-500 shrink-0" />
+                                <span>{r.deviceName}</span>
+                              </div>
+                            )}
+                            {r.macAddress && <div>MAC: <strong className="text-slate-800">{r.macAddress}</strong></div>}
+                            {r.deviceId && <div>ID: {r.deviceId}</div>}
+                          </div>
+                        )}
                       </td>
 
-                      <td className="py-3 px-4 text-slate-500 text-xs">
-                        {r.note || '-'}
+                      <td className="py-3 px-4 text-slate-500 text-xs max-w-[260px]">
+                        {r.isSuspiciousDevice && (
+                          <div className="text-rose-700 font-semibold text-[11px] mb-0.5">
+                            {r.securityWarning || 'Başka Personel Cihazı ile Giriş (Yetkisiz/Şüpheli Cihaz Kullanımı)'}
+                          </div>
+                        )}
+                        <div>{r.note || '-'}</div>
                       </td>
                     </tr>
                   );

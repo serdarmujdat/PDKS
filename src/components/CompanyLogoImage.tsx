@@ -16,7 +16,13 @@ export const CompanyLogoImage: React.FC<CompanyLogoImageProps> = ({
 }) => {
   const [hasError, setHasError] = useState(false);
 
-  const trimmed = (src || '').trim();
+  const rawTrimmed = (src || '').trim();
+  const trimmed = rawTrimmed.startsWith('data:image/svg+xml;utf8,')
+    ? rawTrimmed.replace(
+        /&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)/g,
+        '%26amp;'
+      )
+    : rawTrimmed;
   const isInvalidSrc = !trimmed || trimmed.startsWith('blob:');
 
   useEffect(() => {

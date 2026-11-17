@@ -9,6 +9,7 @@ import type {
   UserAccount,
   SupervisorAssignment,
   NotificationSettings,
+  DeviceEntryApproval,
 } from '../types/pdks';
 
 export const PDKS_SYSTEM_API_KEY = 'evren_llm_40eYxYnsM-qzeV7OOaIMmVfYB9KTajRcYFr-5bwh_Ko';
@@ -587,6 +588,7 @@ export interface PDKSDatabase {
   kioskLockPassword: string;
   supervisorAssignments: SupervisorAssignment[];
   accounts: UserAccount[];
+  deviceApprovals: DeviceEntryApproval[];
   settings: NotificationSettings;
 }
 
@@ -605,6 +607,7 @@ export function createInitialDatabase(): PDKSDatabase {
     kioskLockPassword: DEFAULT_KIOSK_LOCK_PASSWORD,
     supervisorAssignments: JSON.parse(JSON.stringify(DEFAULT_SUPERVISOR_ASSIGNMENTS)),
     accounts: JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
+    deviceApprovals: [],
     settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
   };
 }

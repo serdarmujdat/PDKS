@@ -3,12 +3,16 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, User } from 'firebase/aut
 import {
   getFirestore,
   doc,
+  collection,
   getDocFromServer,
+  getDocs,
   setDoc,
   onSnapshot,
   serverTimestamp,
   Unsubscribe,
 } from 'firebase/firestore';
+import type { ThemeId } from './types/pdks';
+import { isValidThemeId } from './themes/themes';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -166,5 +170,64 @@ export async function saveCompanyLogoToFirestore(logoUrl: string): Promise<void>
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, LOGO_DOC_PATH);
+  }
+}
+
+export function sanitizeFirestoreAccountKey(rawKey: string): string {
+  const cleaned = (rawKey || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_\-]/g, '_')
+    .slice(0, 120);
+  return cleaned || 'default_account';
+}
+
+export async function saveUserThemeToFirestore(
+  rawAccountKey: string,
+  themeId: ThemeId
+): Promise<boolean> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified || !isValidThemeId(themeId)) {
+    return false;
+  }
+  const accountKey = sanitizeFirestoreAccountKey(rawAccountKey);
+  const path = `user_preferences/${user.uid}/account_themes/${accountKey}`;
+  try {
+    await setDoc(doc(db, 'user_preferences', user.uid, 'account_themes', accountKey), {
+      themeId,
+      updatedAt: serverTimestamp(),
+      ownerUid: user.uid,
+    });
+    return true;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.toLowerCase().includes('permission') || msg.includes('insufficient')) {
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+    return false;
+  }
+}
+
+export async function fetchAllUserThemesFromFirestore(): Promise<Record<string, ThemeId>> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified) {
+    return {};
+  }
+  const colPath = `user_preferences/${user.uid}/account_themes`;
+  try {
+    const snap = await getDocs(collection(db, 'user_preferences', user.uid, 'account_themes'));
+    const result: Record<string, ThemeId> = {};
+    snap.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (data && isValidThemeId(data.themeId)) {
+        result[docSnap.id] = data.themeId;
+      }
+    });
+    return result;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.toLowerCase().includes('permission') || msg.includes('insufficient')) {
+      handleFirestoreError(error, OperationType.LIST, colPath);
+    }
+    return {};
   }
 }

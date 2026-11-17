@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import jsQR from 'jsqr';
-import { Camera, RefreshCw, CheckCircle2, AlertTriangle, Shield, Clock, Smartphone, Volume2, Sparkles, SwitchCamera, Maximize2, Minimize2, Upload, Keyboard, HelpCircle, X, Check, Lock, Unlock, Key, ShieldCheck, Flashlight, FlashlightOff, Sun, SunMedium, Lightbulb, Zap, Info, ShieldAlert, AlertCircle, Sliders, Focus, Gauge, Video, Cpu, Crosshair, ExternalLink } from 'lucide-react';
+import { Camera, RefreshCw, CheckCircle2, AlertTriangle, Shield, Clock, Smartphone, Volume2, Sparkles, SwitchCamera, Maximize2, Minimize2, Keyboard, HelpCircle, X, Check, Lock, Unlock, Key, ShieldCheck, Flashlight, FlashlightOff, Sun, SunMedium, Lightbulb, Zap, Info, ShieldAlert, AlertCircle, Sliders, Focus, Gauge, Video, Cpu, Crosshair, ExternalLink } from 'lucide-react';
 import { Employee, ActionType, AttendanceRecord, CurrentUser } from '../types/pdks';
 import { pdksStorage, PDKS_SYSTEM_API_KEY } from '../services/storage';
 import { playSuccessChime, playErrorBuzzer } from '../utils/audio';
@@ -52,7 +52,6 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
   // Camera scanner state
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameraErrorType, setCameraErrorType] = useState<string | null>(null);
@@ -317,7 +316,7 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
     // 1. Check MediaDevices and SecureContext
     if (!navigator?.mediaDevices?.getUserMedia) {
       setCameraErrorType('NotSupported');
-      setCameraError('Tarayıcınızda veya bu web çerçevesinde doğrudan kamera donanım API\'si desteklenmiyor. Aşağıdaki QR Görseli Yükle veya Hızlı Test modunu kullanabilirsiniz.');
+      setCameraError('Tarayıcınızda veya bu web çerçevesinde doğrudan kamera donanım API\'si desteklenmiyor. Aşağıdaki Sicil No kutucuğunu kullanarak kart basabilirsiniz.');
       setCameraActive(false);
       return;
     }
@@ -648,57 +647,6 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
 
   const toggleCameraFacing = () => {
     setFacingMode((prev) => (prev === 'user' ? 'environment' : 'user'));
-  };
-
-  // QR Image File Upload Scanner
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const img = new Image();
-      img.onload = () => {
-        // Downscale large camera photos to max 1280px for instant QR decoding without browser memory freeze
-        const maxDim = 1280;
-        let width = img.width;
-        let height = img.height;
-        if (width > maxDim || height > maxDim) {
-          if (width > height) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          } else {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const imageData = ctx.getImageData(0, 0, width, height);
-          const code = jsQR(imageData.data, width, height, {
-            inversionAttempts: 'attemptBoth',
-          });
-          if (code && code.data) {
-            handleProcessCode(code.data);
-          } else {
-            playErrorBuzzer();
-            setScanResult({
-              success: false,
-              message: 'Görselde QR kod tespit edilemedi. Lütfen net bir QR görseli yükleyin.',
-            });
-            setTimeout(() => setScanResult(null), 3000);
-          }
-        }
-      };
-      img.src = event.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
   };
 
   // Manual Barcode Gun / Keyboard Input Handler
@@ -1166,24 +1114,12 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
                             <ExternalLink className="w-4 h-4 text-indigo-400" />
                             <span>Yeni Sekmede Aç</span>
                           </button>
-
-                          <button
-                            onClick={() => fileInputRef.current?.click()}
-                            className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold rounded-xl transition-colors flex items-center gap-2 border border-slate-700 cursor-pointer"
-                          >
-                            <Upload className="w-4 h-4 text-indigo-400" />
-                            <span>QR Görseli Seç / Yükle</span>
-                          </button>
                         </div>
                       </div>
 
-                      {/* Fallback Simulator helper note */}
+                      {/* Fallback helper note */}
                       <div className="w-full pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
-                        {isHR ? (
-                          <span>Kamera olmadan test etmek için sağdaki <strong>Hızlı Test Paneli</strong>'nden herhangi bir çalışana tıklayabilirsiniz.</span>
-                        ) : (
-                          <span>Kamera okumuyorsa aşağıdaki Sicil No kutucuğunu kullanarak kart basabilirsiniz.</span>
-                        )}
+                        <span>Kamera okumuyorsa aşağıdaki Sicil No kutucuğunu kullanarak kart basabilirsiniz.</span>
                         <button
                           onClick={() => setShowPermissionHelp(true)}
                           className="text-indigo-400 hover:underline flex items-center gap-1 shrink-0 ml-3"
@@ -1274,15 +1210,6 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
                     </button>
 
                     <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className="px-2.5 py-1.5 rounded-lg bg-black/50 hover:bg-black/70 text-white text-xs backdrop-blur border border-white/10 transition-colors flex items-center gap-1.5"
-                      title="Kayıtlı QR Görseli Yükle"
-                    >
-                      <Upload className="w-3.5 h-3.5 text-indigo-400" />
-                      <span className="hidden sm:inline">Görsel</span>
-                    </button>
-
-                    <button
                       onClick={toggleCameraFacing}
                       className="p-2 rounded-lg bg-black/50 hover:bg-black/70 text-white backdrop-blur border border-white/10 transition-colors"
                       title="Kamerayı Değiştir"
@@ -1332,15 +1259,6 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
                   </div>
                 </div>
               )}
-
-              {/* Hidden File Input for QR Image Upload */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleImageUpload}
-                className="hidden"
-              />
 
               {/* Instant Verification Celebration Card (Overlay) */}
               {scanResult && (
@@ -1467,147 +1385,68 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
             </form>
           </div>
 
-          {/* TALEP: Hızlı Test Paneli (Simülatör) özelliği sadece İK'da olsun diğer personellerden kaldır */}
-          {isHR ? (
-            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-indigo-600" />
-                    <h3 className="font-bold text-sm text-slate-900">
-                      Hızlı Test Paneli (Simülatör)
-                    </h3>
-                  </div>
-                  <span className="text-[11px] font-medium text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200">
-                    Sadece İK Yetkisi
-                  </span>
+          {/* Turnike ve Güvenli Kart Okuma Bilgi Rehberi */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between space-y-4">
+            <div>
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  <h3 className="font-bold text-sm text-slate-900">
+                    Personel Kart Okuma Rehberi
+                  </h3>
                 </div>
-                <p className="text-xs text-slate-500 mb-4 leading-relaxed">
-                  Kamera olmadan veya fiziksel kart basmadan test etmek için aşağıdaki çalışan kartlarına tıklayabilirsiniz.
-                </p>
-
-                {/* Personnel Quick Test List */}
-                <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
-                  {employees.map((emp) => {
-                    const isInside = emp.currentPresence === 'inside';
-                    const isBreak = emp.currentPresence === 'break';
-
-                    return (
-                      <button
-                        key={emp.id}
-                        onClick={() => handleProcessCode(emp.qrToken)}
-                        className="w-full text-left p-2.5 rounded-xl border border-slate-100 hover:border-indigo-300 hover:bg-indigo-50/50 transition-all flex items-center justify-between group cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <img
-                            src={emp.avatar}
-                            alt={emp.fullName}
-                            className="w-8 h-8 rounded-full object-cover shrink-0"
-                            referrerPolicy="no-referrer"
-                          />
-                          <div className="min-w-0">
-                            <div className="text-xs font-semibold text-slate-900 group-hover:text-indigo-700 truncate">
-                              {emp.fullName}
-                            </div>
-                            <div className="text-[11px] text-slate-500 font-mono truncate">
-                              {emp.id} · {emp.department}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="text-right shrink-0">
-                          <span
-                            className={`text-[10px] font-medium px-2 py-0.5 rounded ${
-                              isInside
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                : isBreak
-                                ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                                : 'bg-slate-100 text-slate-600 border border-slate-200'
-                            }`}
-                          >
-                            {isInside ? 'İçeride' : isBreak ? 'Molada' : 'Dışarıda'}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
+                <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                  Turnike Aktif
+                </span>
               </div>
 
-              {/* Quick Helper Note */}
-              <div className="pt-4 mt-3 border-t border-slate-100">
-                <div className="flex items-start gap-2 text-xs text-slate-500">
-                  <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
-                  <span>
-                    Her okutma sisteme anında kaydedilir ve <strong>Canlı Pano</strong> ile <strong>Kayıtlar</strong> sekmesinde görüntülenir.
-                  </span>
+              <div className="space-y-3 text-xs text-slate-600">
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 space-y-1">
+                  <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                    <Camera className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                    <span>1. QR Kod / Kimlik Kartı Okutma</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Kurum kimlik kartınızdaki QR kodu veya cep telefonunuzdaki mobil portaldan ürettiğiniz QR kodu kameraya 15-20 cm mesafede tutunuz.
+                  </p>
+                </div>
+
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 space-y-1">
+                  <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                    <span>2. Otomatik Yön Algılama</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Sistem son hareketinize göre Giriş veya Çıkış yönünü otomatik belirler. Kart okutulduğunda sesli ve görsel bildirim verilir.
+                  </p>
+                </div>
+
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 space-y-1">
+                  <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                    <Keyboard className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                    <span>3. Manuel Sicil No ile Giriş</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Fiziksel kartınız yanınızda yoksa yandaki alana Sicil Numaranızı (Örn: EMP-1001) yazarak Kart Bas butonuna basabilirsiniz.
+                  </p>
                 </div>
               </div>
             </div>
-          ) : (
-            /* DİĞER PERSONELLER İÇİN: Turnike ve Güvenli Kart Okuma Bilgi Rehberi */
-            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between space-y-4">
-              <div>
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                    <h3 className="font-bold text-sm text-slate-900">
-                      Personel Kart Okuma Rehberi
-                    </h3>
-                  </div>
-                  <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
-                    Turnike Aktif
-                  </span>
-                </div>
 
-                <div className="space-y-3 text-xs text-slate-600">
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 space-y-1">
-                    <div className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <Camera className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                      <span>1. QR Kod / Kimlik Kartı Okutma</span>
-                    </div>
-                    <p className="text-[11px] text-slate-500 leading-relaxed">
-                      Kurum kimlik kartınızdaki QR kodu veya cep telefonunuzdaki mobil portaldan ürettiğiniz QR kodu kameraya 15-20 cm mesafede tutunuz.
-                    </p>
-                  </div>
-
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 space-y-1">
-                    <div className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                      <span>2. Otomatik Yön Algılama</span>
-                    </div>
-                    <p className="text-[11px] text-slate-500 leading-relaxed">
-                      Sistem son hareketinize göre Giriş veya Çıkış yönünü otomatik belirler. Kart okutulduğunda sesli ve görsel bildirim verilir.
-                    </p>
-                  </div>
-
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 space-y-1">
-                    <div className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <Keyboard className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                      <span>3. Manuel Sicil No ile Giriş</span>
-                    </div>
-                    <p className="text-[11px] text-slate-500 leading-relaxed">
-                      Fiziksel kartınız yanınızda yoksa yandaki alana Sicil Numaranızı (Örn: EMP-1001) yazarak Kart Bas butonuna basabilirsiniz.
-                    </p>
-                  </div>
-                </div>
+            <div className="pt-3 border-t border-slate-100 space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-slate-500">
+                <span>Turnike Durumu:</span>
+                <span className="font-semibold text-emerald-600 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Çevrimiçi / Hazır
+                </span>
               </div>
-
-              <div className="pt-3 border-t border-slate-100 space-y-2">
-                <div className="flex items-center justify-between text-[11px] text-slate-500">
-                  <span>Turnike Durumu:</span>
-                  <span className="font-semibold text-emerald-600 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Çevrimiçi / Hazır
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-[11px] text-slate-500">
-                  <span>Otomatik Bekleme:</span>
-                  <span className="font-mono text-slate-700">60 sn Hareketsizlik</span>
-                </div>
+              <div className="flex items-center justify-between text-[11px] text-slate-500">
+                <span>Otomatik Bekleme:</span>
+                <span className="font-mono text-slate-700">60 sn Hareketsizlik</span>
               </div>
             </div>
-          )}
+          </div>
         </div>
       </div>
       )}
@@ -1653,17 +1492,6 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   <span>Yeni Sekmede Aç</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowPermissionHelp(false);
-                    fileInputRef.current?.click();
-                  }}
-                  className="flex-1 py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
-                >
-                  <Upload className="w-3.5 h-3.5 text-indigo-600" />
-                  <span>QR Görseli Yükle</span>
                 </button>
               </div>
             </div>

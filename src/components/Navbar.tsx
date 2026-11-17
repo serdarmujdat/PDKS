@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { QrCode, Users, Clock, ShieldCheck, CalendarCheck, Smartphone, Maximize2, BarChart3, User, ChevronDown, Shield, TrendingUp, Key, LogOut, Lock, LogIn, LayoutDashboard, Printer, Image as ImageIcon } from 'lucide-react';
-import { CurrentUser } from '../types/pdks';
+import { QrCode, Users, Clock, ShieldCheck, CalendarCheck, Smartphone, Maximize2, BarChart3, User, ChevronDown, Shield, TrendingUp, Key, LogOut, Lock, LogIn, LayoutDashboard, Printer, Image as ImageIcon, Sun, Moon, Palette } from 'lucide-react';
+import { CurrentUser, ThemeId } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
 import { NotificationCenter } from './NotificationCenter';
 import { CompanyLogoImage } from './CompanyLogoImage';
+import { APP_THEMES, getThemeById } from '../themes/themes';
 
 export type ActiveTab = 'kiosk' | 'dashboard' | 'performance' | 'employees' | 'records' | 'shifts' | 'portal' | 'reports' | 'supervisor';
 
@@ -17,6 +18,8 @@ interface NavbarProps {
   onLogout: () => void;
   onOpenWallQR?: () => void;
   onOpenLogoManager?: () => void;
+  onOpenThemeSettings?: () => void;
+  activeTheme?: ThemeId;
   companyLogo?: string;
 }
 
@@ -30,6 +33,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLogout,
   onOpenWallQR,
   onOpenLogoManager,
+  onOpenThemeSettings,
+  activeTheme,
   companyLogo: propCompanyLogo,
 }) => {
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
@@ -59,6 +64,11 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isHRManager = currentUser.role === 'ik_yoneticisi';
   const isSupervisor = pdksStorage.canUserAccessShiftManagement(currentUser);
   const accounts = pdksStorage.getUserAccounts();
+  const currentThemeDef = getThemeById(activeTheme || pdksStorage.getUserTheme(currentUser));
+
+  const handleQuickSelectTheme = (themeId: ThemeId) => {
+    void pdksStorage.saveUserTheme(themeId, currentUser);
+  };
 
   const getRoleBadgeStyle = (role: string) => {
     switch (role) {
@@ -357,6 +367,21 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
 
 
+            {onOpenThemeSettings && (
+              <button
+                onClick={onOpenThemeSettings}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg transition-colors cursor-pointer"
+                title={`Hesap Teması: ${currentThemeDef.name} (${currentThemeDef.mode === 'dark' ? 'Koyu' : 'Açık'})`}
+              >
+                {currentThemeDef.mode === 'dark' ? (
+                  <Moon className="w-3.5 h-3.5 text-indigo-600" />
+                ) : (
+                  <Sun className="w-3.5 h-3.5 text-amber-600" />
+                )}
+                <span className="hidden md:inline">Tema</span>
+              </button>
+            )}
+
             {/* Notification Center */}
             <NotificationCenter
               currentUser={currentUser}
@@ -473,6 +498,73 @@ export const Navbar: React.FC<NavbarProps> = ({
                           Aktif Oturum
                         </span>
                       </div>
+                    </div>
+
+                    {/* Per-Account Personal Theme Switcher (Available for ALL roles) */}
+                    <div className="p-2.5 bg-slate-50/80 rounded-xl border border-slate-100 mb-2 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
+                          <Palette className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>Hesap Teması</span>
+                        </span>
+                        <span className="text-[10px] font-medium text-slate-500">
+                          {currentThemeDef.name}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {APP_THEMES.map((theme) => {
+                          const isSelected = currentThemeDef.id === theme.id;
+                          return (
+                            <button
+                              key={theme.id}
+                              type="button"
+                              onClick={() => handleQuickSelectTheme(theme.id)}
+                              title={`${theme.name} (${theme.subtitle}) — ${theme.mode === 'dark' ? 'Koyu' : 'Açık'}`}
+                              className={`group flex flex-col items-center gap-1 p-1 rounded-lg border transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'border-indigo-600 ring-1 ring-indigo-500 bg-indigo-50/60'
+                                  : 'border-slate-200 hover:border-slate-300 bg-white'
+                              }`}
+                            >
+                              <span
+                                data-theme-keep="true"
+                                className="w-full h-5 rounded-md border flex items-center justify-end pr-1"
+                                style={{
+                                  backgroundColor: theme.preview.bg,
+                                  borderColor: theme.preview.border,
+                                }}
+                              >
+                                <span
+                                  className="w-2 h-2 rounded-full"
+                                  style={{ backgroundColor: theme.preview.accent }}
+                                />
+                              </span>
+                              <span className="text-[9px] font-semibold text-slate-600 truncate w-full text-center">
+                                {theme.mode === 'dark' ? 'Koyu' : 'Açık'}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {onOpenThemeSettings && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsRoleDropdownOpen(false);
+                            onOpenThemeSettings();
+                          }}
+                          className="w-full py-1.5 px-2 rounded-lg text-[11px] font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          {currentThemeDef.mode === 'dark' ? (
+                            <Moon className="w-3 h-3" />
+                          ) : (
+                            <Sun className="w-3 h-3" />
+                          )}
+                          <span>Tüm Tema Önizlemelerini Aç</span>
+                        </button>
+                      )}
                     </div>
 
 

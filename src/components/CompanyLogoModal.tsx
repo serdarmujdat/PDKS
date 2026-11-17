@@ -37,7 +37,7 @@ const PRESET_LOGOS = [
     id: 'preset-crimson-dynamic',
     name: 'Kızıl Dinamik · Lojistik & Dağıtım',
     category: 'Lojistik & Operasyon',
-    dataUrl: `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" fill="none"><rect width="240" height="60" rx="12" fill="%23881337"/><g transform="translate(14, 12)"><rect width="36" height="36" rx="8" fill="%23BE123C"/><path d="M10 26l8-16 8 16M14 21h8" stroke="%23FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></g><text x="62" y="33" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="800" fill="%23FFFFFF" letter-spacing="1">ATLAS</text><text x="62" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" font-weight="600" fill="%23FDA4AF" letter-spacing="2">LOJİSTİK & TERMİNAL</text></svg>`,
+    dataUrl: `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" fill="none"><rect width="240" height="60" rx="12" fill="%23881337"/><g transform="translate(14, 12)"><rect width="36" height="36" rx="8" fill="%23BE123C"/><path d="M10 26l8-16 8 16M14 21h8" stroke="%23FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></g><text x="62" y="33" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="19" font-weight="800" fill="%23FFFFFF" letter-spacing="1">ATLAS</text><text x="62" y="46" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="9" font-weight="600" fill="%23FDA4AF" letter-spacing="2">LOJİSTİK %26amp; TERMİNAL</text></svg>`,
   },
   {
     id: 'preset-slate-corporate',
@@ -501,7 +501,10 @@ export const CompanyLogoModal: React.FC<CompanyLogoModalProps> = ({
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {/* Light Background Preview */}
-                  <div className="border border-slate-200 rounded-xl p-3 bg-white flex flex-col items-center justify-center space-y-2">
+                  <div
+                    data-theme-keep="light"
+                    className="border border-slate-200 rounded-xl p-3 bg-white text-slate-900 flex flex-col items-center justify-center space-y-2"
+                  >
                     <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
                       Açık Zemin (Üst Menü / Giriş Ekranı)
                     </span>

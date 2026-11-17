@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Filter, QrCode, Printer, Trash2, Edit2, Download, Check, X, Shield, User, Building2, Phone, Mail, Lock, ShieldAlert, Key, Camera, CheckCircle2, AlertCircle, Clock, Image as ImageIcon, MapPin, FileSpreadsheet } from 'lucide-react';
-import { Employee, Department, Shift, CurrentUser, UserAccount } from '../types/pdks';
+import { Plus, Search, Filter, QrCode, Printer, Trash2, Edit2, Download, Check, X, Shield, User, Building2, Phone, Mail, Lock, ShieldAlert, Key, Camera, CheckCircle2, AlertCircle, Clock, Image as ImageIcon, MapPin, FileSpreadsheet, Smartphone, RotateCcw } from 'lucide-react';
+import { Employee, Department, Shift, CurrentUser, UserAccount, PresenceStatus, DeviceEntryApproval } from '../types/pdks';
 import { pdksStorage, slugifyNameToUsername, normalizeUsername, getTodayString } from '../services/storage';
 import { generateQRDataURL } from '../utils/qr';
 import { UserAccountsModal } from './UserAccountsModal';
@@ -16,6 +16,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [accounts, setAccounts] = useState<UserAccount[]>([]);
+  const [deviceApprovals, setDeviceApprovals] = useState<DeviceEntryApproval[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDepartment, setSelectedDepartment] = useState<string>('all');
 
@@ -41,6 +42,13 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
   const [photoNotice, setPhotoNotice] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
+  // HR Manual Presence Override Modal (Kart Basmayı Unutan Personel)
+  const [presenceEditEmp, setPresenceEditEmp] = useState<Employee | null>(null);
+  const [presenceTarget, setPresenceTarget] = useState<PresenceStatus>('inside');
+  const [presenceTime, setPresenceTime] = useState<string>('');
+  const [presenceNote, setPresenceNote] = useState<string>('Kart basmayı unuttu');
+  const [recordPresenceLog, setRecordPresenceLog] = useState<boolean>(true);
+
   // Form State
   const [formData, setFormData] = useState({
     fullName: '',
@@ -63,6 +71,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
     setEmployees(pdksStorage.getEmployees());
     setShifts(pdksStorage.getShifts());
     setAccounts(pdksStorage.getUserAccounts());
+    setDeviceApprovals(pdksStorage.getDeviceEntryApprovals());
   };
 
   useEffect(() => {
@@ -110,6 +119,53 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
       avatar: emp.avatar,
     });
     setIsAddModalOpen(true);
+  };
+
+  // Open Manual Presence Override Modal (for employees who forgot to scan card)
+  const handleOpenPresenceModal = (emp: Employee) => {
+    setPresenceEditEmp(emp);
+    setPresenceTarget(emp.currentPresence);
+    setPresenceTime(new Date().toTimeString().slice(0, 5));
+    setPresenceNote('Kart basmayı unuttu');
+    setRecordPresenceLog(true);
+  };
+
+  const handleSavePresenceChange = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!presenceEditEmp || !canEdit) return;
+    const res = pdksStorage.updateEmployeePresenceManual(presenceEditEmp.id, presenceTarget, {
+      timeStr: presenceTime,
+      note: presenceNote,
+      recordAttendance: recordPresenceLog,
+      actorName: currentUser.name,
+    });
+    if (res.success) {
+      loadData();
+      setPresenceEditEmp(null);
+      setPhotoNotice(res.message);
+      setTimeout(() => setPhotoNotice(null), 4000);
+    }
+  };
+
+  const handleResetDevice = (emp: Employee) => {
+    const res = pdksStorage.resetEmployeeRegisteredDevice(emp.id, currentUser.name);
+    if (res.success) {
+      loadData();
+      setPhotoNotice(res.message);
+      setTimeout(() => setPhotoNotice(null), 4500);
+    }
+  };
+
+  const handleQuickApproveDevice = (approvalId: string) => {
+    const res = pdksStorage.approveDeviceEntryRequest(approvalId, {
+      bindNewDevice: false,
+      actorName: currentUser.name,
+    });
+    if (res.success) {
+      loadData();
+      setPhotoNotice(res.message);
+      setTimeout(() => setPhotoNotice(null), 4500);
+    }
   };
 
   // Save (Create or Update)
@@ -570,26 +626,49 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                       </div>
                     </div>
 
-                    <div className="shrink-0 text-right">
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          isInside
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
-                            : isBreak
-                            ? 'bg-amber-50 text-amber-700 border border-amber-300'
-                            : 'bg-slate-100 text-slate-600 border border-slate-200'
-                        }`}
-                      >
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            isInside ? 'bg-emerald-500 animate-pulse' : isBreak ? 'bg-amber-500' : 'bg-slate-400'
+                    <div className="shrink-0 text-right flex flex-col items-end gap-1">
+                      {canEdit ? (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenPresenceModal(emp)}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold transition-all cursor-pointer hover:ring-2 hover:ring-indigo-400/50 ${
+                            isInside
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
+                              : isBreak
+                              ? 'bg-amber-50 text-amber-700 border border-amber-300'
+                              : 'bg-slate-100 text-slate-600 border border-slate-200'
                           }`}
-                        />
-                        <span>{isInside ? 'Ofiste' : isBreak ? 'Molada' : 'Dışarıda'}</span>
-                      </span>
+                          title="Mevcut durumu manuel değiştir (Kart unutma vb.)"
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              isInside ? 'bg-emerald-500 animate-pulse' : isBreak ? 'bg-amber-500' : 'bg-slate-400'
+                            }`}
+                          />
+                          <span>{isInside ? 'Ofiste' : isBreak ? 'Molada' : 'Dışarıda'}</span>
+                          <Edit2 className="w-2.5 h-2.5 opacity-70 ml-0.5" />
+                        </button>
+                      ) : (
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            isInside
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
+                              : isBreak
+                              ? 'bg-amber-50 text-amber-700 border border-amber-300'
+                              : 'bg-slate-100 text-slate-600 border border-slate-200'
+                          }`}
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              isInside ? 'bg-emerald-500 animate-pulse' : isBreak ? 'bg-amber-500' : 'bg-slate-400'
+                            }`}
+                          />
+                          <span>{isInside ? 'Ofiste' : isBreak ? 'Molada' : 'Dışarıda'}</span>
+                        </span>
+                      )}
 
                       {emp.lastActionTime && (
-                        <div className="text-[9px] font-mono text-slate-400 mt-0.5">
+                        <div className="text-[9px] font-mono text-slate-400">
                           {emp.lastActionTime}
                         </div>
                       )}
@@ -628,18 +707,93 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                       <span className="text-[10px] text-slate-500 bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
                         {shift?.startTime || '08:30'} - {shift?.endTime || '17:30'}
                       </span>
+
+                      {(() => {
+                        const regDeviceName = empAcc?.registeredDeviceName || emp.registeredDeviceName;
+                        const regMac = empAcc?.registeredMacAddress || emp.registeredMacAddress;
+                        const regDevId = empAcc?.registeredDeviceId || emp.registeredDeviceId;
+                        const lastDevName = empAcc?.lastLoginDeviceName || emp.lastLoginDeviceName;
+                        const lastMac = empAcc?.lastLoginMacAddress || emp.lastLoginMacAddress;
+                        const lastDevId = empAcc?.lastLoginDeviceId || emp.lastLoginDeviceId;
+                        const isDifferentLastDevice = Boolean(
+                          regDevId && ((lastDevId && lastDevId !== regDevId) || (lastMac && regMac && lastMac !== regMac))
+                        );
+
+                        return regDeviceName || regDevId || regMac ? (
+                          <div className="w-full mt-1 p-2 rounded-lg bg-slate-50 border border-slate-200 space-y-1 text-[10px]">
+                            <div className="flex items-center justify-between gap-1.5">
+                              <span className="inline-flex items-center gap-1 font-semibold text-slate-700 truncate">
+                                <Smartphone className="w-3 h-3 text-indigo-500 shrink-0" />
+                                <span className="truncate">{regDeviceName || 'Kayıtlı Cihaz'}</span>
+                              </span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">
+                                Kayıtlı Cihaz
+                              </span>
+                            </div>
+                            <div className="font-mono text-slate-600 flex flex-wrap gap-x-2 gap-y-0.5">
+                              {regMac && <span>MAC: <strong className="text-slate-800">{regMac}</strong></span>}
+                              {regDevId && <span>ID: <strong className="text-slate-800">{regDevId}</strong></span>}
+                            </div>
+                            {(lastDevName || lastMac) && (
+                              <div className={`pt-1 border-t border-slate-200/80 font-mono text-[9px] ${isDifferentLastDevice ? 'text-rose-700 font-semibold' : 'text-slate-500'}`}>
+                                Son Giriş: {lastDevName || '-'} {lastMac ? `(${lastMac})` : ''}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">
+                            İlk girişte cihaz kaydedilecek
+                          </span>
+                        );
+                      })()}
                     </div>
 
-                    {/* Pending Photo notification trigger */}
-                    {emp.avatarStatus === 'pending' && emp.pendingAvatar && (
-                      <button
-                        onClick={() => setPhotoReviewEmp(emp)}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold cursor-pointer"
-                      >
-                        <Camera className="w-3 h-3" />
-                        <span>Fotoğraf Onayla</span>
-                      </button>
-                    )}
+                    {/* Device Lock Quick Approve or Device Reset */}
+                    {(() => {
+                      const activeLock = deviceApprovals.find(
+                        (d) =>
+                          d.employeeId === emp.id &&
+                          (d.status === 'pending' || d.status === 'check_in_requested') &&
+                          Date.now() < Date.parse(d.expiresAt)
+                      );
+                      const hasBoundDevice = Boolean(
+                        empAcc?.registeredDeviceId || empAcc?.registeredMacAddress || emp.registeredDeviceId || emp.registeredMacAddress
+                      );
+                      return (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {canEdit && activeLock && (
+                            <button
+                              type="button"
+                              onClick={() => handleQuickApproveDevice(activeLock.id)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 hover:bg-rose-200 text-rose-800 border border-rose-300 text-[10px] font-bold cursor-pointer"
+                            >
+                              <ShieldAlert className="w-3 h-3" />
+                              <span>Yeni Cihaz Girişini Onayla</span>
+                            </button>
+                          )}
+                          {canEdit && hasBoundDevice && (
+                            <button
+                              type="button"
+                              onClick={() => handleResetDevice(emp)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 hover:border-rose-200 text-[10px] font-semibold cursor-pointer"
+                              title="Kayıtlı cihazı sıfırla (Cihaz değişikliğinde yeni cihazı tanımlamak için)"
+                            >
+                              <RotateCcw className="w-2.5 h-2.5" />
+                              <span>Cihazı Sıfırla</span>
+                            </button>
+                          )}
+                          {emp.avatarStatus === 'pending' && emp.pendingAvatar && (
+                            <button
+                              onClick={() => setPhotoReviewEmp(emp)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold cursor-pointer"
+                            >
+                              <Camera className="w-3 h-3" />
+                              <span>Fotoğraf Onayla</span>
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Row 3: Action Buttons */}
@@ -703,7 +857,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                 <th className="py-3 px-4">Personel Bilgisi</th>
                 <th className="py-3 px-4">Sicil & TC No</th>
                 <th className="py-3 px-4">Departman & Görev</th>
-                <th className="py-3 px-4">Giriş Hesabı (Kullanıcı Adı)</th>
+                <th className="py-3 px-4">Hesap & Kayıtlı Cihaz (MAC / ID)</th>
                 <th className="py-3 px-4">Vardiya</th>
                 <th className="py-3 px-4">Mevcut Durum</th>
                 <th className="py-3 px-4 text-right">İşlemler</th>
@@ -712,7 +866,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
             <tbody className="divide-y divide-slate-100">
               {filteredEmployees.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-400">
+                  <td colSpan={7} className="py-12 text-center text-slate-400">
                     Kriterlere uygun personel bulunamadı.
                   </td>
                 </tr>
@@ -789,42 +943,125 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                       <td className="py-3 px-4">
                         {(() => {
                           const empAcc = accounts.find((a) => a.employeeId === emp.id);
-                          if (empAcc) {
-                            return (
-                              <button
-                                onClick={() => {
-                                  setAccountModalEmpId(emp.id);
-                                  setIsAccountsModalOpen(true);
-                                }}
-                                className="group inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100/80 border border-emerald-200 text-emerald-800 transition-colors text-left"
-                                title="Kullanıcı Giriş Hesabını İncele / Düzenle"
-                              >
-                                <Key className="w-3 h-3 text-emerald-600 shrink-0" />
-                                <div>
-                                  <span className="font-mono font-semibold text-xs text-emerald-700 block leading-tight">
-                                    @{empAcc.username}
-                                  </span>
-                                  <span className="text-[9px] text-emerald-600/80 block leading-none">
-                                    {empAcc.role === 'personel' ? 'Kısıtlı Yetki' : empAcc.role}
-                                  </span>
+                          const regDeviceName = empAcc?.registeredDeviceName || emp.registeredDeviceName;
+                          const regMac = empAcc?.registeredMacAddress || emp.registeredMacAddress;
+                          const regDevId = empAcc?.registeredDeviceId || emp.registeredDeviceId;
+                          const lastDevName = empAcc?.lastLoginDeviceName || emp.lastLoginDeviceName;
+                          const lastMac = empAcc?.lastLoginMacAddress || emp.lastLoginMacAddress;
+                          const lastDevId = empAcc?.lastLoginDeviceId || emp.lastLoginDeviceId;
+                          const isDifferentLastDevice = Boolean(
+                            regDevId && ((lastDevId && lastDevId !== regDevId) || (lastMac && regMac && lastMac !== regMac))
+                          );
+                          const activeLock = deviceApprovals.find(
+                            (d) =>
+                              d.employeeId === emp.id &&
+                              (d.status === 'pending' || d.status === 'check_in_requested') &&
+                              Date.now() < Date.parse(d.expiresAt)
+                          );
+
+                          return (
+                            <div className="space-y-1.5">
+                              {empAcc ? (
+                                <button
+                                  onClick={() => {
+                                    setAccountModalEmpId(emp.id);
+                                    setIsAccountsModalOpen(true);
+                                  }}
+                                  className="group inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100/80 border border-emerald-200 text-emerald-800 transition-colors text-left"
+                                  title="Kullanıcı Giriş Hesabını İncele / Düzenle"
+                                >
+                                  <Key className="w-3 h-3 text-emerald-600 shrink-0" />
+                                  <div>
+                                    <span className="font-mono font-semibold text-xs text-emerald-700 block leading-tight">
+                                      @{empAcc.username}
+                                    </span>
+                                    <span className="text-[9px] text-emerald-600/80 block leading-none">
+                                      {empAcc.role === 'personel' ? 'Kısıtlı Yetki' : empAcc.role}
+                                    </span>
+                                  </div>
+                                </button>
+                              ) : canManageAccounts ? (
+                                <button
+                                  onClick={() => {
+                                    setAccountModalEmpId(emp.id);
+                                    setIsAccountsModalOpen(true);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-100 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-slate-600 hover:text-indigo-700 font-semibold text-[11px] transition-colors"
+                                  title="Bu personele kullanıcı adı ve şifreli giriş hesabı tanımla"
+                                >
+                                  <Plus className="w-3 h-3 text-indigo-600" />
+                                  <span>Hesap Aç</span>
+                                </button>
+                              ) : (
+                                <span className="text-slate-400 text-[11px] block">Hesap Tanımsız</span>
+                              )}
+
+                              {regDeviceName || regDevId || regMac ? (
+                                <div className="p-1.5 rounded-lg bg-slate-50 border border-slate-200/90 space-y-0.5 max-w-[260px]">
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <span
+                                      className="inline-flex items-center gap-1 text-slate-800 font-semibold text-[10px] truncate"
+                                      title={`Kayıtlı Cihaz: ${regDeviceName || '-'}`}
+                                    >
+                                      <Smartphone className="w-3 h-3 text-indigo-500 shrink-0" />
+                                      <span className="truncate">{regDeviceName || 'Kayıtlı Cihaz'}</span>
+                                    </span>
+                                    {canEdit && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleResetDevice(emp)}
+                                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-white hover:bg-rose-50 text-slate-500 hover:text-rose-700 border border-slate-200 hover:border-rose-200 text-[9px] font-semibold cursor-pointer shrink-0"
+                                        title="Kayıtlı cihazı sıfırla (Cihaz değişikliğinde yeni cihazı tanımlamak için)"
+                                      >
+                                        <RotateCcw className="w-2.5 h-2.5" />
+                                        <span>Sıfırla</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                  <div className="font-mono text-[9px] text-slate-600 leading-tight space-y-0.5">
+                                    {regMac && (
+                                      <div>
+                                        MAC: <span className="font-bold text-slate-800">{regMac}</span>
+                                      </div>
+                                    )}
+                                    {regDevId && (
+                                      <div>
+                                        ID: <span className="font-semibold text-slate-700">{regDevId}</span>
+                                      </div>
+                                    )}
+                                    {(lastDevName || lastMac) && (
+                                      <div className={isDifferentLastDevice ? 'text-rose-700 font-semibold' : 'text-slate-400'}>
+                                        Son Giriş: {lastDevName || '-'} {lastMac ? `(${lastMac})` : ''}
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
-                              </button>
-                            );
-                          }
-                          return canManageAccounts ? (
-                            <button
-                              onClick={() => {
-                                setAccountModalEmpId(emp.id);
-                                setIsAccountsModalOpen(true);
-                              }}
-                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-100 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-slate-600 hover:text-indigo-700 font-semibold text-[11px] transition-colors"
-                              title="Bu personele kullanıcı adı ve şifreli giriş hesabı tanımla"
-                            >
-                              <Plus className="w-3 h-3 text-indigo-600" />
-                              <span>Hesap Aç</span>
-                            </button>
-                          ) : (
-                            <span className="text-slate-400 text-[11px]">Hesap Tanımsız</span>
+                              ) : (
+                                <div className="text-[10px] text-slate-400">
+                                  İlk girişte cihaz kaydedilecek
+                                </div>
+                              )}
+
+                              {activeLock && (
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200 text-[10px] font-bold">
+                                    <ShieldAlert className="w-2.5 h-2.5" />
+                                    <span>Yeni Cihaz Kilidi</span>
+                                  </span>
+                                  {canEdit && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleQuickApproveDevice(activeLock.id)}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold cursor-pointer"
+                                      title={`${activeLock.newDeviceName} için ilk iş yeri girişini onayla`}
+                                    >
+                                      <Check className="w-2.5 h-2.5" />
+                                      <span>Girişi Onayla</span>
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           );
                         })()}
                       </td>
@@ -837,19 +1074,32 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                       </td>
 
                       <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`w-2 h-2 rounded-full ${
-                              isInside
-                                ? 'bg-emerald-500 animate-pulse'
-                                : isBreak
-                                ? 'bg-amber-500'
-                                : 'bg-slate-400'
-                            }`}
-                          />
-                          <span className="font-medium text-slate-700">
-                            {isInside ? 'Ofiste (İçeride)' : isBreak ? 'Molada' : 'Ofis Dışında'}
-                          </span>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`w-2 h-2 rounded-full shrink-0 ${
+                                isInside
+                                  ? 'bg-emerald-500 animate-pulse'
+                                  : isBreak
+                                  ? 'bg-amber-500'
+                                  : 'bg-slate-400'
+                              }`}
+                            />
+                            <span className="font-medium text-slate-700">
+                              {isInside ? 'Ofiste (İçeride)' : isBreak ? 'Molada' : 'Ofis Dışında'}
+                            </span>
+                          </div>
+                          {canEdit && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenPresenceModal(emp)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 hover:bg-indigo-50 text-slate-600 hover:text-indigo-700 border border-slate-200 hover:border-indigo-200 text-[10px] font-semibold transition-colors cursor-pointer"
+                              title="Kart basmayı unutan personel için mevcut durumu değiştir"
+                            >
+                              <Edit2 className="w-2.5 h-2.5" />
+                              <span>Değiştir</span>
+                            </button>
+                          )}
                         </div>
                         {emp.lastActionTime && (
                           <div className="text-[10px] text-slate-400 font-mono mt-0.5">
@@ -1509,6 +1759,147 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
           setTimeout(() => setPhotoNotice(null), 5000);
         }}
       />
+
+      {/* MODAL 6: MEVCUT DURUM MANUEL DÜZENLEME MODALI (İK Yetkisi - Kart Unutma vb.) */}
+      {presenceEditEmp && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-700 flex items-center justify-center">
+                  <Clock className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Mevcut Durumu Güncelle</h3>
+                  <p className="text-[11px] text-slate-500">
+                    {presenceEditEmp.fullName} · {presenceEditEmp.department}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPresenceEditEmp(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSavePresenceChange} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-2">
+                  Yeni Mevcut Durum Seçin
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPresenceTarget('inside')}
+                    className={`p-2.5 rounded-xl border text-center text-xs font-semibold transition-all cursor-pointer flex flex-col items-center gap-1.5 ${
+                      presenceTarget === 'inside'
+                        ? 'bg-emerald-50 border-emerald-500 text-emerald-800 ring-2 ring-emerald-500/20'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                    <span>Ofiste</span>
+                    <span className="text-[10px] opacity-80 font-normal">İçeride</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPresenceTarget('break')}
+                    className={`p-2.5 rounded-xl border text-center text-xs font-semibold transition-all cursor-pointer flex flex-col items-center gap-1.5 ${
+                      presenceTarget === 'break'
+                        ? 'bg-amber-50 border-amber-500 text-amber-800 ring-2 ring-amber-500/20'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                    <span>Molada</span>
+                    <span className="text-[10px] opacity-80 font-normal">Ara / Dinlenme</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPresenceTarget('outside')}
+                    className={`p-2.5 rounded-xl border text-center text-xs font-semibold transition-all cursor-pointer flex flex-col items-center gap-1.5 ${
+                      presenceTarget === 'outside'
+                        ? 'bg-slate-100 border-slate-400 text-slate-900 ring-2 ring-slate-400/20'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-slate-400" />
+                    <span>Ofis Dışında</span>
+                    <span className="text-[10px] opacity-80 font-normal">Çıkış Yaptı</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    İşlem Saati
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={presenceTime}
+                    onChange={(e) => setPresenceTime(e.target.value)}
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Açıklama / Neden
+                  </label>
+                  <input
+                    type="text"
+                    value={presenceNote}
+                    onChange={(e) => setPresenceNote(e.target.value)}
+                    placeholder="Örn: Kart basmayı unuttu"
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={recordPresenceLog}
+                  onChange={(e) => setRecordPresenceLog(e.target.checked)}
+                  className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                />
+                <div className="text-xs">
+                  <span className="font-semibold text-slate-800 block">
+                    Geçiş kayıtlarına manuel hareket ekle
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    Canlı Pano ve Kayıtlar geçmişinde İK manuel düzenlemesi olarak görünür.
+                  </span>
+                </div>
+              </label>
+
+              <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPresenceEditEmp(null)}
+                  className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-sm flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Durumu Kaydet</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

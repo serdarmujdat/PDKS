@@ -68,6 +68,9 @@ function loadDatabase(): PDKSDatabase {
           parsed.companyWallQR.token = PDKS_SYSTEM_API_KEY;
           parsed.companyWallQR.qrPayload = `ASEM:WALL:${PDKS_SYSTEM_API_KEY}:GEO:${isGeo ? 1 : 0}:${lat}:${lon}:${rad}`;
         }
+        if (!Array.isArray(parsed.deviceApprovals)) {
+          parsed.deviceApprovals = [];
+        }
         return parsed;
       }
     }
@@ -198,7 +201,7 @@ app.post('/api/db/sync', (req: Request, res: Response) => {
       const allowedKeys = [
         'employees', 'records', 'shifts', 'leaves', 'overtime',
         'notifications', 'companyWallQR', 'companyLogo', 'kioskLockPassword',
-        'supervisorAssignments', 'accounts', 'settings',
+        'supervisorAssignments', 'accounts', 'deviceApprovals', 'settings',
       ];
       for (const key of allowedKeys) {
         if (updates[key] !== undefined) {
@@ -218,9 +221,73 @@ app.post('/api/db/sync', (req: Request, res: Response) => {
   }
 });
 
+function findServerDeviceOwner(
+  currentEmployeeId: string,
+  device: { deviceId?: string; macAddress?: string; deviceFingerprint?: string }
+): { employeeId: string; employeeName: string; macAddress?: string; deviceId?: string } | null {
+  const accounts = Array.isArray(dbState.accounts) ? dbState.accounts : [];
+  for (const acc of accounts) {
+    if (!acc.employeeId || acc.employeeId === currentEmployeeId) continue;
+    const matchId = Boolean(device.deviceId && acc.registeredDeviceId && acc.registeredDeviceId === device.deviceId);
+    const matchMac = Boolean(
+      device.macAddress &&
+        acc.registeredMacAddress &&
+        acc.registeredMacAddress.toUpperCase() === device.macAddress.toUpperCase()
+    );
+    const matchFp = Boolean(
+      device.deviceFingerprint &&
+        acc.registeredDeviceFingerprint &&
+        acc.registeredDeviceFingerprint === device.deviceFingerprint
+    );
+    if (matchId || matchMac || matchFp) {
+      return {
+        employeeId: acc.employeeId,
+        employeeName: acc.name,
+        macAddress: acc.registeredMacAddress,
+        deviceId: acc.registeredDeviceId,
+      };
+    }
+  }
+
+  const employees = Array.isArray(dbState.employees) ? dbState.employees : [];
+  for (const emp of employees) {
+    if (emp.id === currentEmployeeId) continue;
+    const matchId = Boolean(device.deviceId && emp.registeredDeviceId && emp.registeredDeviceId === device.deviceId);
+    const matchMac = Boolean(
+      device.macAddress &&
+        emp.registeredMacAddress &&
+        emp.registeredMacAddress.toUpperCase() === device.macAddress.toUpperCase()
+    );
+    const matchFp = Boolean(
+      device.deviceFingerprint &&
+        emp.registeredDeviceFingerprint &&
+        emp.registeredDeviceFingerprint === device.deviceFingerprint
+    );
+    if (matchId || matchMac || matchFp) {
+      return {
+        employeeId: emp.id,
+        employeeName: emp.fullName,
+        macAddress: emp.registeredMacAddress,
+        deviceId: emp.registeredDeviceId,
+      };
+    }
+  }
+
+  return null;
+}
+
 // 3. Attendance Scan Endpoint (Kiosk & Mobile QR Scans)
 app.post('/api/scan', (req: Request, res: Response) => {
-  const { employeeId, forcedAction, terminal = 'Terminal', method = 'kiosk_camera' } = req.body;
+  const {
+    employeeId,
+    forcedAction,
+    terminal = 'Terminal',
+    method = 'kiosk_camera',
+    deviceId,
+    macAddress,
+    deviceName,
+    deviceFingerprint,
+  } = req.body || {};
 
   if (!employeeId) {
     return res.status(400).json({ success: false, message: 'Personel kimliği zorunludur.' });
@@ -260,9 +327,141 @@ app.post('/api/scan', (req: Request, res: Response) => {
     }
   }
 
+  const cleanDeviceId = typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : undefined;
+  const cleanMac = typeof macAddress === 'string' && macAddress.trim() ? macAddress.trim().toUpperCase() : undefined;
+  const cleanDeviceName = typeof deviceName === 'string' && deviceName.trim() ? deviceName.trim() : undefined;
+  const cleanFingerprint = typeof deviceFingerprint === 'string' && deviceFingerprint.trim() ? deviceFingerprint.trim() : undefined;
+  const hasPersonalDevicePayload = method !== 'kiosk_camera' && Boolean(cleanDeviceId || cleanMac || cleanFingerprint);
+
   const now = new Date();
+  const nowIso = now.toISOString();
   const timeStr = now.toTimeString().split(' ')[0];
   const dateStr = getTodayString();
+
+  // Check if personal device belongs to another employee in the database
+  const otherOwner = hasPersonalDevicePayload
+    ? findServerDeviceOwner(emp.id, {
+        deviceId: cleanDeviceId,
+        macAddress: cleanMac,
+        deviceFingerprint: cleanFingerprint,
+      })
+    : null;
+
+  if (hasPersonalDevicePayload) {
+    const linkedAcc = dbState.accounts.find((a) => a.employeeId === emp.id);
+    if (!otherOwner && !emp.registeredDeviceId && !linkedAcc?.registeredDeviceId) {
+      emp.registeredDeviceId = cleanDeviceId;
+      emp.registeredMacAddress = cleanMac;
+      emp.registeredDeviceFingerprint = cleanFingerprint;
+      emp.registeredDeviceName = cleanDeviceName;
+      emp.registeredDeviceAt = nowIso;
+      if (linkedAcc) {
+        linkedAcc.registeredDeviceId = cleanDeviceId;
+        linkedAcc.registeredMacAddress = cleanMac;
+        linkedAcc.registeredDeviceFingerprint = cleanFingerprint;
+        linkedAcc.registeredDeviceName = cleanDeviceName;
+        linkedAcc.registeredDeviceAt = nowIso;
+      }
+    }
+
+    emp.lastLoginDeviceId = cleanDeviceId;
+    emp.lastLoginMacAddress = cleanMac;
+    emp.lastLoginDeviceName = cleanDeviceName;
+    emp.lastLoginAt = nowIso;
+    if (linkedAcc) {
+      linkedAcc.lastLoginDeviceId = cleanDeviceId;
+      linkedAcc.lastLoginMacAddress = cleanMac;
+      linkedAcc.lastLoginDeviceName = cleanDeviceName;
+      linkedAcc.lastLoginDeviceFingerprint = cleanFingerprint;
+      linkedAcc.lastLogin = nowIso;
+    }
+  }
+
+  let crossDeviceWarning: string | undefined;
+  if (otherOwner) {
+    const eventDateTime = now.toLocaleString('tr-TR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    const macOrId = cleanMac || cleanDeviceId || otherOwner.macAddress || otherOwner.deviceId || 'Bilinmiyor';
+    crossDeviceWarning = 'Başka Personel Cihazı ile Giriş (Yetkisiz/Şüpheli Cihaz Kullanımı)';
+    dbState.notifications.unshift({
+      id: `NOTIF-${Date.now().toString().slice(-6)}-SEC`,
+      type: 'device_alert',
+      title: '⚠️ Başka Personel Cihazı ile İşlem Tespit Edildi',
+      message: `${emp.fullName}, sistemde ${otherOwner.employeeName} adına kayıtlı cihaz (${macOrId}) üzerinden vardiya işlemi gerçekleştirdi. Tarih/Saat: ${eventDateTime}`,
+      employeeId: emp.id,
+      employeeName: emp.fullName,
+      department: emp.department,
+      timestamp: nowIso,
+      severity: 'critical',
+      read: false,
+      targetRole: 'ik_yoneticisi',
+      metadata: {
+        isCrossEmployeeDevice: true,
+        actorEmployeeName: emp.fullName,
+        ownerEmployeeId: otherOwner.employeeId,
+        ownerEmployeeName: otherOwner.employeeName,
+        macAddress: cleanMac || otherOwner.macAddress,
+        deviceId: cleanDeviceId || otherOwner.deviceId,
+        deviceName: cleanDeviceName,
+        eventDateTime,
+      },
+    });
+  }
+
+  // Enforce 1-hour manager-only first check-in gate when employee logged in from a new device
+  if (action === 'check_in' && !req.body?.bypassDeviceLock) {
+    const approvals = Array.isArray(dbState.deviceApprovals) ? dbState.deviceApprovals : [];
+    const nowMs = Date.now();
+    const activeLock = approvals.find(
+      (item) =>
+        item.employeeId === emp.id &&
+        (item.status === 'pending' || item.status === 'check_in_requested' || item.status === 'rejected') &&
+        nowMs < Date.parse(item.expiresAt)
+    );
+    if (activeLock) {
+      if (activeLock.status !== 'rejected') {
+        activeLock.status = 'check_in_requested';
+        activeLock.checkInRequestedAt = nowIso;
+      }
+      const remainingMins = Math.max(1, Math.ceil((Date.parse(activeLock.expiresAt) - nowMs) / 60000));
+      dbState.notifications.unshift({
+        id: `NOTIF-${Date.now().toString().slice(-6)}`,
+        type: 'device_alert',
+        title: 'Yeni Cihaz İş Yeri Giriş Onayı Bekleniyor',
+        message: `${emp.fullName} (${emp.department}) yeni cihazdan (${activeLock.newDeviceName}${activeLock.newMacAddress ? ` · MAC: ${activeLock.newMacAddress}` : ''}) giriş yaptıktan sonraki 1 saatlik pencerede iş yerine giriş denemesi yaptı. Kalan süre: ${remainingMins} dk. Yalnızca yönetici onaylayabilir.`,
+        employeeId: emp.id,
+        employeeName: emp.fullName,
+        department: emp.department,
+        timestamp: nowIso,
+        severity: 'critical',
+        read: false,
+        targetRole: 'ik_yoneticisi',
+        metadata: {
+          deviceApprovalId: activeLock.id,
+          newDeviceName: activeLock.newDeviceName,
+          macAddress: activeLock.newMacAddress,
+          deviceId: activeLock.newDeviceId,
+          expiresAt: activeLock.expiresAt,
+        },
+      });
+      broadcastUpdate(`Device lock check-in blocked for ${emp.fullName}`, 'deviceApprovals');
+      return res.status(403).json({
+        success: false,
+        awaitingManagerApproval: true,
+        deviceApproval: activeLock,
+        message:
+          activeLock.status === 'rejected'
+            ? 'Yönetici yeni cihazdan giriş talebinizi reddetti. 1 saatlik süre dolmadan yalnızca yönetici iş yeri girişini onaylayabilir.'
+            : 'Farklı cihazdan giriş yaptığınız için 1 saat içerisindeki ilk iş yeri girişiniz yalnızca yönetici tarafından onaylanabilir. Onay talebi yöneticiye iletildi.',
+      });
+    }
+  }
 
   emp.currentPresence = newPresence as any;
   emp.lastActionTime = timeStr;
@@ -274,12 +473,27 @@ app.post('/api/scan', (req: Request, res: Response) => {
     department: emp.department,
     date: dateStr,
     type: action,
-    timestamp: now.toISOString(),
+    timestamp: nowIso,
     timeStr,
     method,
     status: 'on_time',
     lateMinutes: 0,
     terminal,
+    ...(cleanDeviceId ? { deviceId: cleanDeviceId } : {}),
+    ...(cleanMac ? { macAddress: cleanMac } : {}),
+    ...(cleanDeviceName ? { deviceName: cleanDeviceName } : {}),
+    ...(cleanFingerprint ? { deviceFingerprint: cleanFingerprint } : {}),
+    ...(otherOwner
+      ? {
+          isSuspiciousDevice: true,
+          securityEventKind: 'scan_cross_device' as const,
+          securityWarning: crossDeviceWarning,
+          deviceOwnerEmployeeId: otherOwner.employeeId,
+          deviceOwnerEmployeeName: otherOwner.employeeName,
+          deviceOwnerMacAddress: otherOwner.macAddress,
+          note: `${crossDeviceWarning} · Cihaz Sahibi: ${otherOwner.employeeName}`,
+        }
+      : {}),
   };
 
   dbState.records.unshift(record);
@@ -293,7 +507,7 @@ app.post('/api/scan', (req: Request, res: Response) => {
     employeeId: emp.id,
     employeeName: emp.fullName,
     department: emp.department,
-    timestamp: now.toISOString(),
+    timestamp: nowIso,
     severity: 'info',
     read: false,
   });
@@ -309,7 +523,7 @@ app.post('/api/scan', (req: Request, res: Response) => {
     employee: emp,
     record,
     serverTime: timeStr,
-    timestamp: now.toISOString(),
+    timestamp: nowIso,
   });
 });
 
@@ -734,6 +948,49 @@ app.delete('/api/accounts/:id', (req: Request, res: Response) => {
   return res.json({ success: true, message: 'Kullanıcı hesabı silindi.', id, accounts: dbState.accounts, version: dbState.version });
 });
 
+const VALID_THEME_IDS = new Set([
+  'kurumsal_saf',
+  'sicak_kagit',
+  'serin_sis',
+  'gece_arduvaz',
+  'komur_orman',
+]);
+
+app.post('/api/user/theme', (req: Request, res: Response) => {
+  const { accountId, username, employeeId, themeId } = req.body || {};
+  if (!themeId || !VALID_THEME_IDS.has(String(themeId))) {
+    return res.status(400).json({ success: false, message: 'Geçersiz tema seçimi.' });
+  }
+
+  const cleanUser = typeof username === 'string' ? username.toLowerCase().trim().replace(/^@+/, '') : '';
+  const idx = dbState.accounts.findIndex(
+    (a) =>
+      (accountId && a.id === accountId) ||
+      (cleanUser && a.username.toLowerCase().replace(/^@+/, '') === cleanUser) ||
+      (employeeId && a.employeeId === employeeId)
+  );
+
+  if (idx < 0) {
+    return res.status(404).json({ success: false, message: 'Kullanıcı hesabı bulunamadı.' });
+  }
+
+  const updatedAt = new Date().toISOString();
+  dbState.accounts[idx] = {
+    ...dbState.accounts[idx],
+    themeId,
+    themeUpdatedAt: updatedAt,
+  };
+
+  broadcastUpdate(`User theme updated for @${dbState.accounts[idx].username}`, 'accounts');
+  return res.json({
+    success: true,
+    themeId,
+    themeUpdatedAt: updatedAt,
+    accountId: dbState.accounts[idx].id,
+    version: dbState.version,
+  });
+});
+
 app.post('/api/auth/login', (req: Request, res: Response) => {
   const { username, password } = req.body;
   if (!username || !password) {
@@ -771,6 +1028,8 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
       canTakeBreak: user.canTakeBreak ?? true,
       canRequestLeave: user.canRequestLeave ?? true,
       canViewOwnStats: user.canViewOwnStats ?? true,
+      themeId: user.themeId || 'kurumsal_saf',
+      themeUpdatedAt: user.themeUpdatedAt,
     },
   });
 });
