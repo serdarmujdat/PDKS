@@ -40,7 +40,6 @@ import {
   MobileScanMode,
   MobileScanResult,
   CompanyWallQRConfig,
-  ThemeId,
   DeviceEntryApproval,
 } from '../types/pdks';
 import { pdksStorage, getTodayString } from '../services/storage';
@@ -48,6 +47,7 @@ import { generateQRDataURL } from '../utils/qr';
 import { playSuccessChime, playErrorBuzzer } from '../utils/audio';
 import { NotificationCenter } from './NotificationCenter';
 import { APP_THEMES, getThemeById } from '../themes/themes';
+import { useTheme } from '../contexts/ThemeContext';
 
 interface EmployeeMobilePortalProps {
   currentUser?: CurrentUser;
@@ -110,9 +110,7 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
 
   // Current Company Wall QR configuration
   const [companyQR, setCompanyQR] = useState<CompanyWallQRConfig>(pdksStorage.getCompanyWallQR());
-  const [activeUserTheme, setActiveUserTheme] = useState<ThemeId>(() =>
-    pdksStorage.getUserTheme(currentUser || pdksStorage.getActiveUser())
-  );
+  const { themeId: activeUserTheme, setTheme: setGlobalTheme } = useTheme();
 
   // GPS & Live Workplace Location Verification State (Strictly confidential)
   // GPS & Live Workplace Location Verification State (Strictly confidential)
@@ -184,23 +182,13 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     };
     const handleSyncEvent = () => {
       setCompanyQR(pdksStorage.getCompanyWallQR());
-      setActiveUserTheme(pdksStorage.getUserTheme(currentUser || pdksStorage.getActiveUser()));
-    };
-    const handleThemeEvent = (e: any) => {
-      if (e?.detail) {
-        setActiveUserTheme(e.detail as ThemeId);
-      } else {
-        setActiveUserTheme(pdksStorage.getUserTheme(currentUser || pdksStorage.getActiveUser()));
-      }
     };
     window.addEventListener('pdks-wall-qr-updated', handleWallQREvent);
     window.addEventListener('pdks-data-synced', handleSyncEvent);
-    window.addEventListener('pdks-theme-updated', handleThemeEvent);
 
     return () => {
       window.removeEventListener('pdks-wall-qr-updated', handleWallQREvent);
       window.removeEventListener('pdks-data-synced', handleSyncEvent);
-      window.removeEventListener('pdks-theme-updated', handleThemeEvent);
     };
   }, [currentUser]);
 
@@ -309,7 +297,6 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     if (isRestrictedPersonnel && currentUser?.employeeId) {
       setSelectedEmpId(currentUser.employeeId);
     }
-    setActiveUserTheme(pdksStorage.getUserTheme(currentUser || pdksStorage.getActiveUser()));
   }, [currentUser, isRestrictedPersonnel]);
 
   useEffect(() => {
@@ -1807,17 +1794,17 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
             </div>
 
             {/* PERSONAL ACCOUNT THEME PICKER */}
-            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2.5">
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/70 rounded-xl border border-slate-200 dark:border-slate-700 space-y-2.5">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                  <Palette className="w-4 h-4 text-indigo-600" />
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                  <Palette className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
                   <span>Kişisel Hesap Temam</span>
                 </span>
-                <span className="text-[10px] font-semibold text-slate-500">
+                <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
                   {getThemeById(activeUserTheme).name}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-500 leading-snug">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
                 Seçtiğiniz tema yalnızca sizin hesabınıza kaydedilir ve göz yormayan dengeli kontrast sunar.
               </p>
               <div className="grid grid-cols-1 gap-1.5">
@@ -1828,13 +1815,12 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
                       key={theme.id}
                       type="button"
                       onClick={() => {
-                        setActiveUserTheme(theme.id);
-                        void pdksStorage.saveUserTheme(theme.id, currentUser || pdksStorage.getActiveUser());
+                        void setGlobalTheme(theme.id, currentUser || pdksStorage.getActiveUser());
                       }}
                       className={`w-full flex items-center justify-between p-2 rounded-xl border text-left transition-all cursor-pointer ${
                         selected
-                          ? 'border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-500'
-                          : 'border-slate-200 bg-white hover:border-slate-300'
+                          ? 'border-indigo-600 dark:border-indigo-400 bg-indigo-50/70 dark:bg-indigo-950/50 ring-1 ring-indigo-500'
+                          : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-600'
                       }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
@@ -1856,9 +1842,9 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
                           />
                         </span>
                         <div className="min-w-0">
-                          <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                          <div className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
                             <span>{theme.name}</span>
-                            <span className="text-[10px] font-medium text-slate-500 flex items-center gap-0.5">
+                            <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-0.5">
                               {theme.mode === 'dark' ? (
                                 <Moon className="w-3 h-3" />
                               ) : (
@@ -1867,11 +1853,11 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
                               {theme.mode === 'dark' ? 'Koyu' : 'Açık'}
                             </span>
                           </div>
-                          <div className="text-[10px] text-slate-500 truncate">{theme.subtitle}</div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{theme.subtitle}</div>
                         </div>
                       </div>
                       {selected && (
-                        <CheckCircle2 className="w-4 h-4 text-indigo-600 shrink-0" />
+                        <CheckCircle2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
                       )}
                     </button>
                   );

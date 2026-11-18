@@ -25,9 +25,12 @@ import {
   ShieldAlert,
   Palette,
   LogOut,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { Employee, AttendanceRecord, Department, OvertimeRequest, LeaveRequest, DeviceEntryApproval, PDKSNotification } from '../types/pdks';
 import { pdksStorage, getTodayString } from '../services/storage';
+import { useTheme } from '../contexts/ThemeContext';
 import { NotificationCenter } from './NotificationCenter';
 import { CompanyLogoImage } from './CompanyLogoImage';
 import { CompanySettingsPanel } from './CompanySettingsPanel';
@@ -60,6 +63,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   companyName: propCompanyName,
 }) => {
   const activeUser = currentUser || pdksStorage.getActiveUser();
+  const { mode: themeMode, themeDef, setMode: setThemeMode } = useTheme();
   const isSuperAdmin = pdksStorage.isSuperAdmin(activeUser);
   const isHRManager = pdksStorage.isHRorSuperAdmin(activeUser);
   const canManageSettings = pdksStorage.canAccessSettings(activeUser);
@@ -306,12 +310,12 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   return (
     <div className="w-full max-w-7xl mx-auto min-w-0 px-3 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-5 sm:space-y-8">
       {/* Top Banner & Quick Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 pb-3 sm:pb-4 border-b border-slate-200">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 pb-3 sm:pb-4 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
             {companyName} · Canlı Yönetim Panosu
           </h1>
-          <p className="text-xs sm:text-sm text-slate-500 mt-0.5 sm:mt-1">
+          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5 sm:mt-1">
             Bugünkü katılım durumu, canlı geçiş hareketleri ve personel devam istatistikleri.
           </p>
         </div>
@@ -320,10 +324,10 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           {canManageSettings && onOpenLogoManager && (
             <button
               onClick={onOpenLogoManager}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-purple-700 bg-purple-50 border border-purple-200 hover:bg-purple-100 rounded-lg shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-500/15 border border-purple-200 dark:border-purple-500/30 hover:bg-purple-100 dark:hover:bg-purple-500/25 rounded-lg shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
               title="Şirket logosunu standart boyutlarda ekleyin veya güncelleyin"
             >
-              <ImageIcon className="w-3.5 h-3.5 text-purple-600" />
+              <ImageIcon className="w-3.5 h-3.5 text-purple-600 dark:text-purple-300" />
               <span>Kurumsal Logo</span>
             </button>
           )}
@@ -331,10 +335,10 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           {canManageSettings && onOpenWallQR && (
             <button
               onClick={onOpenWallQR}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 rounded-lg shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-500/15 border border-indigo-200 dark:border-indigo-500/30 hover:bg-indigo-100 dark:hover:bg-indigo-500/25 rounded-lg shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
               title="Şirket duvarına asılacak A4 poster QR kodunu görüntüle ve yazdır"
             >
-              <Printer className="w-3.5 h-3.5 text-indigo-600" />
+              <Printer className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-300" />
               <span>Duvar QR'ı</span>
             </button>
           )}
@@ -342,9 +346,9 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           {onNavigateToPerformance && (
             <button
               onClick={onNavigateToPerformance}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 rounded-lg shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-100 dark:hover:bg-emerald-500/25 rounded-lg shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
-              <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
+              <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-300" />
               <span>Performans</span>
             </button>
           )}
@@ -352,22 +356,22 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           {canExport && (
             <button
               onClick={handleExportCSV}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
-              <Download className="w-3.5 h-3.5 text-slate-500" />
+              <Download className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
               <span>Excel / CSV</span>
             </button>
           )}
 
           <button
             onClick={() => setIsNotificationModalOpen(true)}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 hover:bg-amber-100 rounded-lg shadow-xs transition-colors cursor-pointer"
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-amber-900 dark:text-amber-300 bg-amber-50 dark:bg-amber-500/15 border border-amber-200 dark:border-amber-500/30 hover:bg-amber-100 dark:hover:bg-amber-500/25 rounded-lg shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
             title="Sistem Bildirim Merkezi: Gecikmeler, izinler ve vardiya alarmları"
           >
-            <Bell className="w-3.5 h-3.5 text-amber-600" />
+            <Bell className="w-3.5 h-3.5 text-amber-600 dark:text-amber-300" />
             <span>Bildirimler</span>
             {unreadAlertCount > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px] font-bold font-mono">
+              <span className="px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px] font-bold font-mono tabular-nums">
                 {unreadAlertCount > 9 ? '9+' : unreadAlertCount}
               </span>
             )}
@@ -375,13 +379,13 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
           <a
             href="#pending-approvals-section"
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-indigo-900 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 rounded-lg shadow-xs transition-colors cursor-pointer"
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-bold text-indigo-900 dark:text-indigo-200 bg-indigo-50 dark:bg-indigo-500/15 border border-indigo-200 dark:border-indigo-500/30 hover:bg-indigo-100 dark:hover:bg-indigo-500/25 rounded-lg shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
             title="Personel mobil portalından gelen onay bekleyen fazla mesai ve izin talepleri"
           >
-            <FileCheck2 className="w-3.5 h-3.5 text-indigo-600" />
+            <FileCheck2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-300" />
             <span>Onay Bekleyenler</span>
             {totalPendingApprovals > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-amber-600 text-white text-[10px] font-bold font-mono">
+              <span className="px-1.5 py-0.2 rounded-full bg-amber-600 text-white text-[10px] font-bold font-mono tabular-nums">
                 {totalPendingApprovals}
               </span>
             )}
@@ -389,21 +393,57 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
           <button
             onClick={onNavigateToKiosk}
-            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-sm transition-colors cursor-pointer"
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-sm transition-colors cursor-pointer whitespace-nowrap shrink-0"
           >
             <QrCode className="w-3.5 h-3.5" />
             <span>Kiosk</span>
           </button>
 
+          {/* Direct Light / Dark Mode Switch (Açık / Koyu Tema) */}
+          <div
+            role="group"
+            aria-label="Tema Modu Seçimi"
+            className="col-span-2 sm:col-span-1 inline-flex items-center p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shrink-0"
+          >
+            <button
+              type="button"
+              onClick={() => void setThemeMode('light', activeUser)}
+              aria-pressed={themeMode === 'light'}
+              className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                themeMode === 'light'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+              }`}
+              title="Açık Tema moduna geç"
+            >
+              <Sun className="w-3.5 h-3.5 text-amber-500" />
+              <span>Açık Tema</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void setThemeMode('dark', activeUser)}
+              aria-pressed={themeMode === 'dark'}
+              className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                themeMode === 'dark'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+              }`}
+              title="Koyu Tema moduna geç"
+            >
+              <Moon className="w-3.5 h-3.5" />
+              <span>Koyu Tema</span>
+            </button>
+          </div>
+
           {onOpenThemeSettings && (
             <button
               type="button"
               onClick={onOpenThemeSettings}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 border border-slate-200 hover:bg-slate-200 rounded-lg shadow-xs transition-colors cursor-pointer"
-              title="Tema ayarlarını değiştir"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              title={`Tüm tema paletlerini aç (Aktif: ${themeDef.name})`}
             >
-              <Palette className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Tema</span>
+              <Palette className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+              <span>Temalar</span>
             </button>
           )}
 
@@ -411,10 +451,10 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             <button
               type="button"
               onClick={onLogout}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 rounded-lg shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-500/15 border border-rose-200 dark:border-rose-500/30 hover:bg-rose-100 dark:hover:bg-rose-500/25 rounded-lg shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
               title="Oturumu Kapat"
             >
-              <LogOut className="w-3.5 h-3.5 text-rose-600" />
+              <LogOut className="w-3.5 h-3.5 text-rose-600 dark:text-rose-300" />
               <span>Çıkış Yap</span>
             </button>
           )}
@@ -422,32 +462,32 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       </div>
 
       {/* İK Kurumsal Şirket Logosu Yönetim Alanı (Talep: Logo ekleme kısmı herkese açık olmasın ik yönetici sayfasında olsun) */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 transition-colors">
         <div className="flex flex-col sm:flex-row sm:items-center gap-4">
           {/* 240x60 Standart Boyutlu Logo Çerçevesi */}
-          <div className="w-[240px] h-[60px] max-w-full rounded-xl border-2 border-dashed border-indigo-200 bg-slate-50 flex items-center justify-center p-2 shrink-0 self-center sm:self-auto shadow-2xs">
+          <div className="w-[240px] h-[60px] max-w-full rounded-xl border-2 border-dashed border-indigo-200 dark:border-indigo-500/40 bg-slate-50 dark:bg-slate-800/80 flex items-center justify-center p-2 shrink-0 self-center sm:self-auto shadow-2xs">
             <CompanyLogoImage
               src={companyLogo}
               alt={companyName}
               companyName={companyName}
               className="max-h-[48px] max-w-[220px] w-auto h-auto object-contain"
-              variant="light"
+              variant={themeMode === 'dark' ? 'dark' : 'light'}
             />
           </div>
 
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <h2 className="text-sm font-bold text-slate-900">
+              <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">
                 Kurumsal Şirket Logosu
               </h2>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-500/20 text-purple-800 dark:text-purple-200 border border-purple-200 dark:border-purple-500/30">
                 İK Yönetici Alanı
               </span>
             </div>
-            <p className="text-xs text-slate-500 max-w-lg leading-relaxed">
-              Bu logo giriş ekranında, üst menüde, turnike kiosklarında ve duvar QR posterlerinde standart <strong>240 × 60 px</strong> boyutlarında yayınlanır.
+            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-lg leading-relaxed">
+              Bu logo giriş ekranında, üst menüde, turnike kiosklarında ve duvar QR posterlerinde standart <strong className="text-slate-700 dark:text-slate-200">240 × 60 px</strong> boyutlarında yayınlanır.
             </p>
-            <div className="text-[11px] font-mono text-indigo-700 font-semibold">
+            <div className="text-[11px] font-mono text-indigo-700 dark:text-indigo-300 font-semibold">
               Standart Boyut: 240 × 60 px (4:1 En/Boy Oranı)
             </div>
           </div>
@@ -476,85 +516,85 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       {/* Primary KPI Grid (Tabular numerals enforced, Mobile Optimized) */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-4">
         {/* Total Staff */}
-        <div className="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-xs">
-          <div className="flex items-center justify-between text-slate-500 text-xs font-medium mb-1.5 sm:mb-2">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 sm:p-4 shadow-xs transition-colors">
+          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium mb-1.5 sm:mb-2">
             <span className="truncate">Toplam Kadro</span>
-            <Users className="w-4 h-4 text-slate-400 shrink-0" />
+            <Users className="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0" />
           </div>
-          <div className="font-mono text-xl sm:text-2xl font-bold text-slate-900 tabular-nums">
+          <div className="font-mono text-xl sm:text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
             {totalEmployees}
           </div>
-          <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 sm:mt-1 truncate">
+          <div className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 sm:mt-1 truncate">
             Kayıtlı aktif kadro
           </div>
         </div>
 
         {/* Present Inside */}
-        <div className="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-xs">
-          <div className="flex items-center justify-between text-emerald-600 text-xs font-medium mb-1.5 sm:mb-2">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 sm:p-4 shadow-xs transition-colors">
+          <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400 text-xs font-medium mb-1.5 sm:mb-2">
             <span className="truncate">Şu An Ofiste</span>
-            <UserCheck className="w-4 h-4 text-emerald-500 shrink-0" />
+            <UserCheck className="w-4 h-4 text-emerald-500 dark:text-emerald-400 shrink-0" />
           </div>
-          <div className="font-mono text-xl sm:text-2xl font-bold text-emerald-700 tabular-nums">
+          <div className="font-mono text-xl sm:text-2xl font-bold text-emerald-700 dark:text-emerald-300 tabular-nums">
             {insideEmployees.length}
           </div>
-          <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 sm:mt-1 truncate">
+          <div className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 sm:mt-1 truncate">
             İşyerinde mesaide
           </div>
         </div>
 
         {/* On Break */}
-        <div className="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-xs">
-          <div className="flex items-center justify-between text-amber-600 text-xs font-medium mb-1.5 sm:mb-2">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 sm:p-4 shadow-xs transition-colors">
+          <div className="flex items-center justify-between text-amber-600 dark:text-amber-400 text-xs font-medium mb-1.5 sm:mb-2">
             <span className="truncate">Molada</span>
-            <Coffee className="w-4 h-4 text-amber-500 shrink-0" />
+            <Coffee className="w-4 h-4 text-amber-500 dark:text-amber-400 shrink-0" />
           </div>
-          <div className="font-mono text-xl sm:text-2xl font-bold text-amber-700 tabular-nums">
+          <div className="font-mono text-xl sm:text-2xl font-bold text-amber-700 dark:text-amber-300 tabular-nums">
             {breakEmployees.length}
           </div>
-          <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 sm:mt-1 truncate">
+          <div className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 sm:mt-1 truncate">
             Yemek & dinlenme
           </div>
         </div>
 
         {/* Not Arrived */}
-        <div className="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-xs">
-          <div className="flex items-center justify-between text-slate-500 text-xs font-medium mb-1.5 sm:mb-2">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 sm:p-4 shadow-xs transition-colors">
+          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium mb-1.5 sm:mb-2">
             <span className="truncate">Henüz Gelmedi</span>
-            <Clock className="w-4 h-4 text-slate-400 shrink-0" />
+            <Clock className="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0" />
           </div>
-          <div className="font-mono text-xl sm:text-2xl font-bold text-slate-900 tabular-nums">
+          <div className="font-mono text-xl sm:text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
             {notArrivedEmployees.length}
           </div>
-          <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 sm:mt-1 truncate">
+          <div className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 sm:mt-1 truncate">
             Dışarıda / Gelmedi
           </div>
         </div>
 
         {/* Late Today */}
-        <div className="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-xs">
-          <div className="flex items-center justify-between text-rose-600 text-xs font-medium mb-1.5 sm:mb-2">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 sm:p-4 shadow-xs transition-colors">
+          <div className="flex items-center justify-between text-rose-600 dark:text-rose-400 text-xs font-medium mb-1.5 sm:mb-2">
             <span className="truncate">Geç Kalan</span>
-            <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+            <AlertTriangle className="w-4 h-4 text-rose-500 dark:text-rose-400 shrink-0" />
           </div>
-          <div className="font-mono text-xl sm:text-2xl font-bold text-rose-700 tabular-nums">
+          <div className="font-mono text-xl sm:text-2xl font-bold text-rose-700 dark:text-rose-300 tabular-nums">
             {lateRecords.length}
           </div>
-          <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 sm:mt-1 truncate">
+          <div className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 sm:mt-1 truncate">
             Toleransı aşan
           </div>
         </div>
 
         {/* Attendance Rate */}
-        <div className="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-xs">
-          <div className="flex items-center justify-between text-indigo-600 text-xs font-medium mb-1.5 sm:mb-2">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 sm:p-4 shadow-xs transition-colors">
+          <div className="flex items-center justify-between text-indigo-600 dark:text-indigo-400 text-xs font-medium mb-1.5 sm:mb-2">
             <span className="truncate">Katılım Oranı</span>
-            <ArrowUpRight className="w-4 h-4 text-indigo-500 shrink-0" />
+            <ArrowUpRight className="w-4 h-4 text-indigo-500 dark:text-indigo-400 shrink-0" />
           </div>
-          <div className="font-mono text-xl sm:text-2xl font-bold text-indigo-700 tabular-nums">
+          <div className="font-mono text-xl sm:text-2xl font-bold text-indigo-700 dark:text-indigo-300 tabular-nums">
             %{attendanceRate}
           </div>
-          <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5 sm:mt-1 truncate">
+          <div className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 sm:mt-1 truncate">
             {presentCount} / {activeCount} çalışan
           </div>
         </div>
@@ -562,14 +602,14 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
       {/* Onay Bildirim Toastı */}
       {approvalFeedback && (
-        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-950 font-medium text-xs flex items-center justify-between shadow-xs animate-in fade-in duration-300">
+        <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-950 dark:text-emerald-200 font-medium text-xs flex items-center justify-between shadow-xs animate-in fade-in duration-300">
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
             <span>{approvalFeedback}</span>
           </div>
           <button
             onClick={() => setApprovalFeedback(null)}
-            className="text-emerald-700 hover:text-emerald-900 p-1"
+            className="text-emerald-700 dark:text-emerald-300 hover:text-emerald-900 dark:hover:text-emerald-100 p-1 cursor-pointer"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -578,20 +618,20 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
       {/* KRİTİK CİHAZ GÜVENLİĞİ BİLDİRİMLERİ: Başka Personel Cihazı ile Giriş */}
       {(isHRManager || canApprove) && crossDeviceAlerts.length > 0 && (
-        <div className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3 animate-fade-in">
+        <div className="bg-rose-50 dark:bg-rose-500/10 border-2 border-rose-300 dark:border-rose-500/40 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3 animate-fade-in">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div className="flex items-center gap-2.5">
               <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0">
                 <ShieldAlert className="w-5 h-5" />
               </div>
               <div>
-                <h2 className="text-sm font-bold text-rose-950 flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm font-bold text-rose-950 dark:text-rose-200 flex items-center gap-2 flex-wrap">
                   <span>Başka Personel Cihazı ile Giriş Tespit Edildi</span>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-200 text-rose-900">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-200 dark:bg-rose-500/25 text-rose-900 dark:text-rose-200">
                     {crossDeviceAlerts.length} Anlık Uyarı
                   </span>
                 </h2>
-                <p className="text-xs text-rose-800">
+                <p className="text-xs text-rose-800 dark:text-rose-300">
                   Bir personel, veritabanında başka bir personele kayıtlı cihaz üzerinden giriş/vardiya işlemi gerçekleştirdi.
                 </p>
               </div>
@@ -600,7 +640,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               <button
                 type="button"
                 onClick={onNavigateToRecords}
-                className="px-3 py-1.5 rounded-lg bg-white hover:bg-rose-100 text-rose-800 border border-rose-300 text-xs font-bold cursor-pointer"
+                className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-rose-100 dark:hover:bg-rose-500/20 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-500/40 text-xs font-bold cursor-pointer"
               >
                 Hareket Kayıtlarını Aç
               </button>
@@ -621,20 +661,20 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             {crossDeviceAlerts.map((alert) => (
               <div
                 key={alert.id}
-                className="bg-white rounded-xl p-3 border border-rose-200 text-xs space-y-1.5"
+                className="bg-white dark:bg-slate-900 rounded-xl p-3 border border-rose-200 dark:border-rose-500/30 text-xs space-y-1.5"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-bold text-rose-900">{alert.metadata?.actorEmployeeName || alert.employeeName}</span>
-                  <span className="text-[10px] font-mono text-slate-500">
+                  <span className="font-bold text-rose-900 dark:text-rose-200">{alert.metadata?.actorEmployeeName || alert.employeeName}</span>
+                  <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
                     {alert.metadata?.eventDateTime || new Date(alert.timestamp).toLocaleString('tr-TR')}
                   </span>
                 </div>
-                <div className="text-[11px] text-slate-700 space-y-0.5">
+                <div className="text-[11px] text-slate-700 dark:text-slate-300 space-y-0.5">
                   <div>
-                    Cihazın Asıl Sahibi: <strong className="text-rose-700">{alert.metadata?.ownerEmployeeName || '-'}</strong>
+                    Cihazın Asıl Sahibi: <strong className="text-rose-700 dark:text-rose-300">{alert.metadata?.ownerEmployeeName || '-'}</strong>
                   </div>
-                  <div className="font-mono text-[10px] text-slate-600">
-                    MAC / ID: <strong className="text-slate-900">{alert.metadata?.macAddress || alert.metadata?.deviceId || '-'}</strong>
+                  <div className="font-mono text-[10px] text-slate-600 dark:text-slate-400">
+                    MAC / ID: <strong className="text-slate-900 dark:text-slate-200">{alert.metadata?.macAddress || alert.metadata?.deviceId || '-'}</strong>
                   </div>
                 </div>
               </div>
@@ -644,28 +684,28 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       )}
 
       {/* İK ONAY BEKLEYENLER LİSTESİ: Fazla Mesai & İzin Talepleri */}
-      <div id="pending-approvals-section" className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-xs space-y-5">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+      <div id="pending-approvals-section" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xs space-y-5 transition-colors">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-xl bg-amber-50 dark:bg-amber-500/15 border border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300 flex items-center justify-center">
                 <FileCheck2 className="w-4 h-4" />
               </div>
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">
                 Onay Bekleyen Talepler (Yeni Cihaz, Fazla Mesai & İzinler)
               </h2>
               {totalPendingApprovals > 0 ? (
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30">
                   {totalPendingApprovals} Bekleyen Talep
                 </span>
               ) : (
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
-                  <Check className="w-3 h-3 text-emerald-600" />
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 flex items-center gap-1">
+                  <Check className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                   Tüm Talepler Güncel
                 </span>
               )}
             </div>
-            <p className="text-xs text-slate-500 mt-1">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
               Farklı cihazdan giriş yapan personellerin 1 saat içerisindeki ilk iş yeri giriş onayları, fazla mesailer ve izinler anlık olarak buraya düşer.
             </p>
           </div>
@@ -677,7 +717,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
                 approvalFilter === 'all'
                   ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
               }`}
             >
               Tümü ({totalPendingApprovals})
@@ -687,7 +727,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
                 approvalFilter === 'device'
                   ? 'bg-rose-600 text-white shadow-xs'
-                  : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
+                  : 'bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-500/25 border border-rose-200 dark:border-rose-500/30'
               }`}
             >
               <Smartphone className="w-3.5 h-3.5" />
@@ -698,7 +738,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
                 approvalFilter === 'overtime'
                   ? 'bg-amber-600 text-white shadow-xs'
-                  : 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200'
+                  : 'bg-amber-50 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/25 border border-amber-200 dark:border-amber-500/30'
               }`}
             >
               <Timer className="w-3.5 h-3.5" />
@@ -709,7 +749,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
                 approvalFilter === 'leave'
                   ? 'bg-purple-600 text-white shadow-xs'
-                  : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200'
+                  : 'bg-purple-50 dark:bg-purple-500/15 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-500/25 border border-purple-200 dark:border-purple-500/30'
               }`}
             >
               <CalendarCheck className="w-3.5 h-3.5" />
@@ -723,11 +763,11 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         (approvalFilter === 'device' && activeDeviceApprovals.length === 0) ||
         (approvalFilter === 'overtime' && pendingOvertimes.length === 0) ||
         (approvalFilter === 'leave' && pendingLeaves.length === 0) ? (
-          <div className="py-8 text-center bg-slate-50/70 border border-dashed border-slate-200 rounded-xl space-y-2">
-            <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 mx-auto flex items-center justify-center">
+          <div className="py-8 text-center bg-slate-50/70 dark:bg-slate-800/50 border border-dashed border-slate-200 dark:border-slate-700 rounded-xl space-y-2">
+            <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 mx-auto flex items-center justify-center">
               <Check className="w-5 h-5" />
             </div>
-            <p className="font-semibold text-xs text-slate-800">
+            <p className="font-semibold text-xs text-slate-800 dark:text-slate-200">
               {approvalFilter === 'device'
                 ? 'Onay bekleyen yeni cihaz iş yeri girişi bulunmuyor.'
                 : approvalFilter === 'overtime'
@@ -736,7 +776,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                 ? 'Onay bekleyen izin talebi bulunmuyor.'
                 : 'Şu an İK onayını bekleyen yeni cihaz girişi, fazla mesai veya izin talebi bulunmamaktadır.'}
             </p>
-            <p className="text-[11px] text-slate-400 max-w-md mx-auto">
+            <p className="text-[11px] text-slate-400 dark:text-slate-400 max-w-md mx-auto">
               Personel farklı bir cihazdan giriş yaptığında veya fazla mesai / izin formu gönderdiğinde anlık olarak burada listelenecektir.
             </p>
           </div>
@@ -755,8 +795,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                     key={devReq.id}
                     className={`rounded-xl p-4 shadow-2xs space-y-3 flex flex-col justify-between transition-colors border ${
                       isRequested
-                        ? 'bg-rose-50/60 border-rose-300 hover:border-rose-400'
-                        : 'bg-amber-50/50 border-amber-300 hover:border-amber-400'
+                        ? 'bg-rose-50/60 dark:bg-rose-500/10 border-rose-300 dark:border-rose-500/35 hover:border-rose-400'
+                        : 'bg-amber-50/50 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/35 hover:border-amber-400'
                     }`}
                   >
                     <div className="space-y-2">
@@ -764,48 +804,48 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                         <span
                           className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border ${
                             isRequested
-                              ? 'bg-rose-100 text-rose-800 border-rose-200'
-                              : 'bg-amber-100 text-amber-800 border-amber-200'
+                              ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-800 dark:text-rose-200 border-rose-200 dark:border-rose-500/30'
+                              : 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-200 border-amber-200 dark:border-amber-500/30'
                           }`}
                         >
                           <ShieldAlert className="w-3 h-3" />
                           {isRequested ? 'İş Yeri Girişi Denendi (Acil)' : 'Farklı Cihazdan Giriş'}
                         </span>
-                        <span className="text-[10px] font-mono font-bold text-rose-700 bg-white px-2 py-0.5 rounded border border-rose-200">
+                        <span className="text-[10px] font-mono font-bold text-rose-700 dark:text-rose-300 bg-white dark:bg-slate-900 px-2 py-0.5 rounded border border-rose-200 dark:border-rose-500/30">
                           {remainingMins} dk kaldı
                         </span>
                       </div>
 
                       <div>
-                        <div className="font-bold text-sm text-slate-900">{devReq.employeeName}</div>
-                        <div className="text-[11px] text-slate-500 font-mono">
+                        <div className="font-bold text-sm text-slate-900 dark:text-slate-100">{devReq.employeeName}</div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
                           @{devReq.username} · {devReq.department}
                         </div>
                       </div>
 
-                      <div className="p-2.5 rounded-lg bg-white border border-slate-200 space-y-1.5 text-xs">
-                        <div className="flex justify-between items-center gap-2 text-slate-700">
-                          <span className="text-slate-500 shrink-0">Kayıtlı Cihaz:</span>
-                          <span className="font-mono font-semibold text-slate-800 truncate">
+                      <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-1.5 text-xs">
+                        <div className="flex justify-between items-center gap-2 text-slate-700 dark:text-slate-300">
+                          <span className="text-slate-500 dark:text-slate-400 shrink-0">Kayıtlı Cihaz:</span>
+                          <span className="font-mono font-semibold text-slate-800 dark:text-slate-200 truncate">
                             {devReq.registeredDeviceName}
                             {devReq.registeredMacAddress ? ` (${devReq.registeredMacAddress})` : ''}
                           </span>
                         </div>
-                        <div className="flex justify-between items-center gap-2 text-slate-700">
-                          <span className="text-slate-500 shrink-0">Yeni Cihaz:</span>
-                          <span className="font-mono font-bold text-rose-700 truncate">
+                        <div className="flex justify-between items-center gap-2 text-slate-700 dark:text-slate-300">
+                          <span className="text-slate-500 dark:text-slate-400 shrink-0">Yeni Cihaz:</span>
+                          <span className="font-mono font-bold text-rose-700 dark:text-rose-300 truncate">
                             {devReq.newDeviceName}
                             {devReq.newMacAddress ? ` (${devReq.newMacAddress})` : ''}
                           </span>
                         </div>
-                        <div className="pt-1.5 border-t border-slate-100 text-[11px] text-slate-600">
-                          Yeni cihazdan giriş sonrası <strong>1 saat</strong> içindeki ilk iş yeri girişi yalnızca yönetici onayına tabidir.
+                        <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-600 dark:text-slate-400">
+                          Yeni cihazdan giriş sonrası <strong className="text-slate-800 dark:text-slate-200">1 saat</strong> içindeki ilk iş yeri girişi yalnızca yönetici onayına tabidir.
                         </div>
                       </div>
                     </div>
 
-                    <div className="pt-2 border-t border-slate-200/70 space-y-2">
-                      <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                    <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 font-mono">
                         <span>
                           Giriş:{' '}
                           {new Date(devReq.loginAt).toLocaleTimeString('tr-TR', {
@@ -826,7 +866,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                           <button
                             type="button"
                             onClick={() => handleRejectDeviceEntry(devReq.id)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 dark:text-rose-300 bg-white dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-500/20 border border-rose-200 dark:border-rose-500/30 rounded-lg transition-colors cursor-pointer"
                             title="Yeni cihazdan iş yeri girişini reddet"
                           >
                             <X className="w-3.5 h-3.5" />
@@ -852,7 +892,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                           </button>
                         </div>
                       ) : (
-                        <div className="text-[11px] text-amber-700 font-semibold text-right">
+                        <div className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold text-right">
                           Yalnızca İK Yöneticisi onaylayabilir
                         </div>
                       )}
@@ -866,53 +906,53 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               pendingOvertimes.map((ot) => (
                 <div
                   key={ot.id}
-                  className="bg-amber-50/40 border border-amber-200 rounded-xl p-4 shadow-2xs space-y-3 flex flex-col justify-between hover:border-amber-300 transition-colors"
+                  className="bg-amber-50/40 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl p-4 shadow-2xs space-y-3 flex flex-col justify-between hover:border-amber-300 dark:hover:border-amber-400/50 transition-colors"
                 >
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                        <Timer className="w-3 h-3 text-amber-600" />
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-500/30">
+                        <Timer className="w-3 h-3 text-amber-600 dark:text-amber-300" />
                         Fazla Mesai Talebi
                       </span>
-                      <span className="text-[10px] font-mono text-slate-400 font-semibold">{ot.id}</span>
+                      <span className="text-[10px] font-mono text-slate-400 dark:text-slate-400 font-semibold">{ot.id}</span>
                     </div>
 
                     <div>
-                      <div className="font-bold text-sm text-slate-900">{ot.employeeName}</div>
-                      <div className="text-[11px] text-slate-500 font-mono">
+                      <div className="font-bold text-sm text-slate-900 dark:text-slate-100">{ot.employeeName}</div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
                         {ot.employeeId} · {ot.department}
                       </div>
                     </div>
 
-                    <div className="p-2.5 rounded-lg bg-white border border-amber-200/80 space-y-1.5 text-xs">
-                      <div className="flex justify-between items-center text-slate-700">
-                        <span className="text-slate-500">Tarih:</span>
-                        <span className="font-bold font-mono text-slate-900">{ot.date}</span>
+                    <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-amber-200/80 dark:border-amber-500/25 space-y-1.5 text-xs">
+                      <div className="flex justify-between items-center text-slate-700 dark:text-slate-300">
+                        <span className="text-slate-500 dark:text-slate-400">Tarih:</span>
+                        <span className="font-bold font-mono text-slate-900 dark:text-slate-100">{ot.date}</span>
                       </div>
-                      <div className="flex justify-between items-center text-slate-700">
-                        <span className="text-slate-500">Saat Dilimi:</span>
-                        <span className="font-mono font-semibold text-amber-800">
+                      <div className="flex justify-between items-center text-slate-700 dark:text-slate-300">
+                        <span className="text-slate-500 dark:text-slate-400">Saat Dilimi:</span>
+                        <span className="font-mono font-semibold text-amber-800 dark:text-amber-300">
                           {ot.startTime} - {ot.endTime} ({ot.hours} Saat)
                         </span>
                       </div>
                       {ot.reason && (
-                        <div className="pt-1.5 border-t border-slate-100 text-[11px] text-slate-600">
-                          <span className="font-semibold text-slate-700">Gerekçe: </span>
+                        <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-600 dark:text-slate-400">
+                          <span className="font-semibold text-slate-700 dark:text-slate-200">Gerekçe: </span>
                           <span className="italic">{ot.reason}</span>
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="pt-2 border-t border-amber-200/60 flex items-center justify-between gap-2">
-                    <span className="text-[10px] text-slate-400 font-mono">
+                  <div className="pt-2 border-t border-amber-200/60 dark:border-amber-500/20 flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-slate-400 dark:text-slate-400 font-mono">
                       {new Date(ot.appliedAt).toLocaleDateString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
                     </span>
                     {canApprove && (
                       <div className="flex items-center gap-1.5">
                         <button
                           onClick={() => handleRejectOvertime(ot.id)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 dark:text-rose-300 bg-white dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-500/20 border border-rose-200 dark:border-rose-500/30 rounded-lg transition-colors cursor-pointer"
                           title="Talebi Reddet"
                         >
                           <X className="w-3.5 h-3.5" />
@@ -937,53 +977,53 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               pendingLeaves.map((lr) => (
                 <div
                   key={lr.id}
-                  className="bg-purple-50/40 border border-purple-200 rounded-xl p-4 shadow-2xs space-y-3 flex flex-col justify-between hover:border-purple-300 transition-colors"
+                  className="bg-purple-50/40 dark:bg-purple-500/10 border border-purple-200 dark:border-purple-500/30 rounded-xl p-4 shadow-2xs space-y-3 flex flex-col justify-between hover:border-purple-300 dark:hover:border-purple-400/50 transition-colors"
                 >
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
-                        <CalendarCheck className="w-3 h-3 text-purple-600" />
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-100 dark:bg-purple-500/20 text-purple-800 dark:text-purple-200 border border-purple-200 dark:border-purple-500/30">
+                        <CalendarCheck className="w-3 h-3 text-purple-600 dark:text-purple-300" />
                         {lr.leaveType}
                       </span>
-                      <span className="text-[10px] font-mono text-slate-400 font-semibold">{lr.id}</span>
+                      <span className="text-[10px] font-mono text-slate-400 dark:text-slate-400 font-semibold">{lr.id}</span>
                     </div>
 
                     <div>
-                      <div className="font-bold text-sm text-slate-900">{lr.employeeName}</div>
-                      <div className="text-[11px] text-slate-500 font-mono">
+                      <div className="font-bold text-sm text-slate-900 dark:text-slate-100">{lr.employeeName}</div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
                         {lr.employeeId} · {lr.department}
                       </div>
                     </div>
 
-                    <div className="p-2.5 rounded-lg bg-white border border-purple-200/80 space-y-1.5 text-xs">
-                      <div className="flex justify-between items-center text-slate-700">
-                        <span className="text-slate-500">Tarih Aralığı:</span>
-                        <span className="font-bold font-mono text-slate-900">
+                    <div className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-purple-200/80 dark:border-purple-500/25 space-y-1.5 text-xs">
+                      <div className="flex justify-between items-center text-slate-700 dark:text-slate-300">
+                        <span className="text-slate-500 dark:text-slate-400">Tarih Aralığı:</span>
+                        <span className="font-bold font-mono text-slate-900 dark:text-slate-100">
                           {lr.startDate} → {lr.endDate}
                         </span>
                       </div>
-                      <div className="flex justify-between items-center text-slate-700">
-                        <span className="text-slate-500">İzin Süresi:</span>
-                        <span className="font-mono font-semibold text-purple-800">{lr.days} Gün</span>
+                      <div className="flex justify-between items-center text-slate-700 dark:text-slate-300">
+                        <span className="text-slate-500 dark:text-slate-400">İzin Süresi:</span>
+                        <span className="font-mono font-semibold text-purple-800 dark:text-purple-300">{lr.days} Gün</span>
                       </div>
                       {lr.reason && (
-                        <div className="pt-1.5 border-t border-slate-100 text-[11px] text-slate-600">
-                          <span className="font-semibold text-slate-700">Açıklama: </span>
+                        <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-600 dark:text-slate-400">
+                          <span className="font-semibold text-slate-700 dark:text-slate-200">Açıklama: </span>
                           <span className="italic">{lr.reason}</span>
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="pt-2 border-t border-purple-200/60 flex items-center justify-between gap-2">
-                    <span className="text-[10px] text-slate-400 font-mono">
+                  <div className="pt-2 border-t border-purple-200/60 dark:border-purple-500/20 flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-slate-400 dark:text-slate-400 font-mono">
                       {new Date(lr.appliedAt).toLocaleDateString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
                     </span>
                     {canApprove && (
                       <div className="flex items-center gap-1.5">
                         <button
                           onClick={() => handleRejectLeave(lr.id)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-rose-700 dark:text-rose-300 bg-white dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-500/20 border border-rose-200 dark:border-rose-500/30 rounded-lg transition-colors cursor-pointer"
                           title="İzni Reddet"
                         >
                           <X className="w-3.5 h-3.5" />
@@ -1009,19 +1049,19 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       {/* Middle Row: Live Attendance Feed & Department Breakdown */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Live Attendance Activity (Col 2) */}
-        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+        <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs transition-colors">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 mb-4">
             <div>
-              <h2 className="text-base font-bold text-slate-900">
+              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
                 Bugünün Canlı Geçiş Akışı
               </h2>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 Turnikelerden ve mobil QR okutuculardan gelen anlık hareketler
               </p>
             </div>
             <button
               onClick={onNavigateToRecords}
-              className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+              className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 flex items-center gap-1 cursor-pointer"
             >
               Tüm Kayıtlar <ArrowRight className="w-3.5 h-3.5" />
             </button>
@@ -1030,7 +1070,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           {/* Mobile Optimized View: Live Feed Card List (sm:hidden) */}
           <div className="sm:hidden space-y-2">
             {todayRecords.length === 0 ? (
-              <div className="p-6 text-center text-xs text-slate-500 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+              <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-dashed border-slate-200 dark:border-slate-700">
                 Bugün ({todayStr}) için henüz giriş-çıkış hareketi kaydedilmedi.
               </div>
             ) : (
@@ -1045,24 +1085,24 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                     key={rec.id}
                     className={`p-3 rounded-xl border flex items-center justify-between gap-2.5 ${
                       rec.isSuspiciousDevice || isSecurityAlert
-                        ? 'bg-rose-50/70 border-rose-300'
-                        : 'bg-slate-50 border-slate-200/80'
+                        ? 'bg-rose-50/70 dark:bg-rose-500/10 border-rose-300 dark:border-rose-500/35'
+                        : 'bg-slate-50 dark:bg-slate-800/70 border-slate-200/80 dark:border-slate-700'
                     }`}
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 mb-0.5">
-                        <span className="font-mono font-bold text-slate-900 text-xs tabular-nums">
+                        <span className="font-mono font-bold text-slate-900 dark:text-slate-100 text-xs tabular-nums">
                           {rec.timeStr}
                         </span>
-                        <span className="text-[10px] text-slate-400">·</span>
-                        <span className="text-[10px] text-slate-500 font-mono">{rec.employeeId}</span>
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500">·</span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">{rec.employeeId}</span>
                       </div>
-                      <div className="font-semibold text-xs text-slate-900 truncate">
+                      <div className="font-semibold text-xs text-slate-900 dark:text-slate-100 truncate">
                         {rec.employeeName}
                       </div>
-                      <div className="text-[10px] text-slate-500 truncate">{rec.department}</div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">{rec.department}</div>
                       {rec.isSuspiciousDevice && (
-                        <div className="text-[10px] font-semibold text-rose-700 truncate mt-0.5">
+                        <div className="text-[10px] font-semibold text-rose-700 dark:text-rose-300 truncate mt-0.5">
                           Başka Cihaz ({rec.deviceOwnerEmployeeName || '-'})
                         </div>
                       )}
@@ -1070,38 +1110,38 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
                     <div className="flex flex-col items-end gap-1 shrink-0">
                       {isCheckIn && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100/80 text-emerald-800">
-                          <ArrowDownRight className="w-3 h-3 text-emerald-600" /> Giriş
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100/80 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300">
+                          <ArrowDownRight className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> Giriş
                         </span>
                       )}
                       {isCheckOut && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100/80 text-rose-800">
-                          <ArrowUpRight className="w-3 h-3 text-rose-600" /> Çıkış
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100/80 dark:bg-rose-500/20 text-rose-800 dark:text-rose-300">
+                          <ArrowUpRight className="w-3 h-3 text-rose-600 dark:text-rose-400" /> Çıkış
                         </span>
                       )}
                       {isBreak && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100/80 text-amber-800">
-                          <Coffee className="w-3 h-3 text-amber-600" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100/80 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300">
+                          <Coffee className="w-3 h-3 text-amber-600 dark:text-amber-400" />
                           {rec.type === 'break_start' ? 'Mola Başla' : 'Mola Bitir'}
                         </span>
                       )}
                       {isSecurityAlert && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
-                          <ShieldAlert className="w-3 h-3 text-rose-600" /> Güvenlik
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-800 dark:text-rose-200 border border-rose-200 dark:border-rose-500/30">
+                          <ShieldAlert className="w-3 h-3 text-rose-600 dark:text-rose-400" /> Güvenlik
                         </span>
                       )}
 
                       <span className="text-[10px]">
                         {rec.isSuspiciousDevice ? (
-                          <span className="text-rose-700 font-bold">Şüpheli Cihaz</span>
+                          <span className="text-rose-700 dark:text-rose-300 font-bold">Şüpheli Cihaz</span>
                         ) : rec.status === 'late' ? (
-                          <span className="text-amber-700 font-semibold">Geç (+{rec.lateMinutes} dk)</span>
+                          <span className="text-amber-700 dark:text-amber-300 font-semibold">Geç (+{rec.lateMinutes} dk)</span>
                         ) : rec.status === 'on_time' ? (
-                          <span className="text-emerald-700 font-medium">Zamanında</span>
+                          <span className="text-emerald-700 dark:text-emerald-300 font-medium">Zamanında</span>
                         ) : rec.status === 'early_leave' ? (
-                          <span className="text-orange-700 font-medium">Erken Çıkış</span>
+                          <span className="text-orange-700 dark:text-orange-300 font-medium">Erken Çıkış</span>
                         ) : (
-                          <span className="text-slate-500">Normal</span>
+                          <span className="text-slate-500 dark:text-slate-400">Normal</span>
                         )}
                       </span>
                     </div>
@@ -1115,7 +1155,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
-                <tr className="border-b border-slate-100 text-slate-400 font-semibold uppercase tracking-wider">
+                <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400 dark:text-slate-400 font-semibold uppercase tracking-wider">
                   <th className="py-2.5 px-3">Saat</th>
                   <th className="py-2.5 px-3">Personel</th>
                   <th className="py-2.5 px-3">Departman</th>
@@ -1124,10 +1164,10 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                   <th className="py-2.5 px-3">Terminal / Cihaz</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {todayRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-8 px-3 text-center text-xs text-slate-500">
+                    <td colSpan={6} className="py-8 px-3 text-center text-xs text-slate-500 dark:text-slate-400">
                       Bugün ({todayStr}) için henüz giriş-çıkış hareketi kaydedilmedi.
                     </td>
                   </tr>
@@ -1143,39 +1183,39 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                         key={rec.id}
                         className={`transition-colors ${
                           rec.isSuspiciousDevice || isSecurityAlert
-                            ? 'bg-rose-50/60 hover:bg-rose-50'
-                            : 'hover:bg-slate-50/70'
+                            ? 'bg-rose-50/60 dark:bg-rose-500/10 hover:bg-rose-50 dark:hover:bg-rose-500/15'
+                            : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/60'
                         }`}
                       >
-                        <td className="py-2.5 px-3 font-mono font-medium text-slate-900 tabular-nums">
+                        <td className="py-2.5 px-3 font-mono font-medium text-slate-900 dark:text-slate-100 tabular-nums">
                           {rec.timeStr}
                         </td>
                         <td className="py-2.5 px-3">
-                          <div className="font-semibold text-slate-900">{rec.employeeName}</div>
-                          <div className="text-[11px] text-slate-500 font-mono">{rec.employeeId}</div>
+                          <div className="font-semibold text-slate-900 dark:text-slate-100">{rec.employeeName}</div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">{rec.employeeId}</div>
                         </td>
-                        <td className="py-2.5 px-3 text-slate-600">
+                        <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
                           {rec.department}
                         </td>
                         <td className="py-2.5 px-3">
                           <span className="flex items-center gap-1 font-medium">
                             {isCheckIn && (
-                              <span className="text-emerald-700 flex items-center gap-1">
+                              <span className="text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
                                 <ArrowDownRight className="w-3 h-3" /> Giriş
                               </span>
                             )}
                             {isCheckOut && (
-                              <span className="text-rose-700 flex items-center gap-1">
+                              <span className="text-rose-700 dark:text-rose-300 flex items-center gap-1">
                                 <ArrowUpRight className="w-3 h-3" /> Çıkış
                               </span>
                             )}
                             {isBreak && (
-                              <span className="text-amber-700 flex items-center gap-1">
+                              <span className="text-amber-700 dark:text-amber-300 flex items-center gap-1">
                                 <Coffee className="w-3 h-3" /> {rec.type === 'break_start' ? 'Mola Başlangıç' : 'Mola Bitiş'}
                               </span>
                             )}
                             {isSecurityAlert && (
-                              <span className="text-rose-700 flex items-center gap-1 font-semibold">
+                              <span className="text-rose-700 dark:text-rose-300 flex items-center gap-1 font-semibold">
                                 <ShieldAlert className="w-3 h-3" /> Güvenlik Uyarısı
                               </span>
                             )}
@@ -1184,33 +1224,33 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                         <td className="py-2.5 px-3">
                           {rec.isSuspiciousDevice ? (
                             <div>
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200 text-[10px] font-bold">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-500/20 text-rose-800 dark:text-rose-200 border border-rose-200 dark:border-rose-500/30 text-[10px] font-bold">
                                 Başka Personel Cihazı
                               </span>
                               {rec.deviceOwnerEmployeeName && (
-                                <div className="text-[10px] text-rose-700 font-medium mt-0.5">
+                                <div className="text-[10px] text-rose-700 dark:text-rose-300 font-medium mt-0.5">
                                   Sahip: {rec.deviceOwnerEmployeeName}
                                 </div>
                               )}
                             </div>
                           ) : (
-                            <span className="text-slate-600 font-medium">
+                            <span className="text-slate-600 dark:text-slate-300 font-medium">
                               {rec.status === 'late' ? (
-                                <span className="text-amber-700">Geç ({rec.lateMinutes} dk)</span>
+                                <span className="text-amber-700 dark:text-amber-300">Geç ({rec.lateMinutes} dk)</span>
                               ) : rec.status === 'on_time' ? (
-                                <span className="text-emerald-700">Zamanında</span>
+                                <span className="text-emerald-700 dark:text-emerald-300">Zamanında</span>
                               ) : rec.status === 'early_leave' ? (
-                                <span className="text-orange-700">Erken Çıkış</span>
+                                <span className="text-orange-700 dark:text-orange-300">Erken Çıkış</span>
                               ) : (
                                 <span>Normal</span>
                               )}
                             </span>
                           )}
                         </td>
-                        <td className="py-2.5 px-3 text-slate-500 text-[11px]">
+                        <td className="py-2.5 px-3 text-slate-500 dark:text-slate-400 text-[11px]">
                           <div>{rec.terminal || 'Kiosk Giriş'}</div>
                           {rec.macAddress && (
-                            <div className="text-[10px] font-mono text-slate-400">
+                            <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500">
                               MAC: {rec.macAddress}
                             </div>
                           )}
@@ -1225,12 +1265,12 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         </div>
 
         {/* Department Attendance Rates (Col 1) */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex flex-col justify-between">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs flex flex-col justify-between transition-colors">
           <div>
-            <h2 className="text-base font-bold text-slate-900 mb-1">
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 mb-1">
               Departman Devamlılığı
             </h2>
-            <p className="text-xs text-slate-500 mb-4">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
               Birim bazında ofis mevcudiyeti
             </p>
 
@@ -1238,12 +1278,12 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               {departmentStats.map((item) => (
                 <div key={item.department} className="space-y-1.5">
                   <div className="flex justify-between text-xs">
-                    <span className="font-medium text-slate-700">{item.department}</span>
-                    <span className="font-mono text-slate-500 tabular-nums">
+                    <span className="font-medium text-slate-700 dark:text-slate-200">{item.department}</span>
+                    <span className="font-mono text-slate-500 dark:text-slate-400 tabular-nums">
                       {item.present} / {item.total} (%{item.rate})
                     </span>
                   </div>
-                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                  <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
                     <div
                       className={`h-full rounded-full transition-all ${
                         item.rate >= 80
@@ -1260,10 +1300,10 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             </div>
           </div>
 
-          <div className="pt-4 mt-4 border-t border-slate-100">
+          <div className="pt-4 mt-4 border-t border-slate-100 dark:border-slate-800">
             <button
               onClick={onNavigateToEmployees}
-              className="w-full py-2 px-3 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              className="w-full py-2 px-3 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <Users className="w-3.5 h-3.5" /> Personel Kartlarını Yönet
             </button>
@@ -1272,19 +1312,19 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       </div>
 
       {/* CANLI PERSONEL DURUM TABLOSU (Kim İşyerinde/Ofiste, Kim Molada, Kim Çıkış Yapmış?) */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-xs space-y-5">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xs space-y-5 transition-colors">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">
                 Canlı Personel Durum Tablosu
               </h2>
-              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 Gerçek Zamanlı
               </span>
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Anlık olarak kim işyerinde çalışıyor, kim molada, kim çıkış yapmış veya izinli?
             </p>
           </div>
@@ -1292,13 +1332,13 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             {/* Search Input */}
             <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <Search className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 placeholder="Personel veya departman ara..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 w-56"
+                className="pl-8 pr-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-indigo-500 w-56"
               />
             </div>
           </div>
@@ -1311,7 +1351,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer shrink-0 ${
               statusFilter === 'all'
                 ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
             }`}
           >
             Tüm Kadro ({employees.length})
@@ -1322,7 +1362,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer shrink-0 ${
               statusFilter === 'inside'
                 ? 'bg-emerald-600 text-white shadow-xs'
-                : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200'
+                : 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-500/25 border border-emerald-200 dark:border-emerald-500/30'
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-emerald-400" />
@@ -1334,7 +1374,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer shrink-0 ${
               statusFilter === 'break'
                 ? 'bg-amber-600 text-white shadow-xs'
-                : 'bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200'
+                : 'bg-amber-50 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/25 border border-amber-200 dark:border-amber-500/30'
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-amber-400" />
@@ -1346,7 +1386,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer shrink-0 ${
               statusFilter === 'outside'
                 ? 'bg-rose-600 text-white shadow-xs'
-                : 'bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200'
+                : 'bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-500/25 border border-rose-200 dark:border-rose-500/30'
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-rose-400" />
@@ -1358,7 +1398,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer shrink-0 ${
               statusFilter === 'leave'
                 ? 'bg-blue-600 text-white shadow-xs'
-                : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200'
+                : 'bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-500/25 border border-blue-200 dark:border-blue-500/30'
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-blue-400" />
@@ -1393,21 +1433,21 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               return (
                 <div
                   key={emp.id}
-                  className="p-3.5 bg-slate-50/90 rounded-xl border border-slate-200 space-y-2.5"
+                  className="p-3.5 bg-slate-50/90 dark:bg-slate-800/70 rounded-xl border border-slate-200 dark:border-slate-700 space-y-2.5"
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2.5 min-w-0">
                       <img
                         src={emp.avatar}
                         alt={emp.fullName}
-                        className="w-10 h-10 rounded-full object-cover border border-slate-200 shrink-0"
+                        className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
                         referrerPolicy="no-referrer"
                       />
                       <div className="min-w-0">
-                        <div className="font-bold text-xs text-slate-900 truncate">
+                        <div className="font-bold text-xs text-slate-900 dark:text-slate-100 truncate">
                           {emp.fullName}
                         </div>
-                        <div className="text-[10px] text-slate-500 font-mono">
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
                           {emp.id} · {emp.department}
                         </div>
                       </div>
@@ -1415,22 +1455,22 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
                     <div className="shrink-0">
                       {isLeave ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30">
                           <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
                           İzinli
                         </span>
                       ) : isInside ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                           İçeride (Mesaide)
                         </span>
                       ) : isBreak ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-300">
-                          <Coffee className="w-3 h-3 text-amber-600" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30">
+                          <Coffee className="w-3 h-3 text-amber-600 dark:text-amber-400" />
                           Molada
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-300">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30">
                           <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
                           Dışarıda
                         </span>
@@ -1438,14 +1478,14 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                     </div>
                   </div>
 
-                  <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-600">
+                  <div className="pt-2 border-t border-slate-200/60 dark:border-slate-700 flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300">
                     <div>
-                      <span className="text-slate-400">Son İşlem: </span>
-                      <span className="font-mono font-medium text-slate-800">
+                      <span className="text-slate-400 dark:text-slate-400">Son İşlem: </span>
+                      <span className="font-mono font-medium text-slate-800 dark:text-slate-200">
                         {emp.lastActionTime || 'Bugün hareket yok'}
                       </span>
                     </div>
-                    <div className="text-[10px] text-slate-500">
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400">
                       {emp.title}
                     </div>
                   </div>
@@ -1455,10 +1495,10 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         </div>
 
         {/* Desktop View: Live Status Table (hidden md:block) */}
-        <div className="hidden md:block overflow-x-auto border border-slate-200 rounded-xl">
+        <div className="hidden md:block overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider">
+              <tr className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider">
                 <th className="py-3 px-4">Personel Bilgisi</th>
                 <th className="py-3 px-4">Departman & Görev</th>
                 <th className="py-3 px-4">Anlık Durum Rozeti</th>
@@ -1467,7 +1507,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                 <th className="py-3 px-4 text-right">Durum Detayı</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {employees
                 .filter((emp) => {
                   if (statusFilter === 'inside') return emp.currentPresence === 'inside';
@@ -1491,59 +1531,59 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                   const isLeave = emp.status === 'leave';
 
                   return (
-                    <tr key={emp.id} className="hover:bg-slate-50/80 transition-colors">
+                    <tr key={emp.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/60 transition-colors">
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-3">
                           <img
                             src={emp.avatar}
                             alt={emp.fullName}
-                            className="w-9 h-9 rounded-full object-cover border border-slate-200"
+                            className="w-9 h-9 rounded-full object-cover border border-slate-200 dark:border-slate-700"
                             referrerPolicy="no-referrer"
                           />
                           <div>
-                            <div className="font-bold text-slate-900">{emp.fullName}</div>
-                            <div className="text-[11px] font-mono text-slate-500">{emp.id}</div>
+                            <div className="font-bold text-slate-900 dark:text-slate-100">{emp.fullName}</div>
+                            <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{emp.id}</div>
                           </div>
                         </div>
                       </td>
                       <td className="py-3 px-4">
-                        <div className="font-semibold text-slate-800">{emp.department}</div>
-                        <div className="text-[11px] text-slate-500">{emp.title}</div>
+                        <div className="font-semibold text-slate-800 dark:text-slate-200">{emp.department}</div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400">{emp.title}</div>
                       </td>
                       <td className="py-3 px-4">
                         {isLeave ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30">
                             <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
                             İzinli (Yıllık / Rapor)
                           </span>
                         ) : isInside ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-300">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                             İçeride (Çalışıyor)
                           </span>
                         ) : isBreak ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-300">
-                            <Coffee className="w-3.5 h-3.5 text-amber-600" />
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30">
+                            <Coffee className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                             Molada (Dinlenmede)
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-300">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-rose-50 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30">
                             <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
                             Dışarıda (Ayrıldı)
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-4 font-mono font-medium text-slate-800">
+                      <td className="py-3 px-4 font-mono font-medium text-slate-800 dark:text-slate-200 tabular-nums">
                         {emp.lastActionTime || (
-                          <span className="text-slate-400 font-normal">Bugün işlem yok</span>
+                          <span className="text-slate-400 dark:text-slate-500 font-normal">Bugün işlem yok</span>
                         )}
                       </td>
-                      <td className="py-3 px-4 text-slate-600">
-                        <span className="font-medium text-slate-700">08:30 - 17:30</span>
-                        <div className="text-[10px] text-slate-400">15 dk tolerans</div>
+                      <td className="py-3 px-4 text-slate-600 dark:text-slate-300">
+                        <span className="font-medium text-slate-700 dark:text-slate-200">08:30 - 17:30</span>
+                        <div className="text-[10px] text-slate-400 dark:text-slate-500">15 dk tolerans</div>
                       </td>
                       <td className="py-3 px-4 text-right">
-                        <span className="text-slate-500 text-[11px]">
+                        <span className="text-slate-500 dark:text-slate-400 text-[11px]">
                           {isInside ? 'Aktif Mesai' : isBreak ? 'Öğle / Ara Dinlenme' : isLeave ? 'Resmi İzin' : 'Henüz Giriş Yok'}
                         </span>
                       </td>

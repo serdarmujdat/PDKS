@@ -4,7 +4,8 @@ import { AppPageKey, CurrentUser, ThemeId } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
 import { NotificationCenter } from './NotificationCenter';
 import { CompanyLogoImage } from './CompanyLogoImage';
-import { APP_THEMES, getThemeById } from '../themes/themes';
+import { APP_THEMES } from '../themes/themes';
+import { useTheme } from '../contexts/ThemeContext';
 
 export type ActiveTab = 'kiosk' | 'dashboard' | 'performance' | 'employees' | 'records' | 'shifts' | 'portal' | 'reports' | 'supervisor' | 'permissions';
 
@@ -83,19 +84,19 @@ export const Navbar: React.FC<NavbarProps> = ({
     };
   }, []);
 
+  const { mode: themeMode, themeDef: currentThemeDef, setTheme, setMode } = useTheme();
   const isSuperAdmin = pdksStorage.isSuperAdmin(currentUser);
   const isFullAdmin = pdksStorage.isFullAdminAccount(currentUser);
   const canAccessPermissions = pdksStorage.canAccessPermissions(currentUser);
   const isHRManager = pdksStorage.isHRorSuperAdmin(currentUser);
   const canManageSettings = pdksStorage.canAccessSettings(currentUser);
   const isSupervisor = pdksStorage.canUserAccessShiftManagement(currentUser);
-  const currentThemeDef = getThemeById(activeTheme || pdksStorage.getUserTheme(currentUser));
 
   const canAccess = (page: AppPageKey) => pdksStorage.canAccessPage(currentUser, page);
   const allowedPages = pdksStorage.getUserAllowedPages(currentUser);
 
   const handleQuickSelectTheme = (themeId: ThemeId) => {
-    void pdksStorage.saveUserTheme(themeId, currentUser);
+    void setTheme(themeId, currentUser);
   };
 
   const getRoleBadgeStyle = (role: string) => {
@@ -144,7 +145,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   };
 
   return (
-    <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200">
+    <header className="sticky top-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 transition-colors">
       {/* Restricted Alert Toast */}
       {restrictedNotice && (
         <div className="bg-amber-500 text-slate-900 px-4 py-2.5 text-xs font-medium flex items-center justify-between border-b border-amber-600 animate-fade-in">
@@ -186,11 +187,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                   alt={companyName}
                   companyName={companyName}
                   className="max-h-7 max-w-[96px] sm:max-w-[120px] w-auto h-auto object-contain"
-                  variant="light"
+                  variant={themeMode === 'dark' ? 'dark' : 'light'}
                 />
               </div>
-              <div className="border-l border-slate-200 pl-2 min-w-0 max-w-[125px] sm:max-w-[180px]">
-                <span className="text-xs sm:text-sm font-bold tracking-tight text-slate-900 block leading-none truncate">
+              <div className="border-l border-slate-200 dark:border-slate-700 pl-2 min-w-0 max-w-[125px] sm:max-w-[180px]">
+                <span className="text-xs sm:text-sm font-bold tracking-tight text-slate-900 dark:text-slate-100 block leading-none truncate">
                   {companyName}
                 </span>
               </div>
@@ -205,7 +206,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'permissions'
                     ? 'bg-purple-600 text-white shadow-xs'
-                    : 'text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200'
+                    : 'text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/50 hover:bg-purple-100 dark:hover:bg-purple-900/60 border border-purple-200 dark:border-purple-800'
                 }`}
               >
                 <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
@@ -219,10 +220,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'dashboard'
                     ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                <Clock className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'dashboard' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500'}`} />
+                <Clock className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'dashboard' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500 dark:text-slate-400'}`} />
                 <span>Canlı Pano</span>
               </button>
             )}
@@ -233,10 +234,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'employees'
                     ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                <Users className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'employees' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500'}`} />
+                <Users className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'employees' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500 dark:text-slate-400'}`} />
                 <span>Personel</span>
               </button>
             )}
@@ -247,10 +248,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'records'
                     ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                <ShieldCheck className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'records' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500'}`} />
+                <ShieldCheck className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'records' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500 dark:text-slate-400'}`} />
                 <span>Kayıtlar</span>
               </button>
             )}
@@ -263,7 +264,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     ? isSupervisor && !isHRManager
                       ? 'bg-amber-50 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200 border border-amber-300 dark:border-amber-400/40 font-semibold shadow-xs'
                       : 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
                 <CalendarCheck className={`w-3.5 h-3.5 shrink-0 ${isSupervisor && !isHRManager ? 'text-amber-600 dark:text-amber-300' : 'text-indigo-600 dark:text-indigo-300'}`} />
@@ -277,10 +278,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'performance'
                     ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                <TrendingUp className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                 <span>Performans</span>
               </button>
             )}
@@ -291,10 +292,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'reports'
                     ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                <BarChart3 className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'reports' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500'}`} />
+                <BarChart3 className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'reports' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500 dark:text-slate-400'}`} />
                 <span>Raporlar</span>
               </button>
             )}
@@ -305,10 +306,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'kiosk'
                     ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                <QrCode className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                <QrCode className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
                 <span>{isHRManager ? 'Kiosk' : 'Kiosk Tarama'}</span>
               </button>
             )}
@@ -319,10 +320,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'portal'
                     ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                <Smartphone className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                <Smartphone className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
                 <span>{isHRManager ? 'Mobil Önizleme' : 'QR Okut & Mola'}</span>
               </button>
             )}
@@ -330,7 +331,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {!isHRManager && allowedPages.length <= 3 && (
               <button
                 onClick={() => handleRestrictedTabClick('Diğer Yönetim Panelleri')}
-                className="flex items-center gap-1 px-2 py-1.5 text-[11px] font-medium text-slate-400 hover:text-amber-700 hover:bg-amber-50/50 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                className="flex items-center gap-1 px-2 py-1.5 text-[11px] font-medium text-slate-400 dark:text-slate-500 hover:text-amber-700 dark:hover:text-amber-300 hover:bg-amber-50/50 dark:hover:bg-amber-950/30 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 title="Diğer yönetim panelleri için yetki gereklidir"
               >
                 <Lock className="w-3 h-3 text-amber-500 shrink-0" />
@@ -362,16 +363,16 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="relative">
               <button
                 onClick={() => setIsRoleDropdownOpen(!isRoleDropdownOpen)}
-                className="flex items-center gap-1.5 pl-1.5 pr-2 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                className="flex items-center gap-1.5 pl-1.5 pr-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-left cursor-pointer"
                 title={`${currentUser.name} · Profil ve Sistem Menüsü`}
               >
                 <img
                   src={currentUser.avatar}
                   alt={currentUser.name}
-                  className="w-6 h-6 rounded-full object-cover border border-slate-200 shrink-0"
+                  className="w-6 h-6 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
                   referrerPolicy="no-referrer"
                 />
-                <span className="hidden sm:inline text-xs font-semibold text-slate-800 truncate max-w-[110px]">
+                <span className="hidden sm:inline text-xs font-semibold text-slate-800 dark:text-slate-100 truncate max-w-[110px]">
                   {currentUser.name}
                 </span>
                 <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -383,35 +384,35 @@ export const Navbar: React.FC<NavbarProps> = ({
                     className="fixed inset-0 z-40"
                     onClick={() => setIsRoleDropdownOpen(false)}
                   />
-                  <div className="absolute right-0 mt-1.5 w-[calc(100vw-20px)] max-w-xs sm:w-80 bg-white rounded-2xl shadow-xl border border-slate-200 z-50 p-2 overflow-hidden">
+                  <div className="absolute right-0 mt-1.5 w-[calc(100vw-20px)] max-w-xs sm:w-80 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 z-50 p-2 overflow-hidden">
                     {/* User Profile Header */}
-                    <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100 mb-2">
+                    <div className="p-2.5 bg-slate-50 dark:bg-slate-800/70 rounded-xl border border-slate-100 dark:border-slate-700/80 mb-2">
                       <div className="flex items-center gap-2.5">
                         <img
                           src={currentUser.avatar}
                           alt={currentUser.name}
-                          className="w-9 h-9 rounded-full object-cover border border-slate-200 shrink-0"
+                          className="w-9 h-9 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
                           referrerPolicy="no-referrer"
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="text-xs font-bold text-slate-900 truncate">
+                          <div className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
                             {currentUser.name}
                           </div>
-                          <div className="text-[11px] font-mono text-indigo-600 truncate">
+                          <div className="text-[11px] font-mono text-indigo-600 dark:text-indigo-400 truncate">
                             @{currentUser.username || 'hesap'}
                           </div>
-                          <div className="text-[10px] text-slate-500 truncate">
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
                             {currentUser.title}
                           </div>
                         </div>
                       </div>
 
-                      <div className="mt-2 pt-2 border-t border-slate-200 flex items-center justify-between gap-2 text-[11px]">
+                      <div className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2 text-[11px]">
                         <span className={`px-2 py-0.5 rounded-full border text-[9px] font-semibold truncate ${getRoleBadgeStyle(currentUser.role)}`}>
                           {getRoleLabel(currentUser.role)}
                           {!isSuperAdmin && isFullAdmin ? ' · Tam Yetkili' : !isSuperAdmin && canAccessPermissions ? ' · Alt Yetkili' : ''}
                         </span>
-                        <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold text-[10px] shrink-0">
+                        <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-semibold text-[10px] shrink-0">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                           Aktif
                         </span>
@@ -427,13 +428,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                             setIsRoleDropdownOpen(false);
                             onOpenLogoManager();
                           }}
-                          className="w-full p-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-xs font-semibold flex items-center justify-between gap-2 transition-colors border border-indigo-200 cursor-pointer"
+                          className="w-full p-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 text-indigo-800 dark:text-indigo-200 text-xs font-semibold flex items-center justify-between gap-2 transition-colors border border-indigo-200 dark:border-indigo-800 cursor-pointer"
                         >
                           <span className="flex items-center gap-2">
-                            <ImageIcon className="w-3.5 h-3.5 text-indigo-600" />
+                            <ImageIcon className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                             <span>Logoyu Değiştir</span>
                           </span>
-                          <span className="text-[10px] text-indigo-500 font-normal">Kurumsal</span>
+                          <span className="text-[10px] text-indigo-500 dark:text-indigo-400 font-normal">Kurumsal</span>
                         </button>
                       )}
 
@@ -444,13 +445,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                             setIsRoleDropdownOpen(false);
                             onOpenWallQR();
                           }}
-                          className="w-full p-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 text-xs font-semibold flex items-center justify-between gap-2 transition-colors border border-purple-200 cursor-pointer"
+                          className="w-full p-2 rounded-xl bg-purple-50 dark:bg-purple-950/50 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-purple-800 dark:text-purple-200 text-xs font-semibold flex items-center justify-between gap-2 transition-colors border border-purple-200 dark:border-purple-800 cursor-pointer"
                         >
                           <span className="flex items-center gap-2">
-                            <QrCode className="w-3.5 h-3.5 text-purple-600" />
+                            <QrCode className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
                             <span>Duvar QR Yönetimi & Yazdır</span>
                           </span>
-                          <span className="text-[10px] text-purple-500 font-normal">Sabit QR</span>
+                          <span className="text-[10px] text-purple-500 dark:text-purple-400 font-normal">Sabit QR</span>
                         </button>
                       )}
 
@@ -462,27 +463,56 @@ export const Navbar: React.FC<NavbarProps> = ({
                             setActiveTab('kiosk');
                             onEnterFullscreenKiosk();
                           }}
-                          className="w-full p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold flex items-center justify-between gap-2 transition-colors border border-slate-200 cursor-pointer"
+                          className="w-full p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs font-semibold flex items-center justify-between gap-2 transition-colors border border-slate-200 dark:border-slate-700 cursor-pointer"
                         >
                           <span className="flex items-center gap-2">
-                            <Maximize2 className="w-3.5 h-3.5 text-slate-600" />
+                            <Maximize2 className="w-3.5 h-3.5 text-slate-600 dark:text-slate-400" />
                             <span>Tam Ekran Kiosk Terminali</span>
                           </span>
-                          <span className="text-[10px] text-slate-500 font-normal">Kiosk</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-normal">Kiosk</span>
                         </button>
                       )}
                     </div>
 
                     {/* Per-Account Personal Theme Switcher (Available for ALL roles) */}
-                    <div className="p-2.5 bg-slate-50/80 rounded-xl border border-slate-100 mb-2 space-y-2">
+                    <div className="p-2.5 bg-slate-50/80 dark:bg-slate-800/70 rounded-xl border border-slate-100 dark:border-slate-700/80 mb-2 space-y-2">
                       <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
-                          <Palette className="w-3.5 h-3.5 text-indigo-600" />
+                        <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                          <Palette className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                           <span>Tema Değiştir</span>
                         </span>
-                        <span className="text-[10px] font-medium text-slate-500">
+                        <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
                           {currentThemeDef.name}
                         </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          aria-pressed={themeMode === 'light'}
+                          onClick={() => void setMode('light', currentUser)}
+                          className={`py-1.5 px-2 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
+                            themeMode === 'light'
+                              ? 'bg-amber-50 border-amber-300 text-amber-800 dark:bg-amber-950/60 dark:border-amber-700 dark:text-amber-200'
+                              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                          }`}
+                        >
+                          <Sun className="w-3.5 h-3.5" />
+                          <span>Açık Tema</span>
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={themeMode === 'dark'}
+                          onClick={() => void setMode('dark', currentUser)}
+                          className={`py-1.5 px-2 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
+                            themeMode === 'dark'
+                              ? 'bg-indigo-600 border-indigo-500 text-white'
+                              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                          }`}
+                        >
+                          <Moon className="w-3.5 h-3.5" />
+                          <span>Koyu Tema</span>
+                        </button>
                       </div>
 
                       <div className="grid grid-cols-5 gap-1.5">
@@ -496,8 +526,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                               title={`${theme.name} (${theme.subtitle}) — ${theme.mode === 'dark' ? 'Koyu' : 'Açık'}`}
                               className={`group flex flex-col items-center gap-1 p-1 rounded-lg border transition-all cursor-pointer ${
                                 isSelected
-                                  ? 'border-indigo-600 ring-1 ring-indigo-500 bg-indigo-50/60'
-                                  : 'border-slate-200 hover:border-slate-300 bg-white'
+                                  ? 'border-indigo-600 dark:border-indigo-400 ring-1 ring-indigo-500 bg-indigo-50/60 dark:bg-indigo-950/50'
+                                  : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 bg-white dark:bg-slate-900'
                               }`}
                             >
                               <span
@@ -513,7 +543,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                                   style={{ backgroundColor: theme.preview.accent }}
                                 />
                               </span>
-                              <span className="text-[9px] font-semibold text-slate-600 truncate w-full text-center">
+                              <span className="text-[9px] font-semibold text-slate-600 dark:text-slate-300 truncate w-full text-center">
                                 {theme.mode === 'dark' ? 'Koyu' : 'Açık'}
                               </span>
                             </button>
@@ -528,7 +558,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                             setIsRoleDropdownOpen(false);
                             onOpenThemeSettings();
                           }}
-                          className="w-full py-1.5 px-2 rounded-lg text-[11px] font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                          className="w-full py-1.5 px-2 rounded-lg text-[11px] font-semibold text-indigo-700 dark:text-indigo-200 bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 border border-indigo-200 dark:border-indigo-800 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                         >
                           {currentThemeDef.mode === 'dark' ? (
                             <Moon className="w-3 h-3" />
@@ -546,9 +576,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                         setIsRoleDropdownOpen(false);
                         onOpenLogin();
                       }}
-                      className="w-full mb-1.5 p-2 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-slate-200 cursor-pointer"
+                      className="w-full mb-1.5 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-slate-200 dark:border-slate-700 cursor-pointer"
                     >
-                      <Key className="w-3.5 h-3.5 text-slate-500" />
+                      <Key className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
                       <span>Farklı Kullanıcı ile Giriş Yap</span>
                     </button>
 
@@ -558,13 +588,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                         setIsRoleDropdownOpen(false);
                         onLogout();
                       }}
-                      className="w-full p-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold flex items-center justify-center gap-2 transition-colors border border-rose-200 cursor-pointer mb-1.5"
+                      className="w-full p-2 rounded-xl bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-200 text-xs font-bold flex items-center justify-center gap-2 transition-colors border border-rose-200 dark:border-rose-800 cursor-pointer mb-1.5"
                     >
-                      <LogOut className="w-4 h-4 text-rose-600" />
+                      <LogOut className="w-4 h-4 text-rose-600 dark:text-rose-400" />
                       <span>Çıkış Yap</span>
                     </button>
 
-                    <div className="px-3 py-1 border-t border-slate-100 text-center text-[10px] text-slate-400 truncate">
+                    <div className="px-3 py-1 border-t border-slate-100 dark:border-slate-800 text-center text-[10px] text-slate-400 dark:text-slate-500 truncate">
                       {companyName}
                     </div>
                   </div>
@@ -575,14 +605,14 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         {/* Compact Mobile / Tablet Tab Strip (Single-line horizontal scroll, zero Duvar QR clutter) */}
-        <div className="flex lg:hidden overflow-x-auto py-1.5 gap-1 border-t border-slate-100 -mx-2.5 px-2.5 scrollbar-none items-center">
+        <div className="flex lg:hidden overflow-x-auto py-1.5 gap-1 border-t border-slate-100 dark:border-slate-800 -mx-2.5 px-2.5 scrollbar-none items-center">
           {canAccessPermissions && (
             <button
               onClick={() => setActiveTab('permissions')}
               className={`px-2.5 py-1 text-[11px] font-bold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'permissions'
                   ? 'bg-purple-600 text-white shadow-xs'
-                  : 'text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200'
+                  : 'text-purple-800 dark:text-purple-200 bg-purple-50 dark:bg-purple-950/50 hover:bg-purple-100 dark:hover:bg-purple-900/60 border border-purple-200 dark:border-purple-800'
               }`}
             >
               <ShieldAlert className="w-3 h-3" />
@@ -596,7 +626,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'dashboard'
                   ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+                  : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
               }`}
             >
               <LayoutDashboard className="w-3 h-3" />
@@ -610,7 +640,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'employees'
                   ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+                  : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
               }`}
             >
               <Users className="w-3 h-3" />
@@ -624,7 +654,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'records'
                   ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+                  : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
               }`}
             >
               <Clock className="w-3 h-3" />
@@ -641,8 +671,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                     ? 'bg-amber-600 text-white shadow-xs'
                     : 'bg-indigo-600 text-white shadow-xs'
                   : isSupervisor && !isHRManager
-                  ? 'text-amber-800 bg-amber-100 hover:bg-amber-200 border border-amber-300'
-                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+                  ? 'text-amber-800 dark:text-amber-200 bg-amber-100 dark:bg-amber-950/60 hover:bg-amber-200 dark:hover:bg-amber-900/60 border border-amber-300 dark:border-amber-700'
+                  : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
               }`}
             >
               <CalendarCheck className="w-3 h-3" />
@@ -656,7 +686,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'performance'
                   ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+                  : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
               }`}
             >
               <TrendingUp className="w-3 h-3" />
@@ -670,7 +700,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'reports'
                   ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+                  : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
               }`}
             >
               <BarChart3 className="w-3 h-3" />
@@ -684,7 +714,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'kiosk'
                   ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+                  : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
               }`}
             >
               <QrCode className="w-3 h-3" />
@@ -698,7 +728,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'portal'
                   ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
+                  : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700'
               }`}
             >
               <Smartphone className="w-3 h-3" />

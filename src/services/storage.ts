@@ -629,6 +629,14 @@ let pollTimer: any = null;
 
 let lastSyncTimestamp = 0;
 let lastFocusSyncTimestamp = 0;
+let lastLocalThemeWriteAt = 0;
+let lastLocalThemeId: ThemeId | null = null;
+let lastLocalThemeUserKey = '';
+
+function getThemeUserKey(user?: Partial<Pick<CurrentUser, 'id' | 'username' | 'employeeId'>> | null): string {
+  if (!user) return '';
+  return normalizeUsername(user.username || '') || user.id || user.employeeId || '';
+}
 
 export async function syncWithServer(force = false): Promise<boolean> {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return false;
@@ -874,7 +882,15 @@ export async function syncWithServer(force = false): Promise<boolean> {
                     delete mergedAcc.lastLoginDeviceFingerprint;
                     delete mergedAcc.lastLoginDeviceName;
                   } else if (localMatch) {
-                    if (isValidThemeId(localMatch.themeId)) {
+                    const localMatchKey = getThemeUserKey(localMatch);
+                    const hasRecentLocalTheme =
+                      Boolean(lastLocalThemeId) &&
+                      Date.now() - lastLocalThemeWriteAt < 5000 &&
+                      (!lastLocalThemeUserKey || lastLocalThemeUserKey === localMatchKey);
+                    if (hasRecentLocalTheme && lastLocalThemeId) {
+                      mergedAcc.themeId = lastLocalThemeId;
+                      mergedAcc.themeUpdatedAt = new Date(lastLocalThemeWriteAt).toISOString();
+                    } else if (isValidThemeId(localMatch.themeId)) {
                       const localTime = localMatch.themeUpdatedAt ? Date.parse(localMatch.themeUpdatedAt) : 0;
                       const srvTime = acc.themeUpdatedAt ? Date.parse(acc.themeUpdatedAt) : 0;
                       if (!isValidThemeId(acc.themeId) || localTime > srvTime) {
@@ -967,7 +983,12 @@ export async function syncWithServer(force = false): Promise<boolean> {
                           activeParsed.assignedEmployeeIds = matchedAcc.assignedEmployeeIds;
                           activeChanged = true;
                         }
-                        if (isValidThemeId(matchedAcc.themeId) && activeParsed.themeId !== matchedAcc.themeId) {
+                        const activeKey = getThemeUserKey(activeParsed);
+                        const skipThemeRevert =
+                          Boolean(lastLocalThemeId) &&
+                          Date.now() - lastLocalThemeWriteAt < 5000 &&
+                          (!lastLocalThemeUserKey || lastLocalThemeUserKey === activeKey);
+                        if (!skipThemeRevert && isValidThemeId(matchedAcc.themeId) && activeParsed.themeId !== matchedAcc.themeId) {
                           activeParsed.themeId = matchedAcc.themeId;
                           activeParsed.themeUpdatedAt = matchedAcc.themeUpdatedAt;
                           applyThemeToDocument(matchedAcc.themeId);
@@ -4291,7 +4312,10 @@ export const pdksStorage = {
         return parsed;
       }
       if (parsed.username === 'zeynep.kaya') {
-        return DEMO_USERS[0];
+        return {
+          ...DEMO_USERS[0],
+          themeId: this.getUserTheme(DEMO_USERS[0]),
+        };
       }
       if (parsed.username === 'emre.demir' || parsed.employeeId === 'EMP-1003') {
         parsed.title = 'Finansal Kontrolör';
@@ -4342,6 +4366,11 @@ export const pdksStorage = {
       return null;
     }
 
+    const resolvedThemeId = isValidThemeId(matched.themeId)
+      ? matched.themeId
+      : isValidThemeId(current.themeId)
+      ? current.themeId
+      : this.getUserTheme(matched);
     const updated: CurrentUser = {
       ...current,
       username: matched.username,
@@ -4357,6 +4386,8 @@ export const pdksStorage = {
       isShiftSupervisor: matched.isShiftSupervisor,
       assignedEmployeeIds: matched.assignedEmployeeIds,
       customPermissions: matched.customPermissions,
+      themeId: resolvedThemeId,
+      themeUpdatedAt: matched.themeUpdatedAt || current.themeUpdatedAt,
     };
     localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(updated));
     return updated;
@@ -4364,10 +4395,33 @@ export const pdksStorage = {
 
   // Per-User Personal Theme Management (Account-Scoped + Server + Firebase Sync)
   getUserTheme(
-    targetUser?: Partial<Pick<CurrentUser, 'id' | 'username' | 'employeeId' | 'themeId'>> | null
+    targetUser?: Partial<Pick<CurrentUser, 'id' | 'username' | 'employeeId' | 'themeId' | 'role' | 'isHiddenSuperAdmin'>> | null
   ): ThemeId {
     const refUser = targetUser || (this.isLoggedIn() ? this.getActiveUser() : null);
     if (!refUser) return DEFAULT_THEME_ID;
+
+    // Hidden Super Admin stores theme locally in sa_root slot; check it before any potentially stale refUser prop
+    if (refUser.role === 'SUPER_ADMIN' || refUser.isHiddenSuperAdmin) {
+      try {
+        const saStored = localStorage.getItem('pdks_user_theme_v1_sa_root');
+        if (isValidThemeId(saStored)) {
+          return saStored;
+        }
+      } catch {}
+      if (isValidThemeId(refUser.themeId)) {
+        return refUser.themeId;
+      }
+      return 'gece_arduvaz';
+    }
+
+    const keySuffix = getThemeUserKey(refUser);
+    if (
+      lastLocalThemeId &&
+      Date.now() - lastLocalThemeWriteAt < 5000 &&
+      (!lastLocalThemeUserKey || lastLocalThemeUserKey === keySuffix)
+    ) {
+      return lastLocalThemeId;
+    }
 
     try {
       const accounts = this.getUserAccounts();
@@ -4383,12 +4437,7 @@ export const pdksStorage = {
       }
     } catch {}
 
-    if (isValidThemeId(refUser.themeId)) {
-      return refUser.themeId;
-    }
-
     try {
-      const keySuffix = normalizeUsername(refUser.username || '') || refUser.id || refUser.employeeId || '';
       if (keySuffix) {
         const stored = localStorage.getItem(`pdks_user_theme_v1_${keySuffix}`);
         if (isValidThemeId(stored)) {
@@ -4396,6 +4445,10 @@ export const pdksStorage = {
         }
       }
     } catch {}
+
+    if (isValidThemeId(refUser.themeId)) {
+      return refUser.themeId;
+    }
 
     return DEFAULT_THEME_ID;
   },
@@ -4416,6 +4469,10 @@ export const pdksStorage = {
     const active = targetUser || this.getActiveUser();
     const nowIso = new Date().toISOString();
     const normUser = normalizeUsername(active.username || '');
+
+    lastLocalThemeWriteAt = Date.now();
+    lastLocalThemeId = themeId;
+    lastLocalThemeUserKey = getThemeUserKey(active);
 
     // Hidden Super Admin theme saves locally without touching public user accounts or server account table
     if (active.role === 'SUPER_ADMIN' || active.isHiddenSuperAdmin) {
@@ -4466,13 +4523,15 @@ export const pdksStorage = {
       }
     } catch {}
 
-    // 3. Update active user record and immediately apply to DOM if saving for active user
+    // 3. Update active user record and immediately apply to DOM
     try {
       if (this.isLoggedIn()) {
         const currentActive = this.getActiveUser();
         const isSameUser =
+          !targetUser ||
           currentActive.id === active.id ||
-          (normUser && normalizeUsername(currentActive.username) === normUser);
+          (normUser && normalizeUsername(currentActive.username) === normUser) ||
+          (active.employeeId && currentActive.employeeId === active.employeeId);
         if (isSameUser) {
           const updatedActive: CurrentUser = {
             ...currentActive,
@@ -4480,11 +4539,11 @@ export const pdksStorage = {
             themeUpdatedAt: nowIso,
           };
           localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(updatedActive));
-          applyThemeToDocument(themeId);
-          if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: themeId }));
-          }
         }
+      }
+      applyThemeToDocument(themeId);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('pdks-theme-updated', { detail: themeId }));
       }
     } catch {}
 
@@ -4502,9 +4561,22 @@ export const pdksStorage = {
           }),
         });
         const json = await res.json().catch(() => null);
-        if (res.ok && json?.version) {
-          localDbVersion = json.version;
-          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        if (res.ok && json) {
+          if (json.version) {
+            localDbVersion = json.version;
+            try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+          }
+          if (json.themeUpdatedAt) {
+            try {
+              const allAccs = this.getAllUserAccountsIncludingArchived();
+              const activeAccs = allAccs.filter((a) => !isArchivedAccount(a));
+              const aIdx = activeAccs.findIndex((a) => a.id === matchedAccountId);
+              if (aIdx >= 0) {
+                activeAccs[aIdx] = { ...activeAccs[aIdx], themeId, themeUpdatedAt: json.themeUpdatedAt };
+                localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergeAccountsPreservingArchived(allAccs, activeAccs)));
+              }
+            } catch {}
+          }
         }
       } catch (err) {
         console.warn('User theme API sync error:', err);

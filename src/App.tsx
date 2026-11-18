@@ -14,9 +14,9 @@ import { LoginModal } from './components/LoginModal';
 import { CompanyWallQRModal } from './components/CompanyWallQRModal';
 import { ThemeSettingsModal } from './components/ThemeSettingsModal';
 import { RolePermissionManagement } from './components/RolePermissionManagement';
-import { AppPageKey, CurrentUser, ThemeId } from './types/pdks';
+import { AppPageKey, CurrentUser } from './types/pdks';
 import { pdksStorage } from './services/storage';
-import { applyThemeToDocument, DEFAULT_THEME_ID, isValidThemeId } from './themes/themes';
+import { useTheme } from './contexts/ThemeContext';
 import { RotateCcw, Printer, Image as ImageIcon, AlertTriangle, RefreshCw } from 'lucide-react';
 
 interface ErrorBoundaryProps {
@@ -45,14 +45,14 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 text-center space-y-4">
-            <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4 transition-colors">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 dark:border-slate-800 text-center space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 flex items-center justify-center mx-auto">
               <AlertTriangle className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-slate-900">Beklenmeyen Durum Engellendi</h2>
-              <p className="text-xs text-slate-500 mt-1">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Beklenmeyen Durum Engellendi</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                 Sistem beyaz ekrana düşmeden korumaya alındı. Lütfen sayfayı yenileyiniz.
               </p>
             </div>
@@ -108,13 +108,7 @@ export default function App() {
   const [isLogoModalOpen, setIsLogoModalOpen] = useState(false);
   const [isWallQRModalOpen, setIsWallQRModalOpen] = useState(false);
   const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
-  const [activeTheme, setActiveTheme] = useState<ThemeId>(() => {
-    const initialTheme = pdksStorage.isLoggedIn()
-      ? pdksStorage.getUserTheme(pdksStorage.getActiveUser())
-      : DEFAULT_THEME_ID;
-    applyThemeToDocument(initialTheme);
-    return initialTheme;
-  });
+  const { themeId: activeTheme, setTheme, syncThemeFromUser, resetToDefaultTheme } = useTheme();
 
   useEffect(() => {
     document.title = `${companyName} · Personel Devam Kontrol Sistemi (PDKS)`;
@@ -150,8 +144,7 @@ export default function App() {
     let debounceTimer: any = null;
     const handleForceLogout = () => {
       setIsLoggedIn(false);
-      setActiveTheme(DEFAULT_THEME_ID);
-      applyThemeToDocument(DEFAULT_THEME_ID);
+      resetToDefaultTheme();
       setRefreshKey((prev) => prev + 1);
     };
 
@@ -167,9 +160,7 @@ export default function App() {
             return;
           }
           setCurrentUser(refreshed);
-          const usrTheme = pdksStorage.getUserTheme(refreshed);
-          setActiveTheme(usrTheme);
-          applyThemeToDocument(usrTheme);
+          syncThemeFromUser(refreshed);
         }
         setRefreshKey((prev) => prev + 1);
       }, 200);
@@ -190,9 +181,8 @@ export default function App() {
     };
 
     const handleThemeUpdate = (e: any) => {
-      if (e?.detail && isValidThemeId(e.detail)) {
-        setActiveTheme(e.detail);
-        applyThemeToDocument(e.detail);
+      if (e?.detail && typeof e.detail === 'string') {
+        setCurrentUser((prev) => (prev.themeId === e.detail ? prev : { ...prev, themeId: e.detail }));
       }
     };
 
@@ -213,7 +203,7 @@ export default function App() {
       window.removeEventListener('pdks-theme-updated', handleThemeUpdate);
       window.removeEventListener('pdks-force-logout', handleForceLogout);
     };
-  }, []);
+  }, [resetToDefaultTheme, syncThemeFromUser]);
 
   const handleScanComplete = () => {
     // Triggers dashboard state refresh
@@ -223,20 +213,16 @@ export default function App() {
   const handleSwitchUser = (user: CurrentUser) => {
     pdksStorage.setActiveUser(user);
     const updatedUser = pdksStorage.getActiveUser();
-    const userTheme = pdksStorage.getUserTheme(updatedUser);
-    setCurrentUser(updatedUser);
-    setActiveTheme(userTheme);
-    applyThemeToDocument(userTheme);
+    const resolvedTheme = syncThemeFromUser(updatedUser);
+    setCurrentUser({ ...updatedUser, themeId: resolvedTheme });
     setIsLoggedIn(true);
     setActiveTab(getDefaultTabForUser(updatedUser));
     setRefreshKey((prev) => prev + 1);
   };
 
   const handleLoginSuccess = (user: CurrentUser) => {
-    const userTheme = pdksStorage.getUserTheme(user);
-    setCurrentUser(user);
-    setActiveTheme(userTheme);
-    applyThemeToDocument(userTheme);
+    const resolvedTheme = syncThemeFromUser(user);
+    setCurrentUser({ ...user, themeId: resolvedTheme });
     setIsLoggedIn(true);
     setActiveTab(getDefaultTabForUser(user));
     setRefreshKey((prev) => prev + 1);
@@ -245,8 +231,7 @@ export default function App() {
   const handleLogout = () => {
     pdksStorage.logout();
     setIsLoggedIn(false);
-    setActiveTheme(DEFAULT_THEME_ID);
-    applyThemeToDocument(DEFAULT_THEME_ID);
+    resetToDefaultTheme();
     setRefreshKey((prev) => prev + 1);
   };
 
@@ -258,7 +243,7 @@ export default function App() {
   // TALEP: "Logo güzel olmuş fakat logo ekleme kısmı herkese açık olmasın ik yönetici sayfasında olsun"
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-900 selection:bg-indigo-600 selection:text-white">
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col font-sans text-slate-900 dark:text-slate-100 selection:bg-indigo-600 selection:text-white transition-colors">
         <LandingLoginPage
           onLoginSuccess={handleLoginSuccess}
           companyLogo={companyLogo}
@@ -269,7 +254,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-900 selection:bg-indigo-600 selection:text-white">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col font-sans text-slate-900 dark:text-slate-100 selection:bg-indigo-600 selection:text-white transition-colors">
       {/* Top Navbar with Active User Switcher, Logo Manager, Personal Theme & Notification Center */}
       {!isFullscreenKiosk && (
         <Navbar
@@ -359,13 +344,13 @@ export default function App() {
 
       {/* Subtle Footer */}
       {!isFullscreenKiosk && (
-        <footer className="bg-white border-t border-slate-200 py-4 px-6 text-xs text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-3 no-print">
+        <footer className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-xs text-slate-500 dark:text-slate-400 flex flex-col sm:flex-row items-center justify-between gap-3 no-print transition-colors">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-slate-700">{companyName}</span>
+            <span className="font-semibold text-slate-700 dark:text-slate-200">{companyName}</span>
             <span aria-hidden="true">·</span>
             <span>Personel Devam & Performans Takip Platformu</span>
             <span aria-hidden="true">·</span>
-            <span className="font-mono text-indigo-600 font-medium">
+            <span className="font-mono text-indigo-600 dark:text-indigo-400 font-medium">
               Aktif Oturum: @{currentUser.username || 'hesap'} ({currentUser.name} - {currentUser.title})
             </span>
           </div>
@@ -375,32 +360,32 @@ export default function App() {
               <>
                 <button
                   onClick={() => setIsLogoModalOpen(true)}
-                  className="text-indigo-600 hover:text-indigo-800 flex items-center gap-1 font-semibold transition-colors text-xs cursor-pointer"
+                  className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 flex items-center gap-1 font-semibold transition-colors text-xs cursor-pointer"
                   title="Kurumsal Logoyu Standart Boyutlarda Düzenle"
                 >
                   <ImageIcon className="w-3.5 h-3.5" />
                   <span>Şirket Logosu</span>
                 </button>
-                <span className="text-slate-300">|</span>
+                <span className="text-slate-300 dark:text-slate-700">|</span>
                 <button
                   onClick={() => setIsWallQRModalOpen(true)}
-                  className="text-purple-600 hover:text-purple-800 flex items-center gap-1 font-semibold transition-colors text-xs cursor-pointer"
+                  className="text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 flex items-center gap-1 font-semibold transition-colors text-xs cursor-pointer"
                   title="Sabit Şirket Duvarı QR'ını Oluştur ve Yazdır"
                 >
                   <Printer className="w-3.5 h-3.5" />
                   <span>Şirket Duvarı QR'ı</span>
                 </button>
-                <span className="text-slate-300">|</span>
+                <span className="text-slate-300 dark:text-slate-700">|</span>
               </>
             )}
             <button
               onClick={handleLogout}
-              className="text-rose-600 hover:text-rose-800 flex items-center gap-1 font-bold transition-colors text-xs cursor-pointer"
+              className="text-rose-600 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 flex items-center gap-1 font-bold transition-colors text-xs cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span className="hover:underline">Çıkış Yap</span>
             </button>
-            <span className="text-slate-300">|</span>
+            <span className="text-slate-300 dark:text-slate-700">|</span>
             <span>Tüm hakları saklıdır © 2026</span>
           </div>
         </footer>
@@ -437,8 +422,7 @@ export default function App() {
         currentUser={currentUser}
         activeTheme={activeTheme}
         onThemeChanged={(newTheme) => {
-          setActiveTheme(newTheme);
-          applyThemeToDocument(newTheme);
+          void setTheme(newTheme, currentUser);
           setCurrentUser((prev) => ({ ...prev, themeId: newTheme }));
         }}
       />
