@@ -2507,9 +2507,9 @@ export const pdksStorage = {
       };
     }
 
-    // IDOR Protection: Standard employees cannot clock in/out for another person
+    // IDOR Protection: Mobile portal users cannot clock in/out for another person
     const active = this.getActiveUser();
-    if (active && active.role === 'personel' && active.employeeId && emp.id !== active.employeeId) {
+    if (active && active.employeeId && emp.id !== active.employeeId) {
       return {
         success: false,
         message: 'Güvenlik Uyarısı: Başka bir personelin kimliği ile işlem yapamazsınız!',

@@ -54,8 +54,7 @@ interface EmployeeMobilePortalProps {
 }
 
 export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ currentUser }) => {
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [selectedEmpId, setSelectedEmpId] = useState<string>('EMP-1001');
+  const [currentEmp, setCurrentEmp] = useState<Employee | null>(null);
   const [personalQrCodeUrl, setPersonalQrCodeUrl] = useState<string>('');
   const [recentRecords, setRecentRecords] = useState<AttendanceRecord[]>([]);
 
@@ -118,8 +117,8 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'loading' | 'success' | 'error' | 'denied'>('idle');
   const [gpsErrorText, setGpsErrorText] = useState<string | null>(null);
 
-  const isRestrictedPersonnel = pdksStorage.isRestrictedPersonnel(currentUser);
-  const isHRManager = pdksStorage.isHRorSuperAdmin(currentUser);
+  const activeSessionUser = currentUser || pdksStorage.getActiveUser();
+  const isHRManager = pdksStorage.isHRorSuperAdmin(activeSessionUser);
 
   const geofenceEnabled = Boolean(companyQR.enableGeofence);
 
@@ -231,29 +230,41 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     };
   }, [geofenceEnabled, refreshLocation]);
 
-  const loadData = () => {
+  const resolveCurrentEmployee = useCallback((user: CurrentUser): Employee | null => {
     const emps = pdksStorage.getEmployees();
-    setEmployees(emps);
+    if (user.employeeId) {
+      const directMatch = emps.find((e) => e.id === user.employeeId);
+      if (directMatch) return directMatch;
+    }
+    const accounts = pdksStorage.getUserAccounts();
+    const matchedAccount = accounts.find(
+      (a) =>
+        (user.id && a.id === user.id) ||
+        (user.username && a.username.toLowerCase() === user.username.toLowerCase())
+    );
+    if (matchedAccount?.employeeId) {
+      const accountMatch = emps.find((e) => e.id === matchedAccount.employeeId);
+      if (accountMatch) return accountMatch;
+    }
+    return null;
+  }, []);
+
+  const loadData = useCallback(() => {
+    const user = currentUser || pdksStorage.getActiveUser();
+    const resolvedEmp = resolveCurrentEmployee(user);
+    setCurrentEmp(resolvedEmp);
     setCompanyQR(pdksStorage.getCompanyWallQR());
 
-    // If personnel is logged in, restrict exclusively to their own profile
-    if (isRestrictedPersonnel && currentUser?.employeeId) {
-      setSelectedEmpId(currentUser.employeeId);
-    } else if (emps.length > 0 && !emps.find((e) => e.id === selectedEmpId)) {
-      setSelectedEmpId(emps[0].id);
-    }
-
+    const targetId = resolvedEmp?.id || user.employeeId;
     const allRecords = pdksStorage.getAttendanceRecords();
-    const targetId =
-      isRestrictedPersonnel && currentUser?.employeeId ? currentUser.employeeId : selectedEmpId;
-    setRecentRecords(allRecords.filter((r) => r.employeeId === targetId));
+    setRecentRecords(targetId ? allRecords.filter((r) => r.employeeId === targetId) : []);
 
-    // Update unread notifications count for active employee
-    const activeRole = currentUser?.role || pdksStorage.getActiveUser()?.role;
+    // Update unread notifications count for active user
+    const activeRole = user.role;
     const notifs = pdksStorage.getNotifications().filter(
       (n) =>
         (!n.targetRole || n.targetRole === activeRole) &&
-        (n.employeeId === targetId || n.employeeId === 'all' || !n.employeeId) &&
+        (targetId ? n.employeeId === targetId || n.employeeId === 'all' || !n.employeeId : !n.employeeId || n.employeeId === 'all') &&
         !n.read
     );
     setEmployeeUnreadCount(notifs.length);
@@ -264,19 +275,23 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
       setActiveDeviceLock(null);
     }
     setNowTick(Date.now());
-  };
+  }, [currentUser, resolveCurrentEmployee]);
 
   useEffect(() => {
+    loadData();
+
     const timer = setInterval(() => {
       setNowTick(Date.now());
     }, 10000);
     const handleLiveEvent = () => {
-      const targetId = isRestrictedPersonnel && currentUser?.employeeId ? currentUser.employeeId : selectedEmpId;
-      const activeRole = currentUser?.role || pdksStorage.getActiveUser()?.role;
+      const user = currentUser || pdksStorage.getActiveUser();
+      const resolvedEmp = resolveCurrentEmployee(user);
+      const targetId = resolvedEmp?.id || user.employeeId;
+      const activeRole = user.role;
       const notifs = pdksStorage.getNotifications().filter(
         (n) =>
           (!n.targetRole || n.targetRole === activeRole) &&
-          (n.employeeId === targetId || n.employeeId === 'all' || !n.employeeId) &&
+          (targetId ? n.employeeId === targetId || n.employeeId === 'all' || !n.employeeId : !n.employeeId || n.employeeId === 'all') &&
           !n.read
       );
       setEmployeeUnreadCount(notifs.length);
@@ -291,19 +306,8 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
       window.removeEventListener('pdks-notification', handleLiveEvent);
       window.removeEventListener('pdks-data-synced', handleSync);
     };
-  }, [selectedEmpId, isRestrictedPersonnel, currentUser]);
+  }, [currentUser, loadData, resolveCurrentEmployee]);
 
-  useEffect(() => {
-    if (isRestrictedPersonnel && currentUser?.employeeId) {
-      setSelectedEmpId(currentUser.employeeId);
-    }
-  }, [currentUser, isRestrictedPersonnel]);
-
-  useEffect(() => {
-    loadData();
-  }, [selectedEmpId]);
-
-  const currentEmp = employees.find((e) => e.id === selectedEmpId);
   const shifts = pdksStorage.getShifts();
   const currentShift = shifts.find((s) => s.id === currentEmp?.shiftId);
 
@@ -880,7 +884,58 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     setTimeout(() => setPhotoFeedback(null), 3000);
   };
 
-  if (!currentEmp) return null;
+  if (!currentEmp) {
+    const localDevice = pdksStorage.getDeviceIdentity();
+    return (
+      <div className="w-full max-w-md sm:max-w-xl mx-auto min-w-0 px-3 sm:px-4 py-4 sm:py-6 space-y-3.5">
+        <div className="bg-white dark:bg-slate-900 rounded-2xl p-5 shadow-xs border border-slate-200 dark:border-slate-800 space-y-4">
+          <div className="flex items-center gap-3">
+            <img
+              src={activeSessionUser.avatar}
+              alt={activeSessionUser.name}
+              className="w-12 h-12 rounded-2xl object-cover border-2 border-indigo-500 shrink-0"
+              referrerPolicy="no-referrer"
+            />
+            <div className="min-w-0">
+              <h2 className="font-bold text-slate-900 dark:text-slate-100 text-base truncate">
+                {activeSessionUser.name}
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                {activeSessionUser.title} · <span className="font-mono text-indigo-600 dark:text-indigo-400">@{activeSessionUser.username}</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5">
+            <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <div className="font-bold">Aktif Hesap Sicil Eşleşmesi Bulunamadı</div>
+              <p className="text-[11px] leading-relaxed">
+                Mobil portal yalnızca oturum açan kullanıcının kendi personel kimliği ile çalışır. Hesabınıza tanımlı aktif bir personel sicil kaydı bulunmadığından QR giriş-çıkış ve talep işlemleri bu hesap için devre dışıdır.
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-slate-50 dark:bg-slate-800/70 rounded-xl px-3.5 py-2.5 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2 text-[11px]">
+            <div className="flex items-center gap-2 min-w-0">
+              <Smartphone className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+              <div className="min-w-0">
+                <div className="truncate font-semibold text-slate-800 dark:text-slate-100">
+                  {activeSessionUser.registeredDeviceName || localDevice.deviceName}
+                </div>
+                <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 truncate">
+                  ID: {activeSessionUser.registeredDeviceId || localDevice.deviceId}
+                </div>
+              </div>
+            </div>
+            <span className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-[10px] font-semibold">
+              Aktif Oturum
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const isInside = currentEmp.currentPresence === 'inside';
   const isBreak = currentEmp.currentPresence === 'break';
@@ -1004,24 +1059,6 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
         )}
       </div>
 
-      {/* Admin Preview Switcher (Only when non-restricted) */}
-      {!isRestrictedPersonnel && (
-        <div className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 flex items-center justify-between text-xs">
-          <span className="font-semibold text-slate-600">Personel Seç (Önizleme):</span>
-          <select
-            value={selectedEmpId}
-            onChange={(e) => setSelectedEmpId(e.target.value)}
-            className="px-2 py-0.5 text-xs font-medium border border-slate-300 rounded-lg bg-white"
-          >
-            {employees.map((emp) => (
-              <option key={emp.id} value={emp.id}>
-                {emp.fullName} ({emp.department})
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
       {/* Scan Feedback Banner / Toast */}
       {scanSuccessResult && (
         <div className="bg-emerald-600 text-white p-3.5 rounded-2xl shadow-xl flex items-center justify-between animate-fade-in border-2 border-emerald-400">
@@ -1057,12 +1094,19 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
       {/* REGISTERED DEVICE & 1-HOUR NEW DEVICE MANAGER APPROVAL GATE */}
       {(() => {
         const localDevice = pdksStorage.getDeviceIdentity();
-        const linkedAccount = pdksStorage.getUserAccountByEmployeeId(currentEmp.id);
+        const accounts = pdksStorage.getUserAccounts();
+        const linkedAccount =
+          accounts.find(
+            (a) =>
+              (activeSessionUser.id && a.id === activeSessionUser.id) ||
+              (activeSessionUser.username &&
+                a.username.toLowerCase() === activeSessionUser.username.toLowerCase())
+          ) || pdksStorage.getUserAccountByEmployeeId(currentEmp.id);
         const lockActive =
           activeDeviceLock &&
           isOutside &&
           nowTick < Date.parse(activeDeviceLock.expiresAt) &&
-          !pdksStorage.isHRorSuperAdmin(currentUser);
+          !isHRManager;
         const remainingMins = lockActive
           ? Math.max(1, Math.ceil((Date.parse(activeDeviceLock.expiresAt) - nowTick) / 60000))
           : 0;
@@ -1154,9 +1198,9 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
           );
         }
 
-        const regMac = linkedAccount?.registeredMacAddress || currentEmp.registeredMacAddress || localDevice.macAddress;
-        const regDevId = linkedAccount?.registeredDeviceId || currentEmp.registeredDeviceId || localDevice.deviceId;
-        const regDevName = linkedAccount?.registeredDeviceName || currentEmp.registeredDeviceName || localDevice.deviceName;
+        const regMac = linkedAccount?.registeredMacAddress || activeSessionUser.registeredMacAddress || currentEmp.registeredMacAddress || localDevice.macAddress;
+        const regDevId = linkedAccount?.registeredDeviceId || activeSessionUser.registeredDeviceId || currentEmp.registeredDeviceId || localDevice.deviceId;
+        const regDevName = linkedAccount?.registeredDeviceName || activeSessionUser.registeredDeviceName || currentEmp.registeredDeviceName || localDevice.deviceName;
 
         return (
           <div className="bg-white rounded-2xl px-3.5 py-2.5 border border-slate-200 shadow-2xs flex items-center justify-between gap-2 text-[11px]">

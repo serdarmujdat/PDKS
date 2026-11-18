@@ -3,7 +3,7 @@
 ## 1. Data Invariants
 1. Global default-deny catch-all (`match /{document=**}`) denies all unconfigured paths.
 2. Public branding read (`get`) is strictly scoped to the single non-PII document `/company_branding/logo`; `allow list` is explicitly disabled (`false`) to prevent enumeration.
-3. All writes to `/company_branding/logo` require a verified administrator (`request.auth != null && request.auth.token.email_verified == true` AND either bootstrapped admin email `admin@example.com` or an existing `/admins/{uid}` document).
+3. All writes to `/company_branding/logo` require a verified administrator (`request.auth != null && request.auth.token.email_verified == true` AND either bootstrapped admin email `serdarmujdattosun@gmail.com` or an existing `/admins/{uid}` document).
 4. `logoUrl` is strictly type- and size-bounded (`1 <= size <= 900000`) and rejects ephemeral `blob:` URLs.
 5. `updatedAt` and `grantedAt` must equal `request.time` (no client-forged timestamps).
 6. `updatedByUid` must equal `request.auth.uid` on both create and update (no identity spoofing).
