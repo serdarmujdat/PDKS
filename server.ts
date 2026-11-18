@@ -23,6 +23,7 @@ import type {
   UserAccount,
   UserCustomPermissions,
   SupervisorAssignment,
+  SystemSettings,
 } from './src/types/pdks';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -314,13 +315,142 @@ function isHiddenSuperAdminItem(item: any): boolean {
   );
 }
 
+function isArchivedEmployeeServer(emp: Partial<Employee> | null | undefined): boolean {
+  if (!emp) return false;
+  return emp.isArchived === true || emp.status === 'inactive';
+}
+
+function isArchivedAccountServer(acc: Partial<UserAccount> | null | undefined): boolean {
+  if (!acc) return false;
+  return acc.isArchived === true || (!acc.isActive && Boolean(acc.archivedAt));
+}
+
+function isAdminOrManagerTargetServer(
+  acc?: Partial<UserAccount> | null,
+  emp?: Partial<Employee> | null
+): boolean {
+  if (isHiddenSuperAdminItem(acc) || isHiddenSuperAdminItem(emp)) return true;
+  if (!acc && emp?.id && Array.isArray(dbState?.accounts)) {
+    acc = dbState.accounts.find((a) => a.employeeId === emp.id && !isHiddenSuperAdminItem(a));
+  }
+  if (!acc) return false;
+  const role = acc.role;
+  const formerRole = acc.formerRole;
+  if (
+    role === 'SUPER_ADMIN' ||
+    role === 'ik_yoneticisi' ||
+    role === 'birim_amiri' ||
+    role === 'yonetici'
+  ) {
+    return true;
+  }
+  if (
+    formerRole === 'SUPER_ADMIN' ||
+    formerRole === 'ik_yoneticisi' ||
+    formerRole === 'birim_amiri' ||
+    formerRole === 'yonetici'
+  ) {
+    return true;
+  }
+  if (acc.customPermissions?.isFullAdmin || acc.customPermissions?.canManagePermissions) {
+    return true;
+  }
+  return false;
+}
+
+function resolveActorServer(req: Request): {
+  isAuthenticated: boolean;
+  isSuperAdmin: boolean;
+  actorName: string;
+  account?: UserAccount;
+  perms: UserCustomPermissions;
+} {
+  const saToken = extractSuperAdminToken(req);
+  if (verifySuperAdminToken(saToken)) {
+    return {
+      isAuthenticated: true,
+      isSuperAdmin: true,
+      actorName: 'Sistem Süper Yöneticisi',
+      perms: { ...FULL_SUPER_ADMIN_PERMISSIONS, allowedPages: [...FULL_SUPER_ADMIN_PERMISSIONS.allowedPages] },
+    };
+  }
+  const userToken = extractUserSessionToken(req);
+  const claims = verifyUserSessionToken(userToken);
+  if (!claims) {
+    return {
+      isAuthenticated: false,
+      isSuperAdmin: false,
+      actorName: '',
+      perms: getDefaultPermissionsForRoleServer('personel', false),
+    };
+  }
+  const actorAccount = dbState.accounts.find(
+    (a) => !isHiddenSuperAdminItem(a) && a.isActive && !isArchivedAccountServer(a) && a.id === claims.sub
+  );
+  if (!actorAccount) {
+    return {
+      isAuthenticated: false,
+      isSuperAdmin: false,
+      actorName: '',
+      perms: getDefaultPermissionsForRoleServer('personel', false),
+    };
+  }
+  const linkedEmp = actorAccount.employeeId
+    ? dbState.employees.find((e) => e.id === actorAccount.employeeId)
+    : undefined;
+  if (linkedEmp && isArchivedEmployeeServer(linkedEmp)) {
+    return {
+      isAuthenticated: false,
+      isSuperAdmin: false,
+      actorName: '',
+      perms: getDefaultPermissionsForRoleServer('personel', false),
+    };
+  }
+  return {
+    isAuthenticated: true,
+    isSuperAdmin: false,
+    actorName: actorAccount.name,
+    account: actorAccount,
+    perms: getEffectivePermissionsServer(actorAccount),
+  };
+}
+
+function canViewArchivedEmployeesServer(actor: ReturnType<typeof resolveActorServer>): boolean {
+  if (!actor.isAuthenticated) return false;
+  if (actor.isSuperAdmin) return true;
+  const role = actor.account?.role;
+  const perms = actor.perms;
+  return Boolean(
+    role === 'ik_yoneticisi' ||
+      role === 'birim_amiri' ||
+      role === 'yonetici' ||
+      perms.isFullAdmin ||
+      perms.canManagePermissions ||
+      perms.canManageSettings
+  );
+}
+
 function filterVisibleItems<T>(list: T[]): T[] {
   return Array.isArray(list) ? list.filter((item) => !isHiddenSuperAdminItem(item)) : [];
 }
 
 function getPublicDatabaseSnapshot(db: PDKSDatabase): PDKSDatabase {
+  const canonicalCompanyName =
+    (typeof db.systemSettings?.companyName === 'string' && db.systemSettings.companyName.trim()) ||
+    (typeof db.companyName === 'string' && db.companyName.trim()) ||
+    (typeof db.companyWallQR?.companyName === 'string' && db.companyWallQR.companyName.trim()) ||
+    DEFAULT_COMPANY_NAME;
+
   return {
     ...db,
+    companyName: canonicalCompanyName,
+    systemSettings: {
+      ...(db.systemSettings || { companyName: canonicalCompanyName }),
+      companyName: canonicalCompanyName,
+    },
+    companyWallQR: db.companyWallQR
+      ? { ...db.companyWallQR, companyName: canonicalCompanyName }
+      : db.companyWallQR,
     employees: filterVisibleItems(db.employees),
     records: filterVisibleItems(db.records),
     notifications: filterVisibleItems(db.notifications),
@@ -332,11 +462,67 @@ function getPublicDatabaseSnapshot(db: PDKSDatabase): PDKSDatabase {
 
 app.use(express.json({ limit: '25mb' }));
 
-// Persistent Database Directory & File
+// Persistent Database Directory & Files
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'pdks-database.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'system-settings.json');
+const WALL_QR_STATIC_FILE = path.join(__dirname, 'company-wall-qr.json');
+
+function loadPersistentSystemSettings(): SystemSettings | null {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.companyName === 'string' && parsed.companyName.trim()) {
+        return {
+          companyName: parsed.companyName.trim().slice(0, 100),
+          branchName: typeof parsed.branchName === 'string' ? parsed.branchName.trim().slice(0, 100) : undefined,
+          updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : undefined,
+          updatedBy: typeof parsed.updatedBy === 'string' ? parsed.updatedBy : undefined,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to read system-settings.json:', err);
+  }
+  return null;
+}
+
+function savePersistentSystemSettings(settings: SystemSettings): void {
+  const tempFile = `${SETTINGS_FILE}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(tempFile, JSON.stringify(settings, null, 2), 'utf-8');
+    fs.renameSync(tempFile, SETTINGS_FILE);
+  } catch (err) {
+    console.error('Failed to write system-settings.json:', err);
+    try {
+      if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Keep company-wall-qr.json synchronized when present so static seed never reverts companyName
+  try {
+    if (fs.existsSync(WALL_QR_STATIC_FILE)) {
+      const raw = fs.readFileSync(WALL_QR_STATIC_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        parsed.companyName = settings.companyName;
+        if (settings.branchName) parsed.branchName = settings.branchName;
+        fs.writeFileSync(WALL_QR_STATIC_FILE, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
+      }
+    }
+  } catch {
+    // non-fatal
+  }
+}
 
 function loadDatabase(): PDKSDatabase {
+  const persistedSettings = loadPersistentSystemSettings();
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -362,13 +548,32 @@ function loadDatabase(): PDKSDatabase {
         if (!Array.isArray(parsed.deviceApprovals)) {
           parsed.deviceApprovals = [];
         }
-        const resolvedCompanyName =
+
+        const dbCompanyName =
+          (typeof parsed.systemSettings?.companyName === 'string' && parsed.systemSettings.companyName.trim()) ||
           (typeof parsed.companyName === 'string' && parsed.companyName.trim()) ||
           (typeof parsed.companyWallQR?.companyName === 'string' && parsed.companyWallQR.companyName.trim()) ||
+          '';
+
+        const resolvedCompanyName =
+          (persistedSettings?.companyName &&
+            (dbCompanyName === '' || dbCompanyName === DEFAULT_COMPANY_NAME)
+            ? persistedSettings.companyName
+            : dbCompanyName) ||
+          persistedSettings?.companyName ||
           DEFAULT_COMPANY_NAME;
+
         parsed.companyName = resolvedCompanyName;
+        parsed.systemSettings = {
+          ...(persistedSettings || {}),
+          ...(parsed.systemSettings || {}),
+          companyName: resolvedCompanyName,
+        };
         if (parsed.companyWallQR && typeof parsed.companyWallQR === 'object') {
           parsed.companyWallQR.companyName = resolvedCompanyName;
+        }
+        if (!persistedSettings && resolvedCompanyName && resolvedCompanyName !== DEFAULT_COMPANY_NAME) {
+          savePersistentSystemSettings(parsed.systemSettings);
         }
         return parsed;
       }
@@ -378,6 +583,21 @@ function loadDatabase(): PDKSDatabase {
   }
 
   const initial = createInitialDatabase();
+  if (persistedSettings?.companyName) {
+    initial.companyName = persistedSettings.companyName;
+    initial.systemSettings = { ...persistedSettings };
+    initial.companyWallQR.companyName = persistedSettings.companyName;
+    if (persistedSettings.branchName) {
+      initial.companyWallQR.branchName = persistedSettings.branchName;
+    }
+  } else {
+    savePersistentSystemSettings({
+      companyName: initial.companyName,
+      branchName: initial.companyWallQR.branchName,
+      updatedAt: initial.lastUpdated,
+      updatedBy: 'Sistem Başlatma',
+    });
+  }
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
   } catch (err) {
@@ -483,21 +703,75 @@ app.get('/api/db/sync', (req: Request, res: Response) => {
   });
 });
 
+function mergePreservingServerArchivedEmployees(incoming: Employee[]): Employee[] {
+  const byId = new Map<string, Employee>();
+  for (const e of filterVisibleItems(incoming)) {
+    if (e && e.id) {
+      const existing = dbState.employees.find((cur) => cur.id === e.id);
+      if (existing && isArchivedEmployeeServer(existing) && !isArchivedEmployeeServer(e)) {
+        // Never allow stale client sync to resurrect an archived former employee
+        byId.set(existing.id, existing);
+      } else {
+        byId.set(e.id, e);
+      }
+    }
+  }
+  for (const existing of filterVisibleItems(dbState.employees)) {
+    if (existing && existing.id && isArchivedEmployeeServer(existing) && !byId.has(existing.id)) {
+      byId.set(existing.id, existing);
+    }
+  }
+  return Array.from(byId.values());
+}
+
+function mergePreservingServerArchivedAccounts(incoming: UserAccount[]): UserAccount[] {
+  const byId = new Map<string, UserAccount>();
+  for (const a of filterVisibleItems(incoming)) {
+    if (a && a.id) {
+      const existing = dbState.accounts.find((cur) => cur.id === a.id);
+      if (existing && isArchivedAccountServer(existing) && !isArchivedAccountServer(a)) {
+        byId.set(existing.id, existing);
+      } else {
+        byId.set(a.id, a);
+      }
+    }
+  }
+  for (const existing of filterVisibleItems(dbState.accounts)) {
+    if (existing && existing.id && isArchivedAccountServer(existing) && !byId.has(existing.id)) {
+      byId.set(existing.id, existing);
+    }
+  }
+  return Array.from(byId.values());
+}
+
 app.post('/api/db/sync', (req: Request, res: Response) => {
   try {
     const { updates, collection, data } = req.body || {};
 
     if (collection && data !== undefined) {
+      if (collection === 'companyName' || collection === 'systemSettings') {
+        return res.status(403).json({
+          success: false,
+          message: 'Kurum adı ve sistem ayarları yalnızca Süper Yönetici doğrulamasıyla güncellenebilir.',
+        });
+      }
       if (collection === 'companyLogo' && typeof data === 'string' && data.trim().startsWith('blob:')) {
         return res.status(400).json({ success: false, message: 'Geçici blob: logo adresi kaydedilemez.' });
       }
       if (collection === 'companyWallQR' && data && typeof data === 'object') {
         const currentCompanyName =
-          dbState.companyName || dbState.companyWallQR?.companyName || DEFAULT_COMPANY_NAME;
+          dbState.systemSettings?.companyName ||
+          dbState.companyName ||
+          dbState.companyWallQR?.companyName ||
+          DEFAULT_COMPANY_NAME;
         dbState.companyWallQR = {
           ...data,
           companyName: currentCompanyName,
         };
+      } else if (collection === 'employees' && Array.isArray(data)) {
+        dbState.employees = mergePreservingServerArchivedEmployees(data as Employee[]);
+      } else if (collection === 'accounts' && Array.isArray(data)) {
+        dbState.accounts = mergePreservingServerArchivedAccounts(data as UserAccount[]);
       } else {
         const sanitizedData = Array.isArray(data) ? filterVisibleItems(data) : data;
         (dbState as any)[collection] = sanitizedData;
@@ -524,11 +798,22 @@ app.post('/api/db/sync', (req: Request, res: Response) => {
           }
           if (key === 'companyWallQR' && updates[key] && typeof updates[key] === 'object') {
             const currentCompanyName =
-              dbState.companyName || dbState.companyWallQR?.companyName || DEFAULT_COMPANY_NAME;
+              dbState.systemSettings?.companyName ||
+              dbState.companyName ||
+              dbState.companyWallQR?.companyName ||
+              DEFAULT_COMPANY_NAME;
             dbState.companyWallQR = {
               ...updates[key],
               companyName: currentCompanyName,
             };
+            continue;
+          }
+          if (key === 'employees' && Array.isArray(updates[key])) {
+            dbState.employees = mergePreservingServerArchivedEmployees(updates[key] as Employee[]);
+            continue;
+          }
+          if (key === 'accounts' && Array.isArray(updates[key])) {
+            dbState.accounts = mergePreservingServerArchivedAccounts(updates[key] as UserAccount[]);
             continue;
           }
           (dbState as any)[key] = Array.isArray(updates[key])
@@ -558,6 +843,7 @@ function findServerDeviceOwner(
   const accounts = Array.isArray(dbState.accounts) ? dbState.accounts : [];
   for (const acc of accounts) {
     if (!acc.employeeId || acc.employeeId === currentEmployeeId) continue;
+    if (!acc.isActive || isArchivedAccountServer(acc)) continue;
     const matchId = Boolean(device.deviceId && acc.registeredDeviceId && acc.registeredDeviceId === device.deviceId);
     const matchMac = Boolean(
       device.macAddress &&
@@ -582,6 +868,7 @@ function findServerDeviceOwner(
   const employees = Array.isArray(dbState.employees) ? dbState.employees : [];
   for (const emp of employees) {
     if (emp.id === currentEmployeeId) continue;
+    if (isArchivedEmployeeServer(emp)) continue;
     const matchId = Boolean(device.deviceId && emp.registeredDeviceId && emp.registeredDeviceId === device.deviceId);
     const matchMac = Boolean(
       device.macAddress &&
@@ -626,6 +913,13 @@ app.post('/api/scan', (req: Request, res: Response) => {
   const emp = dbState.employees.find((e) => e.id === employeeId || e.qrToken.includes(employeeId));
   if (!emp) {
     return res.status(404).json({ success: false, message: 'Personel kaydı sistemde bulunamadı.' });
+  }
+  if (isArchivedEmployeeServer(emp)) {
+    return res.status(403).json({
+      success: false,
+      blocked: true,
+      message: 'Bu personel arşivlenmiş (Eski Personel) / pasif durumda olduğu için giriş-çıkış işlemi yapılamaz.',
+    });
   }
 
   const previousPresence = emp.currentPresence || 'outside';
@@ -857,9 +1151,203 @@ app.post('/api/scan', (req: Request, res: Response) => {
   });
 });
 
+function archiveEmployeeOrAccountServer(options: {
+  employeeId?: string;
+  accountId?: string;
+  archiveEmployee?: boolean;
+  actorName: string;
+}): {
+  archivedEmployee?: Employee;
+  archivedAccounts: UserAccount[];
+} {
+  const nowIso = new Date().toISOString();
+  const archivedAccounts: UserAccount[] = [];
+  let archivedEmployee: Employee | undefined;
+  let targetEmpId = options.employeeId;
+
+  if (options.accountId) {
+    const accIdx = dbState.accounts.findIndex(
+      (a) => a.id === options.accountId && !isHiddenSuperAdminItem(a)
+    );
+    if (accIdx >= 0) {
+      const cur = dbState.accounts[accIdx];
+      targetEmpId = targetEmpId || cur.employeeId;
+      const nextAcc: UserAccount = {
+        ...cur,
+        formerRole: cur.formerRole || cur.role,
+        role: 'personel',
+        isActive: false,
+        isArchived: true,
+        archivedAt: cur.archivedAt || nowIso,
+        archivedBy: options.actorName,
+        isShiftSupervisor: false,
+        assignedEmployeeIds: [],
+      };
+      delete nextAcc.customPermissions;
+      delete nextAcc.registeredDeviceId;
+      delete nextAcc.registeredMacAddress;
+      delete nextAcc.registeredDeviceFingerprint;
+      delete nextAcc.registeredDeviceName;
+      delete nextAcc.registeredDeviceAt;
+      delete nextAcc.lastLoginDeviceId;
+      delete nextAcc.lastLoginMacAddress;
+      delete nextAcc.lastLoginDeviceFingerprint;
+      delete nextAcc.lastLoginDeviceName;
+      dbState.accounts[accIdx] = nextAcc;
+      archivedAccounts.push(nextAcc);
+    }
+  }
+
+  if (options.archiveEmployee && targetEmpId) {
+    const empIdx = dbState.employees.findIndex(
+      (e) => e.id === targetEmpId && !isHiddenSuperAdminItem(e)
+    );
+    if (empIdx >= 0) {
+      const curEmp = dbState.employees[empIdx];
+      const nextEmp: Employee = {
+        ...curEmp,
+        status: 'inactive',
+        currentPresence: 'outside',
+        isArchived: true,
+        archivedAt: curEmp.archivedAt || nowIso,
+        archivedBy: options.actorName,
+      };
+      delete nextEmp.registeredDeviceId;
+      delete nextEmp.registeredMacAddress;
+      delete nextEmp.registeredDeviceFingerprint;
+      delete nextEmp.registeredDeviceName;
+      delete nextEmp.registeredDeviceAt;
+      delete nextEmp.lastLoginDeviceId;
+      delete nextEmp.lastLoginMacAddress;
+      delete nextEmp.lastLoginDeviceName;
+      delete nextEmp.lastLoginAt;
+      dbState.employees[empIdx] = nextEmp;
+      archivedEmployee = nextEmp;
+    }
+
+    // Archive all linked user accounts for this employee
+    dbState.accounts = dbState.accounts.map((cur) => {
+      if (cur.employeeId === targetEmpId && !isHiddenSuperAdminItem(cur)) {
+        const nextAcc: UserAccount = {
+          ...cur,
+          formerRole: cur.formerRole || cur.role,
+          role: 'personel',
+          isActive: false,
+          isArchived: true,
+          archivedAt: cur.archivedAt || nowIso,
+          archivedBy: options.actorName,
+          isShiftSupervisor: false,
+          assignedEmployeeIds: [],
+        };
+        delete nextAcc.customPermissions;
+        delete nextAcc.registeredDeviceId;
+        delete nextAcc.registeredMacAddress;
+        delete nextAcc.registeredDeviceFingerprint;
+        delete nextAcc.registeredDeviceName;
+        delete nextAcc.registeredDeviceAt;
+        delete nextAcc.lastLoginDeviceId;
+        delete nextAcc.lastLoginMacAddress;
+        delete nextAcc.lastLoginDeviceFingerprint;
+        delete nextAcc.lastLoginDeviceName;
+        archivedAccounts.push(nextAcc);
+        return nextAcc;
+      }
+      return cur;
+    });
+  }
+
+  // Remove from supervisorAssignments & expire pending device approvals
+  const removedIds = new Set<string>();
+  if (targetEmpId) removedIds.add(targetEmpId);
+  if (options.accountId) removedIds.add(options.accountId);
+
+  if (Array.isArray(dbState.supervisorAssignments)) {
+    dbState.supervisorAssignments = dbState.supervisorAssignments
+      .filter((s) => !removedIds.has(s.supervisorId))
+      .map((s) => ({
+        ...s,
+        assignedEmployeeIds: Array.isArray(s.assignedEmployeeIds)
+          ? s.assignedEmployeeIds.filter((eid) => !removedIds.has(eid))
+          : [],
+      }));
+  }
+
+  if (Array.isArray(dbState.deviceApprovals)) {
+    dbState.deviceApprovals = dbState.deviceApprovals.map((ap) => {
+      if (
+        (removedIds.has(ap.employeeId) || removedIds.has(ap.accountId)) &&
+        (ap.status === 'pending' || ap.status === 'check_in_requested')
+      ) {
+        return {
+          ...ap,
+          status: 'expired',
+          resolvedAt: nowIso,
+          resolvedBy: options.actorName,
+          decisionNote: 'Personel/hesap arşivlendiği için sonlandırıldı.',
+        };
+      }
+      return ap;
+    });
+  }
+
+  // NOTE: dbState.records is intentionally untouched so all historical PDKS logs remain preserved.
+  return { archivedEmployee, archivedAccounts };
+}
+
 // 4. Employees CRUD
 app.get('/api/employees', (_req: Request, res: Response) => {
-  res.json({ success: true, employees: filterVisibleItems(dbState.employees) });
+  res.json({
+    success: true,
+    employees: filterVisibleItems(dbState.employees).filter((e) => !isArchivedEmployeeServer(e)),
+  });
+});
+
+// Read-only Archived / Former Employees & Historical Logs (Strictly Super Admin & Authorized Managers)
+app.get('/api/employees/archived', (req: Request, res: Response) => {
+  const actor = resolveActorServer(req);
+  if (!actor.isAuthenticated) {
+    return res.status(401).json({
+      success: false,
+      message: 'Eski personel listesini görüntülemek için yetkili oturum doğrulaması gereklidir.',
+    });
+  }
+  if (!canViewArchivedEmployeesServer(actor)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Erişim Reddedildi: Eski personel listesi ve geçmiş PDKS logları yalnızca Süper Yönetici ve yetkili yöneticilere açıktır.',
+    });
+  }
+
+  const archivedEmployees = filterVisibleItems(dbState.employees).filter((e) =>
+    isArchivedEmployeeServer(e)
+  );
+  const archivedIdSet = new Set(archivedEmployees.map((e) => e.id));
+  const archivedAccountByEmpId = new Map<string, UserAccount>();
+  filterVisibleItems(dbState.accounts).forEach((a) => {
+    if (a.employeeId && isArchivedAccountServer(a)) {
+      archivedAccountByEmpId.set(a.employeeId, a);
+    }
+  });
+
+  const enrichedEmployees = archivedEmployees.map((emp) => {
+    const linkedAcc = archivedAccountByEmpId.get(emp.id);
+    return {
+      ...emp,
+      formerRole: linkedAcc?.formerRole || linkedAcc?.role,
+      formerUsername: linkedAcc?.username,
+    };
+  });
+
+  const historicalRecords = filterVisibleItems(dbState.records).filter((r) =>
+    archivedIdSet.has(r.employeeId)
+  );
+
+  return res.json({
+    success: true,
+    archivedEmployees: enrichedEmployees,
+    records: historicalRecords,
+    version: dbState.version,
+  });
 });
 
 app.post('/api/employees', (req: Request, res: Response) => {
@@ -882,12 +1370,56 @@ app.post('/api/employees', (req: Request, res: Response) => {
   return res.json({ success: true, employee: emp, employees: filterVisibleItems(dbState.employees), version: dbState.version });
 });
 
-app.delete('/api/employees/:id', (req: Request, res: Response) => {
+function handleArchiveEmployeeRequest(req: Request, res: Response) {
   const { id } = req.params;
-  dbState.employees = dbState.employees.filter((e) => e.id !== id);
-  broadcastUpdate(`Deleted employee ${id}`, 'employees');
-  return res.json({ success: true, message: 'Personel silindi.', id, employees: filterVisibleItems(dbState.employees), version: dbState.version });
-});
+  const actor = resolveActorServer(req);
+  if (!actor.isAuthenticated) {
+    return res.status(401).json({
+      success: false,
+      message: 'Personel silme işlemi için oturum doğrulaması gereklidir. Lütfen tekrar giriş yapınız.',
+    });
+  }
+  if (!actor.isSuperAdmin && !actor.perms.canDelete) {
+    return res.status(403).json({
+      success: false,
+      message: 'Personel silme yetkiniz bulunmamaktadır.',
+    });
+  }
+
+  const targetEmp = dbState.employees.find((e) => e.id === id);
+  if (!targetEmp || isHiddenSuperAdminItem(targetEmp)) {
+    return res.status(404).json({ success: false, message: 'Personel kaydı bulunamadı.' });
+  }
+
+  const linkedAcc = dbState.accounts.find((a) => a.employeeId === id && !isHiddenSuperAdminItem(a));
+  if (!actor.isSuperAdmin && isAdminOrManagerTargetServer(linkedAcc, targetEmp)) {
+    return res.status(403).json({
+      success: false,
+      message:
+        'Güvenlik Kuralı: Yönetici rolüne veya yönetim yetkisine sahip kullanıcılar yalnızca Gizli Süper Admin (Admin.Admin) tarafından silinebilir.',
+    });
+  }
+
+  const { archivedEmployee } = archiveEmployeeOrAccountServer({
+    employeeId: id,
+    archiveEmployee: true,
+    actorName: actor.actorName,
+  });
+
+  broadcastUpdate(`Archived employee ${targetEmp.fullName} (${id})`, 'employees');
+  return res.json({
+    success: true,
+    message: `${targetEmp.fullName} aktif listeden kaldırıldı ve geçmiş PDKS kayıtları korunarak Eski Personel olarak arşivlendi.`,
+    id,
+    archivedEmployee,
+    employees: filterVisibleItems(dbState.employees),
+    accounts: filterVisibleItems(dbState.accounts),
+    version: dbState.version,
+  });
+}
+
+app.post('/api/employees/:id/archive', handleArchiveEmployeeRequest);
+app.delete('/api/employees/:id', handleArchiveEmployeeRequest);
 
 // Photo upload requests and approvals
 app.post('/api/employees/:id/photo-request', (req: Request, res: Response) => {
@@ -1189,9 +1721,35 @@ app.post('/api/company/wall-qr', (req: Request, res: Response) => {
   }
 });
 
-// 10B. Dynamic Company Name Management (Requires logged-in admin password confirmation)
+// 10B. Central Persistent System Settings & Dynamic Company Name Management (Super Admin Exclusive)
+app.get('/api/system/settings', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const name =
+    (typeof dbState.systemSettings?.companyName === 'string' && dbState.systemSettings.companyName.trim()) ||
+    (typeof dbState.companyName === 'string' && dbState.companyName.trim()) ||
+    (typeof dbState.companyWallQR?.companyName === 'string' && dbState.companyWallQR.companyName.trim()) ||
+    DEFAULT_COMPANY_NAME;
+  const settings: SystemSettings = {
+    companyName: name,
+    branchName: dbState.systemSettings?.branchName || dbState.companyWallQR?.branchName,
+    updatedAt: dbState.systemSettings?.updatedAt || dbState.lastUpdated,
+    updatedBy: dbState.systemSettings?.updatedBy || 'Sistem',
+  };
+  return res.json({
+    success: true,
+    companyName: name,
+    settings,
+    version: dbState.version,
+  });
+});
+
 app.get('/api/company/name', (_req: Request, res: Response) => {
-  const name = dbState.companyName || dbState.companyWallQR?.companyName || DEFAULT_COMPANY_NAME;
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const name =
+    (typeof dbState.systemSettings?.companyName === 'string' && dbState.systemSettings.companyName.trim()) ||
+    (typeof dbState.companyName === 'string' && dbState.companyName.trim()) ||
+    (typeof dbState.companyWallQR?.companyName === 'string' && dbState.companyWallQR.companyName.trim()) ||
+    DEFAULT_COMPANY_NAME;
   res.json({ success: true, companyName: name, version: dbState.version });
 });
 
@@ -1228,19 +1786,29 @@ app.post('/api/company/name', (req: Request, res: Response) => {
     return res.status(401).json({ success: false, message: 'Hatalı yönetici şifresi, değişiklik onaylanmadı' });
   }
 
+  const nowIso = new Date().toISOString();
+  const nextSettings: SystemSettings = {
+    companyName: cleanCompany,
+    branchName: cleanBranch || dbState.companyWallQR?.branchName,
+    updatedAt: nowIso,
+    updatedBy: tokenUsername || 'Admin.Admin',
+  };
   dbState.companyName = cleanCompany;
+  dbState.systemSettings = nextSettings;
   dbState.companyWallQR = {
     ...dbState.companyWallQR,
     companyName: cleanCompany,
     ...(cleanBranch ? { branchName: cleanBranch } : {}),
   };
+  savePersistentSystemSettings(nextSettings);
   broadcastUpdate(`Company name updated to ${cleanCompany}`, 'companyWallQR');
   return res.json({
     success: true,
     companyName: cleanCompany,
+    settings: nextSettings,
     data: dbState.companyWallQR,
     version: dbState.version,
-    message: 'Şirket adı başarıyla güncellendi',
+    message: 'Şirket adı merkezi veritabanına kalıcı olarak kaydedildi',
   });
 });
 
@@ -1341,12 +1909,57 @@ app.post('/api/accounts', (req: Request, res: Response) => {
   return res.json({ success: true, account: item, accounts: filterVisibleItems(dbState.accounts), version: dbState.version });
 });
 
-app.delete('/api/accounts/:id', (req: Request, res: Response) => {
+function handleArchiveAccountRequest(req: Request, res: Response) {
   const { id } = req.params;
-  dbState.accounts = dbState.accounts.filter((a) => a.id !== id);
-  broadcastUpdate(`User account deleted ${id}`, 'accounts');
-  return res.json({ success: true, message: 'Kullanıcı hesabı silindi.', id, accounts: filterVisibleItems(dbState.accounts), version: dbState.version });
-});
+  const actor = resolveActorServer(req);
+  if (!actor.isAuthenticated) {
+    return res.status(401).json({
+      success: false,
+      message: 'Kullanıcı hesabı silme işlemi için oturum doğrulaması gereklidir. Lütfen tekrar giriş yapınız.',
+    });
+  }
+  if (!actor.isSuperAdmin && !actor.perms.canDelete) {
+    return res.status(403).json({
+      success: false,
+      message: 'Kullanıcı hesabı silme yetkiniz bulunmamaktadır.',
+    });
+  }
+
+  const targetAcc = dbState.accounts.find((a) => a.id === id);
+  if (!targetAcc || isHiddenSuperAdminItem(targetAcc)) {
+    return res.status(404).json({ success: false, message: 'Kullanıcı hesabı bulunamadı.' });
+  }
+  const linkedEmp = targetAcc.employeeId
+    ? dbState.employees.find((e) => e.id === targetAcc.employeeId)
+    : undefined;
+
+  if (!actor.isSuperAdmin && isAdminOrManagerTargetServer(targetAcc, linkedEmp)) {
+    return res.status(403).json({
+      success: false,
+      message:
+        'Güvenlik Kuralı: Yönetici rolüne veya yönetim yetkisine sahip hesaplar yalnızca Gizli Süper Admin (Admin.Admin) tarafından silinebilir.',
+    });
+  }
+
+  archiveEmployeeOrAccountServer({
+    accountId: id,
+    employeeId: targetAcc.employeeId,
+    archiveEmployee: false,
+    actorName: actor.actorName,
+  });
+
+  broadcastUpdate(`Archived user account @${targetAcc.username} (${id})`, 'accounts');
+  return res.json({
+    success: true,
+    message: `@${targetAcc.username} hesabı pasife alındı, aktif yetkileri sıfırlandı ve arşivlendi.`,
+    id,
+    accounts: filterVisibleItems(dbState.accounts),
+    version: dbState.version,
+  });
+}
+
+app.post('/api/accounts/:id/archive', handleArchiveAccountRequest);
+app.delete('/api/accounts/:id', handleArchiveAccountRequest);
 
 const VALID_THEME_IDS = new Set([
   'kurumsal_saf',
@@ -1440,6 +2053,26 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
     return res.status(401).json({ success: false, message: 'Hatalı kullanıcı adı veya şifre.' });
   }
 
+  const linkedEmp = user.employeeId
+    ? dbState.employees.find((e) => e.id === user.employeeId)
+    : undefined;
+
+  if (isArchivedAccountServer(user) || (linkedEmp && isArchivedEmployeeServer(linkedEmp))) {
+    return res.status(403).json({
+      success: false,
+      blocked: true,
+      message: 'Bu hesap işten ayrılmış / arşivlenmiş (Eski Personel) statüsünde olduğu için sisteme giriş yapılamaz.',
+    });
+  }
+
+  if (!user.isActive) {
+    return res.status(403).json({
+      success: false,
+      blocked: true,
+      message: 'Bu kullanıcı hesabı yönetici tarafından devre dışı bırakılmıştır.',
+    });
+  }
+
   const userSessionToken = signUserSessionToken(user);
 
   return res.json({
@@ -1502,6 +2135,12 @@ function handlePermissionUpdateRequest(req: Request, res: Response, requireSuper
   }
 
   const targetAccount = dbState.accounts[idx];
+  if (isArchivedAccountServer(targetAccount)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Arşivlenmiş (Eski Personel) hesabına yetki tanımlanamaz.',
+    });
+  }
   const targetEffectivePerms = getEffectivePermissionsServer(targetAccount);
 
   const sanitizedPages: AppPageKey[] = Array.isArray(customPermissions.allowedPages)
@@ -1556,7 +2195,7 @@ function handlePermissionUpdateRequest(req: Request, res: Response, requireSuper
   }
 
   const actorAccount = dbState.accounts.find(
-    (a) => !isHiddenSuperAdminItem(a) && a.isActive && a.id === claims.sub
+    (a) => !isHiddenSuperAdminItem(a) && a.isActive && !isArchivedAccountServer(a) && a.id === claims.sub
   );
   if (!actorAccount) {
     return res.status(403).json({ success: false, message: 'Aktif kullanıcı hesabınız bulunamadı.' });
@@ -1581,11 +2220,11 @@ function handlePermissionUpdateRequest(req: Request, res: Response, requireSuper
     });
   }
 
-  // Boundary 2: Cannot modify or downgrade peer Full Admin (or peer sub-admin if actor is not Full Admin)
-  if (targetEffectivePerms.isFullAdmin) {
+  // Boundary 2: Admin accounts/roles & peer Full Admins can only be modified or downgraded by Hidden Super Admin
+  if (targetEffectivePerms.isFullAdmin || isAdminOrManagerTargetServer(targetAccount)) {
     return res.status(403).json({
       success: false,
-      message: 'Güvenlik Sınırı: Aynı seviyedeki Tam Yetkili bir yöneticinin yetkileri yalnızca Süper Admin tarafından değiştirilebilir.',
+      message: 'Güvenlik Sınırı: Yönetici rolündeki veya Tam Yetkili hesapların yetkileri yalnızca Gizli Süper Admin (Admin.Admin) tarafından düşürülebilir veya değiştirilebilir.',
     });
   }
   if (!actorPerms.isFullAdmin && targetEffectivePerms.canManagePermissions) {
@@ -1786,7 +2425,9 @@ app.post('/api/super-admin/clear-logs', (req: Request, res: Response) => {
 });
 
 app.post('/api/super-admin/company-name', (req: Request, res: Response) => {
-  if (!verifySuperAdminToken(extractSuperAdminToken(req))) {
+  const saToken = extractSuperAdminToken(req);
+  const tokenUsername = extractVerifiedSuperAdminUsername(saToken);
+  if (!tokenUsername) {
     return res.status(403).json({ success: false, message: 'Bu işlem yalnızca Süper Yönetici yetkisindedir.' });
   }
   const { companyName, branchName } = req.body || {};
@@ -1794,14 +2435,32 @@ app.post('/api/super-admin/company-name', (req: Request, res: Response) => {
     return res.status(400).json({ success: false, message: 'Şirket adı boş bırakılamaz.' });
   }
   const cleanName = companyName.trim().slice(0, 100);
+  const cleanBranch =
+    typeof branchName === 'string' && branchName.trim() ? branchName.trim().slice(0, 100) : undefined;
+  const nowIso = new Date().toISOString();
+  const nextSettings: SystemSettings = {
+    companyName: cleanName,
+    branchName: cleanBranch || dbState.companyWallQR?.branchName,
+    updatedAt: nowIso,
+    updatedBy: tokenUsername || 'Admin.Admin',
+  };
   dbState.companyName = cleanName;
+  dbState.systemSettings = nextSettings;
   dbState.companyWallQR = {
     ...dbState.companyWallQR,
     companyName: cleanName,
-    ...(typeof branchName === 'string' && branchName.trim() ? { branchName: branchName.trim().slice(0, 100) } : {}),
+    ...(cleanBranch ? { branchName: cleanBranch } : {}),
   };
+  savePersistentSystemSettings(nextSettings);
   broadcastUpdate('Super Admin updated company name', 'companyWallQR');
-  return res.json({ success: true, companyName: cleanName, data: dbState.companyWallQR, version: dbState.version, message: 'Şirket adı başarıyla güncellendi' });
+  return res.json({
+    success: true,
+    companyName: cleanName,
+    settings: nextSettings,
+    data: dbState.companyWallQR,
+    version: dbState.version,
+    message: 'Şirket adı merkezi veritabanına kalıcı olarak kaydedildi',
+  });
 });
 
 app.post('/api/super-admin/reset-device', (req: Request, res: Response) => {
@@ -1849,9 +2508,25 @@ app.post('/api/super-admin/reset-device', (req: Request, res: Response) => {
   return res.json({ success: true, message: 'Personelin kayıtlı cihazı sıfırlandı.', version: dbState.version });
 });
 
-// 15. Reset Database to Initial Demo State
+// 15. Reset Database to Initial Demo State (Preserves Central Super-Admin-Saved Company Name)
 app.post('/api/reset-to-demo', (_req: Request, res: Response) => {
+  const preservedCompanyName =
+    (typeof dbState.systemSettings?.companyName === 'string' && dbState.systemSettings.companyName.trim()) ||
+    (typeof dbState.companyName === 'string' && dbState.companyName.trim()) ||
+    loadPersistentSystemSettings()?.companyName ||
+    DEFAULT_COMPANY_NAME;
+  const preservedSettings = dbState.systemSettings || loadPersistentSystemSettings() || {
+    companyName: preservedCompanyName,
+    updatedAt: new Date().toISOString(),
+    updatedBy: 'Sistem',
+  };
+
   dbState = createInitialDatabase();
+  dbState.companyName = preservedCompanyName;
+  dbState.systemSettings = { ...preservedSettings, companyName: preservedCompanyName };
+  if (dbState.companyWallQR) {
+    dbState.companyWallQR.companyName = preservedCompanyName;
+  }
   saveDatabase(dbState);
   broadcastUpdate('Database reset to demo state', 'all');
   return res.json({ success: true, message: 'Veritabanı sıfırlandı.', data: getPublicDatabaseSnapshot(dbState) });

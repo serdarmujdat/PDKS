@@ -10,6 +10,7 @@ import type {
   SupervisorAssignment,
   NotificationSettings,
   DeviceEntryApproval,
+  SystemSettings,
 } from '../types/pdks';
 
 const getEnvVar = (viteKey: string, nodeKey: string, fallback: string): string => {
@@ -615,6 +616,7 @@ export interface PDKSDatabase {
   accounts: UserAccount[];
   deviceApprovals: DeviceEntryApproval[];
   settings: NotificationSettings;
+  systemSettings?: SystemSettings;
 }
 
 export function createInitialDatabase(): PDKSDatabase {
@@ -635,5 +637,11 @@ export function createInitialDatabase(): PDKSDatabase {
     accounts: JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
     deviceApprovals: [],
     settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
+    systemSettings: {
+      companyName: DEFAULT_COMPANY_NAME,
+      branchName: DEFAULT_COMPANY_WALL_QR.branchName,
+      updatedAt: new Date().toISOString(),
+      updatedBy: 'Sistem Varsayılanı',
+    },
   };
 }

@@ -48,6 +48,10 @@ export interface Employee {
   lastLoginDeviceName?: string;
   lastLoginAt?: string;
   isHiddenSuperAdmin?: boolean;
+  // Soft-Delete / Eski Personel Archiving Metadata
+  isArchived?: boolean;
+  archivedAt?: string;
+  archivedBy?: string;
 }
 
 export type ActionType = 'check_in' | 'check_out' | 'break_start' | 'break_end';
@@ -138,6 +142,18 @@ export interface UserAccount {
   lastLoginDeviceName?: string;
   isHiddenSuperAdmin?: boolean;
   customPermissions?: UserCustomPermissions;
+  // Soft-Delete / Eski Personel Archiving Metadata
+  isArchived?: boolean;
+  archivedAt?: string;
+  archivedBy?: string;
+  formerRole?: UserRole;
+}
+
+export interface SystemSettings {
+  companyName: string;
+  branchName?: string;
+  updatedAt?: string;
+  updatedBy?: string;
 }
 
 export interface DeviceIdentity {

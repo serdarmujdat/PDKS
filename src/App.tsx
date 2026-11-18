@@ -135,9 +135,12 @@ export default function App() {
 
   // Listen for real-time live synchronization events across devices / tabs (Debounced)
   useEffect(() => {
-    // Immediately pull the canonical corporate logo from cloud (Firestore) & server database
+    // Immediately pull the canonical corporate logo & persistent institution name from central DB
     pdksStorage.fetchCompanyLogoFromServer().then((srvLogo) => {
       if (srvLogo) setCompanyLogo(srvLogo);
+    });
+    pdksStorage.fetchCompanyNameFromServer().then((srvName) => {
+      if (srvName) setCompanyName(srvName);
     });
     const unsubscribeCloudLogo = pdksStorage.subscribeToCloudLogo();
 
@@ -145,6 +148,13 @@ export default function App() {
     void pdksStorage.syncUserThemesFromCloud();
 
     let debounceTimer: any = null;
+    const handleForceLogout = () => {
+      setIsLoggedIn(false);
+      setActiveTheme(DEFAULT_THEME_ID);
+      applyThemeToDocument(DEFAULT_THEME_ID);
+      setRefreshKey((prev) => prev + 1);
+    };
+
     const handleSync = () => {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
@@ -152,11 +162,12 @@ export default function App() {
         setCompanyName(pdksStorage.getCompanyName());
         if (pdksStorage.isLoggedIn()) {
           const refreshed = pdksStorage.refreshActiveUserFromAccounts();
-          const usr = refreshed || pdksStorage.getActiveUser();
-          if (refreshed) {
-            setCurrentUser(refreshed);
+          if (!refreshed) {
+            handleForceLogout();
+            return;
           }
-          const usrTheme = pdksStorage.getUserTheme(usr);
+          setCurrentUser(refreshed);
+          const usrTheme = pdksStorage.getUserTheme(refreshed);
           setActiveTheme(usrTheme);
           applyThemeToDocument(usrTheme);
         }
@@ -190,6 +201,7 @@ export default function App() {
     window.addEventListener('pdks-company-name-updated', handleCompanyNameUpdate);
     window.addEventListener('pdks-wall-qr-updated', handleCompanyNameUpdate);
     window.addEventListener('pdks-theme-updated', handleThemeUpdate);
+    window.addEventListener('pdks-force-logout', handleForceLogout);
 
     return () => {
       clearTimeout(debounceTimer);
@@ -199,6 +211,7 @@ export default function App() {
       window.removeEventListener('pdks-company-name-updated', handleCompanyNameUpdate);
       window.removeEventListener('pdks-wall-qr-updated', handleCompanyNameUpdate);
       window.removeEventListener('pdks-theme-updated', handleThemeUpdate);
+      window.removeEventListener('pdks-force-logout', handleForceLogout);
     };
   }, []);
 

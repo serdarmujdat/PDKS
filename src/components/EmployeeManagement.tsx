@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, QrCode, Printer, Trash2, Edit2, Download, Check, X, Shield, Lock, ShieldAlert, Key, Camera, CheckCircle2, AlertCircle, Clock, MapPin, FileSpreadsheet, Smartphone, RotateCcw } from 'lucide-react';
-import { Employee, Department, Shift, CurrentUser, UserAccount, PresenceStatus, DeviceEntryApproval } from '../types/pdks';
+import { Plus, Search, QrCode, Printer, Trash2, Edit2, Download, Check, X, Shield, Lock, ShieldAlert, Key, Camera, CheckCircle2, AlertCircle, Clock, MapPin, FileSpreadsheet, Smartphone, RotateCcw, Archive, History, Users, ArrowDownRight, ArrowUpRight, Coffee, FileText } from 'lucide-react';
+import { Employee, Department, Shift, CurrentUser, UserAccount, PresenceStatus, DeviceEntryApproval, AttendanceRecord, UserRole } from '../types/pdks';
 import { pdksStorage, slugifyNameToUsername, normalizeUsername, getTodayString } from '../services/storage';
 import { generateQRDataURL } from '../utils/qr';
 import { UserAccountsModal } from './UserAccountsModal';
@@ -28,6 +28,24 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
   const canApprove = pdksStorage.canApproveRequests(currentUser);
   const canManageDevices = pdksStorage.canManageDevices(currentUser);
   const canManageAccounts = pdksStorage.canCreateUserAccount(currentUser);
+  const canViewArchived = pdksStorage.canViewArchivedEmployees(currentUser);
+
+  // Active vs Archived (Eski Personel) Read-Only View
+  const [activeViewTab, setActiveViewTab] = useState<'active' | 'archived'>('active');
+  const [archivedEmployees, setArchivedEmployees] = useState<Array<Employee & { formerRole?: UserRole; formerUsername?: string }>>([]);
+  const [archivedRecords, setArchivedRecords] = useState<AttendanceRecord[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archivedAccessError, setArchivedAccessError] = useState<string | null>(null);
+  const [archivedSearch, setArchivedSearch] = useState('');
+  const [archivedDeptFilter, setArchivedDeptFilter] = useState<string>('all');
+  const [selectedArchivedEmp, setSelectedArchivedEmp] = useState<(Employee & { formerRole?: UserRole; formerUsername?: string }) | null>(null);
+  const [logTypeFilter, setLogTypeFilter] = useState<'all' | 'check_in' | 'check_out' | 'break_start' | 'break_end' | 'security_alert'>('all');
+  const [logDateFilter, setLogDateFilter] = useState<string>('');
+
+  // Soft-Delete Confirmation Modal state
+  const [deleteTargetEmp, setDeleteTargetEmp] = useState<Employee | null>(null);
+  const [isDeletingEmp, setIsDeletingEmp] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Modals state
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -69,6 +87,34 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
   const [accountUsername, setAccountUsername] = useState('');
   const [accountPassword, setAccountPassword] = useState('123456');
 
+  const loadArchivedData = async () => {
+    const activeUsr = propUser || pdksStorage.getActiveUser();
+    if (!pdksStorage.canViewArchivedEmployees(activeUsr)) {
+      setArchivedEmployees([]);
+      setArchivedRecords([]);
+      setActiveViewTab('active');
+      return;
+    }
+    setArchivedLoading(true);
+    setArchivedAccessError(null);
+    try {
+      const res = await pdksStorage.getArchivedEmployeesWithLogsAsync();
+      if (!res.allowed) {
+        setArchivedAccessError(res.message || 'Eski personel listesine erişim izniniz bulunmamaktadır.');
+        setArchivedEmployees([]);
+        setArchivedRecords([]);
+      } else {
+        setArchivedEmployees(res.employees);
+        setArchivedRecords(res.records);
+        setSelectedArchivedEmp((prev) =>
+          prev ? res.employees.find((e) => e.id === prev.id) || res.employees[0] || null : res.employees[0] || null
+        );
+      }
+    } finally {
+      setArchivedLoading(false);
+    }
+  };
+
   const loadData = () => {
     setCurrentUser(propUser || pdksStorage.getActiveUser());
     setEmployees(pdksStorage.getEmployees());
@@ -83,8 +129,10 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
 
   useEffect(() => {
     loadData();
+    void loadArchivedData();
     const handleSync = () => {
       loadData();
+      void loadArchivedData();
       setCompanyName(pdksStorage.getCompanyName());
     };
     const handleNameSync = (e?: any) => {
@@ -297,11 +345,38 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
     loadData();
   };
 
-  // Delete
-  const handleDeleteEmployee = (id: string, name: string) => {
-    if (window.confirm(`${name} isimli personeli silmek istediğinize emin misiniz?`)) {
-      pdksStorage.deleteEmployee(id);
-      loadData();
+  // Soft-Delete / Archive Employee Request
+  const handleRequestDeleteEmployee = (emp: Employee) => {
+    setActionError(null);
+    const empAcc = accounts.find((a) => a.employeeId === emp.id);
+    const check = pdksStorage.canDeleteTargetEmployee(currentUser, emp, empAcc);
+    if (!check.allowed) {
+      setActionError(check.reason || 'Bu personeli silme yetkiniz bulunmamaktadır.');
+      setTimeout(() => setActionError(null), 5000);
+      return;
+    }
+    setDeleteTargetEmp(emp);
+  };
+
+  const handleConfirmArchiveEmployee = async () => {
+    if (!deleteTargetEmp) return;
+    setIsDeletingEmp(true);
+    setActionError(null);
+    try {
+      const res = await pdksStorage.archiveEmployeeAsync(deleteTargetEmp.id);
+      if (res.success) {
+        setPhotoNotice(res.message);
+        setTimeout(() => setPhotoNotice(null), 5000);
+        setDeleteTargetEmp(null);
+        loadData();
+        await loadArchivedData();
+      } else {
+        setActionError(res.message);
+        setDeleteTargetEmp(null);
+        setTimeout(() => setActionError(null), 5000);
+      }
+    } finally {
+      setIsDeletingEmp(false);
     }
   };
 
@@ -472,12 +547,474 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
             <CheckCircle2 className="w-4 h-4 text-white shrink-0" />
             <span>{photoNotice}</span>
           </div>
-          <button onClick={() => setPhotoNotice(null)} className="text-white hover:text-emerald-200">
+          <button onClick={() => setPhotoNotice(null)} className="text-white hover:text-emerald-200 cursor-pointer">
             ✕
           </button>
         </div>
       )}
 
+      {actionError && (
+        <div className="bg-rose-600 text-white px-4 py-3 rounded-xl text-xs font-semibold flex items-center justify-between shadow-lg animate-fade-in border border-rose-500">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-white shrink-0" />
+            <span>{actionError}</span>
+          </div>
+          <button onClick={() => setActionError(null)} className="text-white hover:text-rose-200 cursor-pointer">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Active vs Read-Only Eski Personel View Switcher (Strictly Authorized Managers & Super Admin) */}
+      {canViewArchived && (
+        <div className="flex flex-wrap items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 shadow-xs w-fit">
+          <button
+            type="button"
+            onClick={() => setActiveViewTab('active')}
+            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+              activeViewTab === 'active'
+                ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            <span>Aktif Personel Listesi</span>
+            <span
+              className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
+                activeViewTab === 'active'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              {employees.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveViewTab('archived');
+              void loadArchivedData();
+            }}
+            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+              activeViewTab === 'archived'
+                ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            <Archive className="w-3.5 h-3.5" />
+            <span>Eski Personel Listesi</span>
+            <span
+              className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
+                activeViewTab === 'archived'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300'
+              }`}
+            >
+              {archivedEmployees.length}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {activeViewTab === 'archived' && canViewArchived ? (
+        (() => {
+          const filteredArchived = archivedEmployees.filter((emp) => {
+            const q = archivedSearch.toLowerCase().trim();
+            const matchesSearch =
+              !q ||
+              emp.fullName.toLowerCase().includes(q) ||
+              emp.id.toLowerCase().includes(q) ||
+              (emp.tcNo || '').includes(q) ||
+              (emp.title || '').toLowerCase().includes(q) ||
+              (emp.formerUsername || '').toLowerCase().includes(q);
+            const matchesDept = archivedDeptFilter === 'all' || emp.department === archivedDeptFilter;
+            return matchesSearch && matchesDept;
+          });
+
+          const selectedEmpLogs = selectedArchivedEmp
+            ? archivedRecords.filter((rec) => {
+                if (rec.employeeId !== selectedArchivedEmp.id) return false;
+                if (logTypeFilter !== 'all' && rec.type !== logTypeFilter) return false;
+                if (logDateFilter && rec.date !== logDateFilter) return false;
+                return true;
+              })
+            : [];
+
+          const totalForSelected = selectedArchivedEmp
+            ? archivedRecords.filter((r) => r.employeeId === selectedArchivedEmp.id)
+            : [];
+          const checkInCount = totalForSelected.filter((r) => r.type === 'check_in').length;
+          const checkOutCount = totalForSelected.filter((r) => r.type === 'check_out').length;
+          const breakCount = totalForSelected.filter(
+            (r) => r.type === 'break_start' || r.type === 'break_end'
+          ).length;
+
+          const formatRoleLabel = (role?: UserRole) => {
+            if (role === 'ik_yoneticisi') return 'İK Yöneticisi';
+            if (role === 'birim_amiri' || role === 'yonetici') return 'Birim Amiri';
+            if (role === 'guvenlik') return 'Güvenlik';
+            return 'Personel';
+          };
+
+          const formatArchivedAt = (iso?: string) => {
+            if (!iso) return '-';
+            try {
+              return new Date(iso).toLocaleString('tr-TR', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+            } catch {
+              return iso;
+            }
+          };
+
+          return (
+            <div className="space-y-4">
+              {/* Read-Only Security Notice Banner */}
+              <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-700/60 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
+                    <Lock className="w-4 h-4" />
+                  </div>
+                  <div className="text-xs">
+                    <div className="font-bold text-amber-950 dark:text-amber-200">
+                      Salt Okunur Eski Personel Arşivi & Geçmiş PDKS Logları
+                    </div>
+                    <p className="text-[11px] text-amber-800 dark:text-amber-300/90 mt-0.5">
+                      İşten ayrılan veya silinen personellerin kimlik bilgileri ve geçmiş giriş-çıkış kayıtları denetim amacıyla korunur. Bu listedeki kişiler sisteme giriş yapamaz, vardiya/yetki ekranlarında yer almaz ve bu ekrandan düzenlenemez.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadArchivedData()}
+                  disabled={archivedLoading}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-amber-300 dark:border-amber-700/60 text-amber-900 dark:text-amber-200 text-xs font-semibold hover:bg-amber-100/60 dark:hover:bg-slate-700 cursor-pointer shrink-0 disabled:opacity-50"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${archivedLoading ? 'animate-spin' : ''}`} />
+                  <span>Arşivi Yenile</span>
+                </button>
+              </div>
+
+              {archivedAccessError && (
+                <div className="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-700/60 text-rose-800 dark:text-rose-200 rounded-xl p-4 text-xs flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 shrink-0" />
+                  <span>{archivedAccessError}</span>
+                </div>
+              )}
+
+              {/* Search & Filter */}
+              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-3.5 shadow-xs flex flex-col sm:flex-row gap-3 items-center justify-between">
+                <div className="relative w-full sm:w-80">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Eski personel adı, sicil no, TC veya kullanıcı adı ara..."
+                    value={archivedSearch}
+                    onChange={(e) => setArchivedSearch(e.target.value)}
+                    className="w-full pl-9 pr-4 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/60 dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <select
+                    value={archivedDeptFilter}
+                    onChange={(e) => setArchivedDeptFilter(e.target.value)}
+                    className="w-full sm:w-52 px-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="all">Tüm Birimler ({archivedEmployees.length})</option>
+                    {[
+                      'Yazılım & Ar-Ge',
+                      'İnsan Kaynakları',
+                      'Muhasebe & Finans',
+                      'Pazarlama & Satış',
+                      'Üretim & Operasyon',
+                      'Lojistik & Depo',
+                    ].map((dept) => (
+                      <option key={dept} value={dept}>
+                        {dept}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Split View: Archived Employees List + Selected Employee Historical PDKS Logs */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                {/* Left Column: Former Employees Read-Only List */}
+                <div className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xs overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/70 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Archive className="w-4 h-4 text-slate-500 dark:text-slate-300" />
+                      <h2 className="text-xs font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider">
+                        Eski Personel Kayıtları ({filteredArchived.length})
+                      </h2>
+                    </div>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-200/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                      Salt Okunur
+                    </span>
+                  </div>
+
+                  {archivedLoading && filteredArchived.length === 0 ? (
+                    <div className="py-12 text-center text-xs text-slate-400">
+                      Arşiv kayıtları yükleniyor...
+                    </div>
+                  ) : filteredArchived.length === 0 ? (
+                    <div className="py-12 px-4 text-center space-y-2">
+                      <Archive className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto" />
+                      <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                        {archivedEmployees.length === 0
+                          ? 'Henüz arşivlenmiş (Eski Personel) kaydı bulunmamaktadır.'
+                          : 'Arama kriterine uygun eski personel bulunamadı.'}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[600px] overflow-y-auto">
+                      {filteredArchived.map((emp) => {
+                        const logCount = archivedRecords.filter((r) => r.employeeId === emp.id).length;
+                        const isSelected = selectedArchivedEmp?.id === emp.id;
+
+                        return (
+                          <button
+                            key={emp.id}
+                            type="button"
+                            onClick={() => setSelectedArchivedEmp(emp)}
+                            className={`w-full text-left p-3.5 transition-colors cursor-pointer flex items-start justify-between gap-3 ${
+                              isSelected
+                                ? 'bg-indigo-50/90 dark:bg-indigo-950/60 border-l-4 border-indigo-600 dark:border-indigo-400'
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-800/50 border-l-4 border-transparent'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2.5 min-w-0">
+                              <img
+                                src={emp.avatar}
+                                alt={emp.fullName}
+                                className="w-10 h-10 rounded-full object-cover border border-slate-200 dark:border-slate-700 grayscale opacity-80 shrink-0"
+                                referrerPolicy="no-referrer"
+                              />
+                              <div className="min-w-0 space-y-0.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-bold text-xs text-slate-900 dark:text-slate-100 truncate">
+                                    {emp.fullName}
+                                  </span>
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30">
+                                    Eski Personel
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                                  {emp.title} · {emp.department}
+                                </div>
+                                <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 flex flex-wrap gap-x-2">
+                                  <span>{emp.id}</span>
+                                  {emp.formerUsername && <span>@{emp.formerUsername}</span>}
+                                  <span>({formatRoleLabel(emp.formerRole)})</span>
+                                </div>
+                                <div className="text-[10px] text-slate-400 dark:text-slate-500">
+                                  Arşiv Tarihi: {formatArchivedAt(emp.archivedAt)}
+                                  {emp.archivedBy ? ` · ${emp.archivedBy}` : ''}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="shrink-0 flex flex-col items-end gap-1">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-mono">
+                                <History className="w-3 h-3 text-indigo-500" />
+                                {logCount} Kayıt
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Right Column: Historical PDKS Logs Viewer (Strictly Read-Only) */}
+                <div className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xs overflow-hidden flex flex-col">
+                  {selectedArchivedEmp ? (
+                    <>
+                      <div className="p-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/60 space-y-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <img
+                              src={selectedArchivedEmp.avatar}
+                              alt={selectedArchivedEmp.fullName}
+                              className="w-11 h-11 rounded-full object-cover border border-slate-300 dark:border-slate-600 grayscale"
+                              referrerPolicy="no-referrer"
+                            />
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                                  {selectedArchivedEmp.fullName}
+                                </h3>
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30">
+                                  Pasif / Eski Personel
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                                {selectedArchivedEmp.id} · TC: {selectedArchivedEmp.tcNo} · {selectedArchivedEmp.department}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                            <FileText className="w-3.5 h-3.5 text-indigo-500" />
+                            <span>Geçmiş PDKS Logları (Salt Okunur)</span>
+                          </div>
+                        </div>
+
+                        {/* Quick Summary Stats */}
+                        <div className="grid grid-cols-4 gap-2">
+                          <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400">Toplam Log</div>
+                            <div className="text-sm font-bold text-slate-900 dark:text-white font-mono">{totalForSelected.length}</div>
+                          </div>
+                          <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400">Giriş</div>
+                            <div className="text-sm font-bold text-emerald-600 dark:text-emerald-400 font-mono">{checkInCount}</div>
+                          </div>
+                          <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400">Çıkış</div>
+                            <div className="text-sm font-bold text-rose-600 dark:text-rose-400 font-mono">{checkOutCount}</div>
+                          </div>
+                          <div className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400">Mola</div>
+                            <div className="text-sm font-bold text-amber-600 dark:text-amber-400 font-mono">{breakCount}</div>
+                          </div>
+                        </div>
+
+                        {/* Log Filters */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <select
+                            value={logTypeFilter}
+                            onChange={(e) => setLogTypeFilter(e.target.value as any)}
+                            className="px-2.5 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
+                          >
+                            <option value="all">Tüm Hareketler</option>
+                            <option value="check_in">Sadece Giriş</option>
+                            <option value="check_out">Sadece Çıkış</option>
+                            <option value="break_start">Mola Başlangıç</option>
+                            <option value="break_end">Moladan Dönüş</option>
+                            <option value="security_alert">Güvenlik Uyarıları</option>
+                          </select>
+                          <input
+                            type="date"
+                            value={logDateFilter}
+                            onChange={(e) => setLogDateFilter(e.target.value)}
+                            className="px-2.5 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
+                          />
+                          {(logTypeFilter !== 'all' || logDateFilter) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setLogTypeFilter('all');
+                                setLogDateFilter('');
+                              }}
+                              className="px-2.5 py-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                            >
+                              Filtreyi Temizle
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Read-Only Logs Table */}
+                      <div className="overflow-x-auto max-h-[450px] overflow-y-auto">
+                        {selectedEmpLogs.length === 0 ? (
+                          <div className="py-14 text-center text-xs text-slate-400">
+                            Seçili kriterlere ait geçmiş PDKS hareketi bulunamadı.
+                          </div>
+                        ) : (
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider">
+                                <th className="py-2.5 px-3">Tarih & Saat</th>
+                                <th className="py-2.5 px-3">İşlem Türü</th>
+                                <th className="py-2.5 px-3">Durum</th>
+                                <th className="py-2.5 px-3">Terminal / Cihaz / Not</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                              {selectedEmpLogs.map((rec) => (
+                                <tr key={rec.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40">
+                                  <td className="py-2.5 px-3 font-mono whitespace-nowrap">
+                                    <div className="font-semibold text-slate-800 dark:text-slate-100">{rec.date}</div>
+                                    <div className="text-[11px] text-slate-500 dark:text-slate-400">{rec.timeStr}</div>
+                                  </td>
+                                  <td className="py-2.5 px-3 whitespace-nowrap">
+                                    {rec.type === 'check_in' && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30">
+                                        <ArrowDownRight className="w-3 h-3" />
+                                        Giriş
+                                      </span>
+                                    )}
+                                    {rec.type === 'check_out' && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30">
+                                        <ArrowUpRight className="w-3 h-3" />
+                                        Çıkış
+                                      </span>
+                                    )}
+                                    {(rec.type === 'break_start' || rec.type === 'break_end') && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30">
+                                        <Coffee className="w-3 h-3" />
+                                        {rec.type === 'break_start' ? 'Mola Başlangıcı' : 'Moladan Dönüş'}
+                                      </span>
+                                    )}
+                                    {rec.type === 'security_alert' && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-500/40">
+                                        <ShieldAlert className="w-3 h-3" />
+                                        Güvenlik Uyarısı
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-2.5 px-3 whitespace-nowrap">
+                                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                                      {rec.status === 'on_time'
+                                        ? 'Zamanında'
+                                        : rec.status === 'late'
+                                        ? `Geç (${rec.lateMinutes} dk)`
+                                        : rec.status === 'early_leave'
+                                        ? 'Erken Çıkış'
+                                        : rec.status === 'overtime'
+                                        ? 'Fazla Mesai'
+                                        : 'Normal'}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-[11px] text-slate-600 dark:text-slate-300">
+                                    <div className="font-medium text-slate-800 dark:text-slate-200">{rec.terminal || '-'}</div>
+                                    {(rec.macAddress || rec.deviceId) && (
+                                      <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500">
+                                        {rec.macAddress || ''} {rec.deviceId ? `· ${rec.deviceId}` : ''}
+                                      </div>
+                                    )}
+                                    {rec.note && (
+                                      <div className="text-[10px] text-slate-500 dark:text-slate-400 italic mt-0.5">
+                                        {rec.note}
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="py-16 px-4 text-center text-xs text-slate-400">
+                      Geçmiş PDKS hareketlerini görüntülemek için sol listeden bir eski personel seçiniz.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()
+      ) : (
+      <>
       {/* PENDING PHOTO APPROVALS BANNER (İK Yönetici Onayı) */}
       {canEdit && pendingPhotoEmployees.length > 0 && (
         <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 shadow-sm animate-fade-in space-y-3">
@@ -845,19 +1382,28 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                       </button>
                     )}
 
-                    {canDelete ? (
-                      <button
-                        onClick={() => handleDeleteEmployee(emp.id, emp.fullName)}
-                        className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg border border-rose-200 cursor-pointer"
-                        title="Personeli Sil"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    ) : (
-                      <span className="p-1.5 text-slate-300">
-                        <Lock className="w-3.5 h-3.5" />
-                      </span>
-                    )}
+                    {(() => {
+                      const delCheck = pdksStorage.canDeleteTargetEmployee(currentUser, emp, empAcc);
+                      if (delCheck.allowed) {
+                        return (
+                          <button
+                            onClick={() => handleRequestDeleteEmployee(emp)}
+                            className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg border border-rose-200 cursor-pointer"
+                            title="Personeli Sil / Arşivle"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        );
+                      }
+                      return (
+                        <span
+                          className="p-1.5 text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                          title={delCheck.reason || 'Silme yetkisi kısıtlı'}
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
               );
@@ -1161,23 +1707,30 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                             </button>
                           )}
 
-                          {/* Delete Button (Strictly Only İK Yöneticisi) */}
-                          {canDelete ? (
-                            <button
-                              onClick={() => handleDeleteEmployee(emp.id, emp.fullName)}
-                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
-                              title="Sil (İK Yöneticisi)"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          ) : (
-                            <span
-                              className="p-1.5 text-slate-300 cursor-not-allowed"
-                              title="Silme yetkisi yalnızca İK Yöneticisine aittir"
-                            >
-                              <Lock className="w-3.5 h-3.5" />
-                            </span>
-                          )}
+                          {/* Delete Button (Admin/Manager Targets Protected for Super Admin Only) */}
+                          {(() => {
+                            const rowAcc = accounts.find((a) => a.employeeId === emp.id);
+                            const delCheck = pdksStorage.canDeleteTargetEmployee(currentUser, emp, rowAcc);
+                            if (delCheck.allowed) {
+                              return (
+                                <button
+                                  onClick={() => handleRequestDeleteEmployee(emp)}
+                                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                                  title="Personeli Sil / Arşivle"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              );
+                            }
+                            return (
+                              <span
+                                className="p-1.5 text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                                title={delCheck.reason || 'Bu kullanıcıyı silme yetkiniz bulunmamaktadır'}
+                              >
+                                <Lock className="w-3.5 h-3.5" />
+                              </span>
+                            );
+                          })()}
                         </div>
                       </td>
                     </tr>
@@ -1188,6 +1741,8 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
           </table>
         </div>
       </div>
+      </>
+      )}
 
       {/* MODAL: PDKS Kimlik Kartı ve QR Kod Önizleme & Yazdırma */}
       {badgeEmployee && (
@@ -1913,6 +2468,68 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Personel Soft-Delete / Arşivleme Onayı */}
+      {deleteTargetEmp && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4">
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-500/20 border border-rose-200 dark:border-rose-500/40 text-rose-600 dark:text-rose-300 flex items-center justify-center shrink-0">
+                  <Archive className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    Personeli Sil ve Eski Personel Olarak Arşivle
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {deleteTargetEmp.fullName} ({deleteTargetEmp.id}) · {deleteTargetEmp.department}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteTargetEmp(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-700/60 text-xs text-amber-900 dark:text-amber-200 space-y-1.5">
+              <div className="font-bold flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                <span>Bu İşlemin Sonuçları:</span>
+              </div>
+              <ul className="list-disc pl-4 space-y-1 text-[11px]">
+                <li>Personel aktif personel listesinden, vardiya planlarından, yetki atamalarından ve giriş-çıkış ekranlarından kaldırılır.</li>
+                <li>Aktif yetkileri sıfırlanır ve sisteme tekrar giriş yapamaz.</li>
+                <li>Temel kimlik bilgileri ve tüm geçmiş PDKS (giriş-çıkış/mola) kayıtları silinmez; salt okunur <strong>Eski Personel Listesi</strong> arşivinde korunur.</li>
+              </ul>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingEmp}
+                onClick={() => setDeleteTargetEmp(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
+              >
+                İptal
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingEmp}
+                onClick={() => void handleConfirmArchiveEmployee()}
+                className="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isDeletingEmp ? 'Arşivleniyor...' : 'Sil ve Arşivle'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

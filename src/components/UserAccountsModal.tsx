@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Key, User, Plus, Search, Check, Copy, X, Shield, ShieldAlert, CheckCircle2, AlertCircle, Trash2, Power, Eye, EyeOff, Smartphone, RotateCcw, Edit3 } from 'lucide-react';
+import { Key, User, Plus, Search, Check, Copy, X, Shield, ShieldAlert, CheckCircle2, AlertCircle, Trash2, Power, Eye, EyeOff, Smartphone, RotateCcw, Edit3, Lock } from 'lucide-react';
 import { UserAccount, UserRole, CurrentUser } from '../types/pdks';
 import { pdksStorage, slugifyNameToUsername, normalizeUsername } from '../services/storage';
 
@@ -40,6 +40,8 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
   const [editingPasswordAccId, setEditingPasswordAccId] = useState<string | null>(null);
   const [newPasswordValue, setNewPasswordValue] = useState<string>('');
   const [revealedPasswordAccIds, setRevealedPasswordAccIds] = useState<Set<string>>(new Set());
+  const [confirmDeleteAccId, setConfirmDeleteAccId] = useState<string | null>(null);
+  const [isDeletingAcc, setIsDeletingAcc] = useState(false);
   const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
 
   React.useEffect(() => {
@@ -146,12 +148,30 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
     }
   };
 
-  const handleDelete = (acc: UserAccount) => {
-    if (window.confirm(`${acc.name} adına ait '@${acc.username}' hesabını silmek istediğinize emin misiniz?`)) {
-      pdksStorage.deleteUserAccount(acc.id);
-      onAccountsUpdated();
-      setFeedback({ type: 'success', message: 'Hesap silindi.' });
-      setTimeout(() => setFeedback(null), 3000);
+  const handleDelete = async (acc: UserAccount) => {
+    const check = pdksStorage.canDeleteTargetEmployee(currentUser, undefined, acc);
+    if (!check.allowed) {
+      setFeedback({
+        type: 'error',
+        message: check.reason || 'Bu yönetici hesabını silme yetkiniz bulunmamaktadır.',
+      });
+      setConfirmDeleteAccId(null);
+      setTimeout(() => setFeedback(null), 4000);
+      return;
+    }
+    setIsDeletingAcc(true);
+    try {
+      const res = await pdksStorage.archiveUserAccountAsync(acc.id);
+      if (res.success) {
+        onAccountsUpdated();
+        setFeedback({ type: 'success', message: res.message });
+      } else {
+        setFeedback({ type: 'error', message: res.message });
+      }
+    } finally {
+      setIsDeletingAcc(false);
+      setConfirmDeleteAccId(null);
+      setTimeout(() => setFeedback(null), 4000);
     }
   };
 
@@ -542,16 +562,16 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                           <span
                             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-semibold border ${
                               acc.role === 'ik_yoneticisi'
-                                ? 'bg-purple-50 text-purple-700 border-purple-200'
-                                : acc.role === 'yonetici'
-                                ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                ? 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/30'
+                                : acc.role === 'birim_amiri' || acc.role === 'yonetici'
+                                ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/30'
                                 : acc.role === 'personel'
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                : 'bg-amber-50 text-amber-700 border-amber-200'
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30'
+                                : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30'
                             }`}
                           >
                             {acc.role === 'ik_yoneticisi' && 'İK Yöneticisi'}
-                            {acc.role === 'yonetici' && 'Birim Amiri'}
+                            {(acc.role === 'birim_amiri' || acc.role === 'yonetici') && 'Birim Amiri'}
                             {acc.role === 'personel' && 'Personel (Kısıtlı)'}
                             {acc.role === 'guvenlik' && 'Güvenlik'}
                           </span>
@@ -578,24 +598,57 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                               )}
                             </button>
 
-                            {canManage && (
-                              <>
-                                <button
-                                  onClick={() => handleToggleStatus(acc.id)}
-                                  className="p-1 rounded text-slate-400 hover:text-amber-600 hover:bg-amber-50 border border-slate-200"
-                                  title={acc.isActive ? 'Askıya Al' : 'Aktifleştir'}
-                                >
-                                  <Power className="w-3.5 h-3.5" />
-                                </button>
-                                <button
-                                  onClick={() => handleDelete(acc)}
-                                  className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-slate-200"
-                                  title="Sil"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </>
-                            )}
+                            {canManage && (() => {
+                              const delCheck = pdksStorage.canDeleteTargetEmployee(currentUser, undefined, acc);
+                              return (
+                                <>
+                                  <button
+                                    onClick={() => handleToggleStatus(acc.id)}
+                                    className="p-1 rounded text-slate-400 hover:text-amber-600 hover:bg-amber-50 border border-slate-200 cursor-pointer"
+                                    title={acc.isActive ? 'Askıya Al' : 'Aktifleştir'}
+                                  >
+                                    <Power className="w-3.5 h-3.5" />
+                                  </button>
+                                  {delCheck.allowed ? (
+                                    confirmDeleteAccId === acc.id ? (
+                                      <div className="flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          disabled={isDeletingAcc}
+                                          onClick={() => void handleDelete(acc)}
+                                          className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-bold cursor-pointer disabled:opacity-50"
+                                        >
+                                          Onayla
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setConfirmDeleteAccId(null)}
+                                          className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-semibold cursor-pointer"
+                                        >
+                                          İptal
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteAccId(acc.id)}
+                                        className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-slate-200 cursor-pointer"
+                                        title="Hesabı Sil / Arşivle"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    )
+                                  ) : (
+                                    <span
+                                      className="p-1 rounded text-slate-300 border border-slate-200/70 cursor-not-allowed"
+                                      title={delCheck.reason}
+                                    >
+                                      <Lock className="w-3.5 h-3.5" />
+                                    </span>
+                                  )}
+                                </>
+                              );
+                            })()}
                           </div>
                         </div>
                       </div>
@@ -853,35 +906,68 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                                 )}
                               </button>
 
-                              {canManage && (
-                                <>
-                                  {(acc.registeredDeviceId || acc.registeredMacAddress) && (
+                              {canManage && (() => {
+                                const delCheck = pdksStorage.canDeleteTargetEmployee(currentUser, undefined, acc);
+                                return (
+                                  <>
+                                    {(acc.registeredDeviceId || acc.registeredMacAddress) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleResetAccountDevice(acc)}
+                                        className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 cursor-pointer"
+                                        title="Kayıtlı Cihazı Sıfırla"
+                                      >
+                                        <RotateCcw className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
                                     <button
-                                      type="button"
-                                      onClick={() => handleResetAccountDevice(acc)}
-                                      className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 cursor-pointer"
-                                      title="Kayıtlı Cihazı Sıfırla"
+                                      onClick={() => handleToggleStatus(acc.id)}
+                                      className="p-1 rounded text-slate-400 hover:text-amber-600 hover:bg-amber-50 cursor-pointer"
+                                      title={acc.isActive ? 'Hesabı Askıya Al' : 'Hesabı Aktifleştir'}
                                     >
-                                      <RotateCcw className="w-3.5 h-3.5" />
+                                      <Power className="w-3.5 h-3.5" />
                                     </button>
-                                  )}
-                                  <button
-                                    onClick={() => handleToggleStatus(acc.id)}
-                                    className="p-1 rounded text-slate-400 hover:text-amber-600 hover:bg-amber-50"
-                                    title={acc.isActive ? 'Hesabı Askıya Al' : 'Hesabı Aktifleştir'}
-                                  >
-                                    <Power className="w-3.5 h-3.5" />
-                                  </button>
 
-                                  <button
-                                    onClick={() => handleDelete(acc)}
-                                    className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                                    title="Hesabı Sil"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </>
-                              )}
+                                    {delCheck.allowed ? (
+                                      confirmDeleteAccId === acc.id ? (
+                                        <div className="flex items-center gap-1">
+                                          <button
+                                            type="button"
+                                            disabled={isDeletingAcc}
+                                            onClick={() => void handleDelete(acc)}
+                                            className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-bold cursor-pointer disabled:opacity-50"
+                                          >
+                                            Onayla
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setConfirmDeleteAccId(null)}
+                                            className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-semibold cursor-pointer"
+                                          >
+                                            İptal
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => setConfirmDeleteAccId(acc.id)}
+                                          className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                                          title="Hesabı Sil / Arşivle"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      )
+                                    ) : (
+                                      <span
+                                        className="p-1 rounded text-slate-300 cursor-not-allowed"
+                                        title={delCheck.reason}
+                                      >
+                                        <Lock className="w-3.5 h-3.5" />
+                                      </span>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </div>
                           </td>
                         </tr>

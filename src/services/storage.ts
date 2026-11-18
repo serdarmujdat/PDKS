@@ -129,6 +129,80 @@ function filterVisibleList<T>(list: T[]): T[] {
   return Array.isArray(list) ? list.filter((item) => !isHiddenRecord(item)) : [];
 }
 
+export function isArchivedEmployee(emp?: Partial<Employee> | null): boolean {
+  if (!emp) return false;
+  return emp.isArchived === true || emp.status === 'inactive';
+}
+
+export function isArchivedAccount(acc?: Partial<UserAccount> | null): boolean {
+  if (!acc) return false;
+  return acc.isArchived === true || (!acc.isActive && Boolean(acc.archivedAt));
+}
+
+function mergeEmployeesPreservingArchived(
+  allCurrent: Employee[],
+  nextActive: Employee[],
+  extraArchived: Employee[] = []
+): Employee[] {
+  const archivedMap = new Map<string, Employee>();
+  for (const e of filterVisibleList(allCurrent)) {
+    if (e && e.id && isArchivedEmployee(e)) {
+      archivedMap.set(e.id, e);
+    }
+  }
+  for (const e of filterVisibleList(extraArchived)) {
+    if (e && e.id) {
+      archivedMap.set(e.id, { ...e, status: 'inactive', isArchived: true });
+    }
+  }
+  const combined: Employee[] = [];
+  const seen = new Set<string>();
+  for (const e of filterVisibleList(nextActive)) {
+    if (!e || !e.id || seen.has(e.id) || archivedMap.has(e.id)) continue;
+    seen.add(e.id);
+    combined.push(e);
+  }
+  for (const archived of archivedMap.values()) {
+    if (!seen.has(archived.id)) {
+      seen.add(archived.id);
+      combined.push(archived);
+    }
+  }
+  return combined;
+}
+
+function mergeAccountsPreservingArchived(
+  allCurrent: UserAccount[],
+  nextActive: UserAccount[],
+  extraArchived: UserAccount[] = []
+): UserAccount[] {
+  const archivedMap = new Map<string, UserAccount>();
+  for (const a of filterVisibleList(allCurrent)) {
+    if (a && a.id && isArchivedAccount(a)) {
+      archivedMap.set(a.id, a);
+    }
+  }
+  for (const a of filterVisibleList(extraArchived)) {
+    if (a && a.id) {
+      archivedMap.set(a.id, { ...a, isActive: false, isArchived: true });
+    }
+  }
+  const combined: UserAccount[] = [];
+  const seen = new Set<string>();
+  for (const a of filterVisibleList(nextActive)) {
+    if (!a || !a.id || seen.has(a.id) || archivedMap.has(a.id)) continue;
+    seen.add(a.id);
+    combined.push(a);
+  }
+  for (const archived of archivedMap.values()) {
+    if (!seen.has(archived.id)) {
+      seen.add(archived.id);
+      combined.push(archived);
+    }
+  }
+  return combined;
+}
+
 function getSuperAdminToken(): string {
   if (typeof sessionStorage === 'undefined') return '';
   try {
@@ -590,7 +664,8 @@ export async function syncWithServer(force = false): Promise<boolean> {
             localStorage.setItem('pdks_db_version_v1', String(localDbVersion));
           } catch {}
 
-          // Safe non-destructive merge for employees
+          // Safe non-destructive merge for employees (preserving archived state)
+          let mergedEmpsForActiveCheck: Employee[] = [];
           if (Array.isArray(d.employees)) {
             try {
               const localRaw = localStorage.getItem(STORAGE_KEYS.EMPLOYEES);
@@ -604,7 +679,23 @@ export async function syncWithServer(force = false): Promise<boolean> {
                 if (emp && emp.id) {
                   const localMatch = localEmpMap.get(emp.id);
                   const mergedEmp: Employee = { ...emp };
-                  if (localMatch) {
+                  const serverOrLocalArchived =
+                    isArchivedEmployee(mergedEmp) || (localMatch ? isArchivedEmployee(localMatch) : false);
+                  if (serverOrLocalArchived) {
+                    mergedEmp.status = 'inactive';
+                    mergedEmp.isArchived = true;
+                    mergedEmp.archivedAt = mergedEmp.archivedAt || localMatch?.archivedAt;
+                    mergedEmp.archivedBy = mergedEmp.archivedBy || localMatch?.archivedBy;
+                    delete mergedEmp.registeredDeviceId;
+                    delete mergedEmp.registeredMacAddress;
+                    delete mergedEmp.registeredDeviceFingerprint;
+                    delete mergedEmp.registeredDeviceName;
+                    delete mergedEmp.registeredDeviceAt;
+                    delete mergedEmp.lastLoginDeviceId;
+                    delete mergedEmp.lastLoginMacAddress;
+                    delete mergedEmp.lastLoginDeviceName;
+                    delete mergedEmp.lastLoginAt;
+                  } else if (localMatch) {
                     if (!mergedEmp.registeredDeviceId && localMatch.registeredDeviceId) {
                       mergedEmp.registeredDeviceId = localMatch.registeredDeviceId;
                       mergedEmp.registeredMacAddress = localMatch.registeredMacAddress;
@@ -630,6 +721,7 @@ export async function syncWithServer(force = false): Promise<boolean> {
                 }
               }
               const mergedEmps = filterVisibleList(Array.from(empMap.values()));
+              mergedEmpsForActiveCheck = mergedEmps;
               localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(mergedEmps));
               if (hasMissing) pushToServer('employees', mergedEmps);
             } catch {}
@@ -664,12 +756,16 @@ export async function syncWithServer(force = false): Promise<boolean> {
             try { localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(filterVisibleList(d.notifications))); } catch {}
           }
 
-          // Wall QR & Company Name update with immediate event dispatch
-          if (d.companyWallQR || typeof d.companyName === 'string') {
+          // Wall QR & Authoritative System Company Name update with immediate event dispatch
+          const serverSystemCompanyName =
+            (typeof d.systemSettings?.companyName === 'string' && d.systemSettings.companyName.trim()) ||
+            (typeof d.companyName === 'string' && d.companyName.trim()) ||
+            '';
+          if (d.companyWallQR || serverSystemCompanyName) {
             try {
               const currentLocal = pdksStorage.getInternalCompanyWallQR();
               const resolvedName =
-                (typeof d.companyName === 'string' && d.companyName.trim()) ||
+                serverSystemCompanyName ||
                 (typeof d.companyWallQR?.companyName === 'string' && d.companyWallQR.companyName.trim()) ||
                 currentLocal.companyName ||
                 DEFAULT_COMPANY_NAME;
@@ -744,7 +840,7 @@ export async function syncWithServer(force = false): Promise<boolean> {
             } catch {}
           }
 
-          // Safe non-destructive merge for accounts (never exposes or merges hidden Super Admin records)
+          // Safe non-destructive merge for accounts (never exposes hidden Super Admin records, preserves archived state)
           if (Array.isArray(d.accounts)) {
             try {
               const localRaw = localStorage.getItem(STORAGE_KEYS.ACCOUNTS);
@@ -758,7 +854,26 @@ export async function syncWithServer(force = false): Promise<boolean> {
                 if (acc && acc.id) {
                   const localMatch = localMap.get(acc.id);
                   const mergedAcc: UserAccount = { ...acc };
-                  if (localMatch) {
+                  const serverOrLocalArchived =
+                    isArchivedAccount(mergedAcc) || (localMatch ? isArchivedAccount(localMatch) : false);
+                  if (serverOrLocalArchived) {
+                    mergedAcc.isActive = false;
+                    mergedAcc.isArchived = true;
+                    mergedAcc.archivedAt = mergedAcc.archivedAt || localMatch?.archivedAt;
+                    mergedAcc.archivedBy = mergedAcc.archivedBy || localMatch?.archivedBy;
+                    mergedAcc.isShiftSupervisor = false;
+                    mergedAcc.assignedEmployeeIds = [];
+                    delete mergedAcc.customPermissions;
+                    delete mergedAcc.registeredDeviceId;
+                    delete mergedAcc.registeredMacAddress;
+                    delete mergedAcc.registeredDeviceFingerprint;
+                    delete mergedAcc.registeredDeviceName;
+                    delete mergedAcc.registeredDeviceAt;
+                    delete mergedAcc.lastLoginDeviceId;
+                    delete mergedAcc.lastLoginMacAddress;
+                    delete mergedAcc.lastLoginDeviceFingerprint;
+                    delete mergedAcc.lastLoginDeviceName;
+                  } else if (localMatch) {
                     if (isValidThemeId(localMatch.themeId)) {
                       const localTime = localMatch.themeUpdatedAt ? Date.parse(localMatch.themeUpdatedAt) : 0;
                       const srvTime = acc.themeUpdatedAt ? Date.parse(acc.themeUpdatedAt) : 0;
@@ -795,7 +910,7 @@ export async function syncWithServer(force = false): Promise<boolean> {
               const mergedAccounts = filterVisibleList(Array.from(accountMap.values()));
               localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergedAccounts));
 
-              // Keep active user's theme, permissions & device state aligned if updated by Super Admin
+              // Keep active user's theme, permissions & device state aligned; force logout if archived/deactivated
               if (localStorage.getItem(STORAGE_KEYS.IS_LOGGED_OUT) !== 'true') {
                 const activeRaw = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER);
                 if (activeRaw) {
@@ -807,7 +922,24 @@ export async function syncWithServer(force = false): Promise<boolean> {
                           a.id === activeParsed.id ||
                           normalizeUsername(a.username) === normalizeUsername(activeParsed.username)
                       );
-                      if (matchedAcc) {
+                      const empListForCheck =
+                        mergedEmpsForActiveCheck.length > 0
+                          ? mergedEmpsForActiveCheck
+                          : pdksStorage.getAllEmployeesIncludingArchived();
+                      const linkedEmp = matchedAcc?.employeeId
+                        ? empListForCheck.find((e) => e.id === matchedAcc.employeeId)
+                        : activeParsed.employeeId
+                        ? empListForCheck.find((e) => e.id === activeParsed.employeeId)
+                        : undefined;
+                      if (
+                        !matchedAcc ||
+                        isArchivedAccount(matchedAcc) ||
+                        !matchedAcc.isActive ||
+                        (linkedEmp && isArchivedEmployee(linkedEmp))
+                      ) {
+                        pdksStorage.logout();
+                        window.dispatchEvent(new CustomEvent('pdks-force-logout'));
+                      } else {
                         let activeChanged = false;
                         if (
                           matchedAcc.username !== activeParsed.username ||
@@ -975,7 +1107,7 @@ if (typeof window !== 'undefined') {
 }
 
 export const pdksStorage = {
-  getEmployees(): Employee[] {
+  getAllEmployeesIncludingArchived(): Employee[] {
     const raw = localStorage.getItem(STORAGE_KEYS.EMPLOYEES);
     if (!raw) {
       localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(DEFAULT_EMPLOYEES));
@@ -989,20 +1121,29 @@ export const pdksStorage = {
     }
   },
 
+  getEmployees(): Employee[] {
+    return this.getAllEmployeesIncludingArchived().filter((e) => !isArchivedEmployee(e));
+  },
+
+  getArchivedEmployees(): Employee[] {
+    return this.getAllEmployeesIncludingArchived().filter((e) => isArchivedEmployee(e));
+  },
+
   saveEmployee(employee: Employee): Employee {
     if (isHiddenRecord(employee)) {
       return employee;
     }
-    const list = this.getEmployees();
-    const index = list.findIndex(e => e.id === employee.id);
+    const allCurrent = this.getAllEmployeesIncludingArchived();
+    const activeList = allCurrent.filter((e) => !isArchivedEmployee(e));
+    const index = activeList.findIndex(e => e.id === employee.id);
     if (index >= 0) {
-      list[index] = employee;
+      activeList[index] = employee;
     } else {
-      list.unshift(employee);
+      activeList.unshift(employee);
     }
-    const cleanList = filterVisibleList(list);
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(cleanList));
-    pushToServer('employees', cleanList);
+    const combined = mergeEmployeesPreservingArchived(allCurrent, activeList);
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
+    pushToServer('employees', combined);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return employee;
   },
@@ -1017,10 +1158,11 @@ export const pdksStorage = {
       actorName?: string;
     }
   ): { success: boolean; message: string; employee?: Employee; record?: AttendanceRecord } {
-    const list = this.getEmployees();
+    const allCurrent = this.getAllEmployeesIncludingArchived();
+    const list = allCurrent.filter((e) => !isArchivedEmployee(e));
     const idx = list.findIndex(e => e.id === employeeId);
     if (idx < 0) {
-      return { success: false, message: 'Personel bulunamadı.' };
+      return { success: false, message: 'Aktif personel bulunamadı.' };
     }
 
     const emp = { ...list[idx] };
@@ -1035,7 +1177,8 @@ export const pdksStorage = {
     emp.currentPresence = newPresence;
     emp.lastActionTime = normalizedTime;
     list[idx] = emp;
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
+    const combinedEmployees = mergeEmployeesPreservingArchived(allCurrent, list);
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combinedEmployees));
 
     let createdRecord: AttendanceRecord | undefined;
     const shouldRecord = options?.recordAttendance !== false;
@@ -1110,11 +1253,11 @@ export const pdksStorage = {
       localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
 
       pushBatchToServer({
-        employees: list,
+        employees: combinedEmployees,
         records,
       });
     } else {
-      pushToServer('employees', list);
+      pushToServer('employees', combinedEmployees);
     }
 
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
@@ -1135,22 +1278,26 @@ export const pdksStorage = {
   },
 
   saveEmployeesAndAccountsBatch(newEmployees: Employee[], newAccounts: UserAccount[]): void {
-    const empList = this.getEmployees();
+    const allCurrentEmps = this.getAllEmployeesIncludingArchived();
+    const empList = allCurrentEmps.filter((e) => !isArchivedEmployee(e));
     for (const emp of filterVisibleList(newEmployees)) {
+      if (isArchivedEmployee(emp)) continue;
       const idx = empList.findIndex(e => e.id === emp.id);
       if (idx >= 0) empList[idx] = emp;
       else empList.unshift(emp);
     }
-    const cleanEmps = filterVisibleList(empList);
+    const cleanEmps = mergeEmployeesPreservingArchived(allCurrentEmps, empList);
     localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(cleanEmps));
 
-    const accList = this.getUserAccounts();
+    const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+    const accList = allCurrentAccs.filter((a) => !isArchivedAccount(a));
     for (const acc of filterVisibleList(newAccounts)) {
+      if (isArchivedAccount(acc)) continue;
       const idx = accList.findIndex(a => a.id === acc.id || a.username.toLowerCase() === acc.username.toLowerCase());
       if (idx >= 0) accList[idx] = { ...accList[idx], ...acc };
       else accList.push(acc);
     }
-    const cleanAccs = filterVisibleList(accList);
+    const cleanAccs = mergeAccountsPreservingArchived(allCurrentAccs, accList);
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(cleanAccs));
 
     pushBatchToServer({
@@ -1160,16 +1307,240 @@ export const pdksStorage = {
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
 
-  deleteEmployee(id: string): void {
-    const list = this.getEmployees().filter(e => e.id !== id);
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
-    pushToServer('employees', list);
+  applyLocalArchive(params: {
+    employeeId?: string;
+    accountId?: string;
+    archiveEmployee: boolean;
+    actorName?: string;
+    archivedEmployeeFromServer?: Employee;
+    archivedAccountsFromServer?: UserAccount[];
+  }): { employeeName: string } {
+    const nowIso = new Date().toISOString();
+    const actor = params.actorName || 'Yönetici';
+    const allEmps = this.getAllEmployeesIncludingArchived();
+    const allAccs = this.getAllUserAccountsIncludingArchived();
+    let targetEmpId = params.employeeId;
+    let displayName = '';
+
+    if (params.accountId && !targetEmpId) {
+      const matchedAcc = allAccs.find((a) => a.id === params.accountId);
+      if (matchedAcc) {
+        targetEmpId = matchedAcc.employeeId;
+        displayName = matchedAcc.name;
+      }
+    }
+
+    const extraArchivedEmps: Employee[] = [];
+    if (params.archivedEmployeeFromServer) {
+      extraArchivedEmps.push(params.archivedEmployeeFromServer);
+      displayName = params.archivedEmployeeFromServer.fullName || displayName;
+    } else if (params.archiveEmployee && targetEmpId) {
+      const targetEmp = allEmps.find((e) => e.id === targetEmpId);
+      if (targetEmp) {
+        displayName = targetEmp.fullName;
+        const copy: Employee = {
+          ...targetEmp,
+          status: 'inactive',
+          currentPresence: 'outside',
+          isArchived: true,
+          archivedAt: targetEmp.archivedAt || nowIso,
+          archivedBy: targetEmp.archivedBy || actor,
+        };
+        delete copy.registeredDeviceId;
+        delete copy.registeredMacAddress;
+        delete copy.registeredDeviceFingerprint;
+        delete copy.registeredDeviceName;
+        delete copy.registeredDeviceAt;
+        delete copy.lastLoginDeviceId;
+        delete copy.lastLoginMacAddress;
+        delete copy.lastLoginDeviceName;
+        delete copy.lastLoginAt;
+        extraArchivedEmps.push(copy);
+      }
+    }
+
+    const nextEmps = mergeEmployeesPreservingArchived(allEmps, allEmps, extraArchivedEmps);
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(nextEmps));
+
+    const extraArchivedAccs: UserAccount[] = [];
+    if (Array.isArray(params.archivedAccountsFromServer) && params.archivedAccountsFromServer.length > 0) {
+      extraArchivedAccs.push(...params.archivedAccountsFromServer);
+    } else {
+      for (const acc of allAccs) {
+        const matches =
+          (params.accountId && acc.id === params.accountId) ||
+          (targetEmpId && acc.employeeId === targetEmpId);
+        if (matches) {
+          displayName = displayName || acc.name;
+          const copy: UserAccount = {
+            ...acc,
+            formerRole: acc.formerRole || acc.role,
+            isActive: false,
+            isArchived: true,
+            archivedAt: acc.archivedAt || nowIso,
+            archivedBy: acc.archivedBy || actor,
+            isShiftSupervisor: false,
+            assignedEmployeeIds: [],
+          };
+          delete copy.customPermissions;
+          delete copy.registeredDeviceId;
+          delete copy.registeredMacAddress;
+          delete copy.registeredDeviceFingerprint;
+          delete copy.registeredDeviceName;
+          delete copy.registeredDeviceAt;
+          delete copy.lastLoginDeviceId;
+          delete copy.lastLoginMacAddress;
+          delete copy.lastLoginDeviceFingerprint;
+          delete copy.lastLoginDeviceName;
+          extraArchivedAccs.push(copy);
+        }
+      }
+    }
+
+    const nextAccs = mergeAccountsPreservingArchived(allAccs, allAccs, extraArchivedAccs);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(nextAccs));
+
+    // Remove from supervisorAssignments (including being managed as an assigned employee)
+    if (targetEmpId) {
+      const supList = this.getSupervisorAssignments()
+        .filter((s) => s.supervisorId !== targetEmpId)
+        .map((s) => ({
+          ...s,
+          assignedEmployeeIds: (s.assignedEmployeeIds || []).filter((eid) => eid !== targetEmpId),
+        }));
+      localStorage.setItem(STORAGE_KEYS.SUPERVISOR_ASSIGNMENTS, JSON.stringify(supList));
+
+      const approvals = this.getDeviceEntryApprovals().map((item) =>
+        item.employeeId === targetEmpId &&
+        (item.status === 'pending' || item.status === 'check_in_requested' || item.status === 'rejected')
+          ? { ...item, status: 'expired' as const, resolvedAt: nowIso, resolvedBy: actor }
+          : item
+      );
+      localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(approvals));
+    }
+
+    return { employeeName: displayName };
+  },
+
+  async archiveEmployeeAsync(employeeId: string): Promise<{ success: boolean; message: string }> {
+    const active = this.getActiveUser();
+    const isSA = this.isSuperAdmin(active);
+    const targetEmp = this.getAllEmployeesIncludingArchived().find((e) => e.id === employeeId);
+    const linkedAcc = this.getAllUserAccountsIncludingArchived().find((a) => a.employeeId === employeeId);
+
+    const check = this.canDeleteTargetEmployee(active, targetEmp, linkedAcc);
+    if (!check.allowed) {
+      return {
+        success: false,
+        message: check.reason || 'Bu personeli silme yetkiniz bulunmamaktadır.',
+      };
+    }
+
+    if (!targetEmp) {
+      return { success: false, message: 'Personel kaydı bulunamadı.' };
+    }
+
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      if (!saToken && !userToken) {
+        return {
+          success: false,
+          message: 'Personel silme işlemi için oturum doğrulaması gereklidir. Lütfen kullanıcı adı ve şifrenizle tekrar giriş yapınız.',
+        };
+      }
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (isSA && saToken) headers['X-Super-Admin-Token'] = saToken;
+        else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+        const res = await fetch(`/api/employees/${encodeURIComponent(employeeId)}/archive`, {
+          method: 'POST',
+          headers,
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.success) {
+          return {
+            success: false,
+            message: json?.message || 'Personel arşivleme işlemi sunucu tarafından reddedildi.',
+          };
+        }
+        if (typeof json.version === 'number') {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+        this.applyLocalArchive({
+          employeeId,
+          archiveEmployee: true,
+          actorName: active.name,
+          archivedEmployeeFromServer: json.archivedEmployee,
+        });
+        window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+        return {
+          success: true,
+          message:
+            json.message ||
+            `${targetEmp.fullName} aktif listeden kaldırıldı ve geçmiş PDKS kayıtları korunarak Eski Personel olarak arşivlendi.`,
+        };
+      } catch {
+        if (!isSA) {
+          return {
+            success: false,
+            message: 'Sunucu bağlantısı doğrulanamadığı için personel silme işlemi tamamlanamadı.',
+          };
+        }
+      }
+    }
+
+    this.applyLocalArchive({
+      employeeId,
+      archiveEmployee: true,
+      actorName: active.name,
+    });
+    pushBatchToServer({
+      employees: this.getAllEmployeesIncludingArchived(),
+      accounts: this.getAllUserAccountsIncludingArchived(),
+      supervisorAssignments: this.getSupervisorAssignments(),
+      deviceApprovals: this.getDeviceEntryApprovals(),
+    });
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return {
+      success: true,
+      message: `${targetEmp.fullName} aktif listeden kaldırıldı ve geçmiş PDKS kayıtları korunarak Eski Personel olarak arşivlendi.`,
+    };
+  },
+
+  deleteEmployee(id: string): { success: boolean; message: string } {
+    const active = this.getActiveUser();
+    const targetEmp = this.getAllEmployeesIncludingArchived().find((e) => e.id === id);
+    const linkedAcc = this.getAllUserAccountsIncludingArchived().find((a) => a.employeeId === id);
+    const check = this.canDeleteTargetEmployee(active, targetEmp, linkedAcc);
+    if (!check.allowed) {
+      return { success: false, message: check.reason || 'Silme yetkiniz bulunmamaktadır.' };
+    }
+    this.applyLocalArchive({
+      employeeId: id,
+      archiveEmployee: true,
+      actorName: active.name,
+    });
+    pushBatchToServer({
+      employees: this.getAllEmployeesIncludingArchived(),
+      accounts: this.getAllUserAccountsIncludingArchived(),
+      supervisorAssignments: this.getSupervisorAssignments(),
+      deviceApprovals: this.getDeviceEntryApprovals(),
+    });
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return {
+      success: true,
+      message: `${targetEmp?.fullName || id} Eski Personel olarak arşivlendi.`,
+    };
   },
 
   // Profile Photo Approval Workflow
   requestProfilePhoto(employeeId: string, photoDataUrl: string): Employee | null {
-    const list = this.getEmployees();
+    const allCurrent = this.getAllEmployeesIncludingArchived();
+    const list = allCurrent.filter((e) => !isArchivedEmployee(e));
     const idx = list.findIndex(e => e.id === employeeId);
     if (idx < 0) return null;
 
@@ -1178,8 +1549,9 @@ export const pdksStorage = {
     emp.pendingAvatarDate = new Date().toISOString();
     emp.avatarStatus = 'pending';
     list[idx] = emp;
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
-    pushToServer('employees', list);
+    const combined = mergeEmployeesPreservingArchived(allCurrent, list);
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
+    pushToServer('employees', combined);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     // Also update current active user session if it's the same employee
@@ -1213,7 +1585,8 @@ export const pdksStorage = {
   },
 
   approveProfilePhoto(employeeId: string): Employee | null {
-    const list = this.getEmployees();
+    const allCurrent = this.getAllEmployeesIncludingArchived();
+    const list = allCurrent.filter((e) => !isArchivedEmployee(e));
     const idx = list.findIndex(e => e.id === employeeId);
     if (idx < 0) return null;
 
@@ -1224,8 +1597,9 @@ export const pdksStorage = {
       emp.pendingAvatarDate = null;
       emp.avatarStatus = 'approved';
       list[idx] = emp;
-      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
-      pushToServer('employees', list);
+      const combined = mergeEmployeesPreservingArchived(allCurrent, list);
+      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
+      pushToServer('employees', combined);
       window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
       // Update linked UserAccount avatar
@@ -1271,7 +1645,8 @@ export const pdksStorage = {
   },
 
   rejectProfilePhoto(employeeId: string, reason?: string): Employee | null {
-    const list = this.getEmployees();
+    const allCurrent = this.getAllEmployeesIncludingArchived();
+    const list = allCurrent.filter((e) => !isArchivedEmployee(e));
     const idx = list.findIndex(e => e.id === employeeId);
     if (idx < 0) return null;
 
@@ -1280,8 +1655,9 @@ export const pdksStorage = {
     emp.pendingAvatarDate = null;
     emp.avatarStatus = 'rejected';
     list[idx] = emp;
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
-    pushToServer('employees', list);
+    const combined = mergeEmployeesPreservingArchived(allCurrent, list);
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
+    pushToServer('employees', combined);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     // Update active user session if applicable
@@ -1315,7 +1691,8 @@ export const pdksStorage = {
   },
 
   updateEmployeeAvatarDirect(employeeId: string, newAvatarUrl: string): Employee | null {
-    const list = this.getEmployees();
+    const allCurrent = this.getAllEmployeesIncludingArchived();
+    const list = allCurrent.filter((e) => !isArchivedEmployee(e));
     const idx = list.findIndex(e => e.id === employeeId);
     if (idx < 0) return null;
 
@@ -1325,8 +1702,9 @@ export const pdksStorage = {
     emp.pendingAvatarDate = null;
     emp.avatarStatus = 'approved';
     list[idx] = emp;
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
-    pushToServer('employees', list);
+    const combined = mergeEmployeesPreservingArchived(allCurrent, list);
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
+    pushToServer('employees', combined);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     // Update linked UserAccount avatar
@@ -1457,13 +1835,15 @@ export const pdksStorage = {
       pushToServer('leaves', list);
       // If approved for today, mark employee as on leave
       if (status === 'approved' && req.startDate === getTodayString()) {
-        const employees = this.getEmployees();
+        const allCurrent = this.getAllEmployeesIncludingArchived();
+        const employees = allCurrent.filter((e) => !isArchivedEmployee(e));
         const emp = employees.find(e => e.id === req.employeeId);
         if (emp) {
           emp.status = 'leave';
           emp.currentPresence = 'outside';
-          localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
-          pushToServer('employees', employees);
+          const combined = mergeEmployeesPreservingArchived(allCurrent, employees);
+          localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
+          pushToServer('employees', combined);
         }
       }
       window.dispatchEvent(new CustomEvent('pdks-data-synced'));
@@ -1545,7 +1925,7 @@ export const pdksStorage = {
     method: 'kiosk_camera' | 'mobile_scanner' | 'manual_admin' = 'kiosk_camera',
     terminalName: string = 'Kiosk Giriş Terminali'
   ): { success: boolean; message: string; record?: AttendanceRecord; employee?: Employee; action: ActionType } {
-    const employees = this.getEmployees();
+    const employees = this.getAllEmployeesIncludingArchived();
     const emp = employees.find(e => e.id === employeeId || e.qrToken.includes(employeeId));
 
     if (!emp) {
@@ -1556,10 +1936,10 @@ export const pdksStorage = {
       };
     }
 
-    if (emp.status === 'inactive') {
+    if (isArchivedEmployee(emp)) {
       return {
         success: false,
-        message: 'Bu personelin kartı pasif durumdadır. İK ile irtibata geçiniz.',
+        message: 'Bu personel işten ayrılmış / arşivlenmiş (Eski Personel) statüsündedir. Giriş-çıkış işlemi yapılamaz.',
         action: 'check_in',
       };
     }
@@ -1753,8 +2133,8 @@ export const pdksStorage = {
     };
 
     pushBatchToServer({
-      employees: this.getEmployees(),
-      accounts: this.getUserAccounts(),
+      employees: this.getAllEmployeesIncludingArchived(),
+      accounts: this.getAllUserAccountsIncludingArchived(),
       records: this.getAttendanceRecords(),
       notifications: this.getNotifications(),
     });
@@ -2091,7 +2471,7 @@ export const pdksStorage = {
     const dateStr = getTodayString();
     const serverTimestamp = now.toISOString();
 
-    const employees = this.getEmployees();
+    const employees = this.getAllEmployeesIncludingArchived();
     const emp = employees.find((e) => e.id === employeeId || e.qrToken.includes(employeeId));
 
     if (!emp) {
@@ -2120,10 +2500,10 @@ export const pdksStorage = {
       };
     }
 
-    if (emp.status === 'inactive') {
+    if (isArchivedEmployee(emp)) {
       return {
         success: false,
-        message: 'Personel hesabı pasif durumdadır. İK yöneticisi ile irtibata geçiniz.',
+        message: 'Bu personel işten ayrılmış / arşivlenmiş (Eski Personel) statüsünde olduğu için giriş-çıkış işlemi yapılamaz.',
         action: 'check_in',
         previousPresence: emp.currentPresence,
         newPresence: emp.currentPresence,
@@ -2335,14 +2715,16 @@ export const pdksStorage = {
     emp.lastLoginAt = serverTimestamp;
     this.syncEmployeeLastDevice(emp.id, device, serverTimestamp);
 
-    // Update Employee State locally (batch synced with records & notifications below)
+    // Update Employee State locally (preserving archived staff & batch synced below)
     emp.currentPresence = newPresence;
     emp.lastActionTime = timeStr;
-    const empList = this.getEmployees();
+    const allCurrentEmps = this.getAllEmployeesIncludingArchived();
+    const empList = allCurrentEmps.filter((e) => !isArchivedEmployee(e));
     const empIdx = empList.findIndex(e => e.id === emp.id);
     if (empIdx >= 0) empList[empIdx] = emp;
     else empList.unshift(emp);
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(empList));
+    const combinedEmps = mergeEmployeesPreservingArchived(allCurrentEmps, empList);
+    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combinedEmps));
 
     const crossWarningNote = crossOwner
       ? `Başka Personel Cihazı ile Giriş (Yetkisiz/Şüpheli Cihaz Kullanımı) · Cihaz Sahibi: ${crossOwner.employeeName}`
@@ -2415,8 +2797,8 @@ export const pdksStorage = {
     }
 
     pushBatchToServer({
-      employees: this.getEmployees(),
-      accounts: this.getUserAccounts(),
+      employees: this.getAllEmployeesIncludingArchived(),
+      accounts: this.getAllUserAccountsIncludingArchived(),
       records: this.getAttendanceRecords(),
       notifications: this.getNotifications(),
     });
@@ -2439,7 +2821,7 @@ export const pdksStorage = {
   },
 
   // User Accounts & Authentication Management
-  getUserAccounts(): UserAccount[] {
+  getAllUserAccountsIncludingArchived(): UserAccount[] {
     const raw = localStorage.getItem(STORAGE_KEYS.ACCOUNTS);
     if (!raw) {
       localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(DEFAULT_ACCOUNTS));
@@ -2447,8 +2829,8 @@ export const pdksStorage = {
     }
     try {
       const parsed: UserAccount[] = filterVisibleList(JSON.parse(raw));
-      const hasHrManager = parsed.some((a) => a.role === 'ik_yoneticisi');
-      if (!hasHrManager) {
+      const hasAnyHrManager = parsed.some((a) => a.role === 'ik_yoneticisi' || a.formerRole === 'ik_yoneticisi');
+      if (!hasAnyHrManager) {
         parsed.unshift(DEFAULT_ACCOUNTS[0]);
         localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(parsed));
       }
@@ -2456,6 +2838,14 @@ export const pdksStorage = {
     } catch {
       return DEFAULT_ACCOUNTS;
     }
+  },
+
+  getUserAccounts(): UserAccount[] {
+    return this.getAllUserAccountsIncludingArchived().filter((a) => !isArchivedAccount(a));
+  },
+
+  getArchivedAccounts(): UserAccount[] {
+    return this.getAllUserAccountsIncludingArchived().filter((a) => isArchivedAccount(a));
   },
 
   getUserAccountByEmployeeId(empId: string): UserAccount | undefined {
@@ -2470,14 +2860,15 @@ export const pdksStorage = {
 
   saveUserAccount(acc: UserAccount): void {
     if (isHiddenRecord(acc)) return;
-    const accounts = this.getUserAccounts();
+    const allCurrent = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrent.filter((a) => !isArchivedAccount(a));
     const idx = accounts.findIndex((a) => a.id === acc.id);
     if (idx >= 0) {
       accounts[idx] = acc;
     } else {
       accounts.push(acc);
     }
-    const clean = filterVisibleList(accounts);
+    const clean = mergeAccountsPreservingArchived(allCurrent, accounts);
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
     pushToServer('accounts', clean);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
@@ -2489,7 +2880,8 @@ export const pdksStorage = {
     newPassword?: string,
     newRole?: UserRole
   ): { success: boolean; message: string; account?: UserAccount } {
-    const accounts = this.getUserAccounts();
+    const allCurrent = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrent.filter((a) => !isArchivedAccount(a));
     const acc = accounts.find((a) => a.id === accountId);
     if (!acc || isHiddenRecord(acc)) {
       return { success: false, message: 'Kullanıcı hesabı bulunamadı.' };
@@ -2508,7 +2900,7 @@ export const pdksStorage = {
       return { success: false, message: 'Kullanıcı adı değiştirme yetkisi yalnızca Süper Yönetici hesabına aittir.' };
     }
 
-    // Check if new username is already taken by another account
+    // Check if new username is already taken by another active account
     const taken = accounts.find(
       (a) =>
         a.id !== accountId &&
@@ -2526,8 +2918,9 @@ export const pdksStorage = {
       acc.role = newRole;
     }
 
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
-    pushToServer('accounts', accounts);
+    const combined = mergeAccountsPreservingArchived(allCurrent, accounts);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(combined));
+    pushToServer('accounts', combined);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     try {
@@ -2548,13 +2941,121 @@ export const pdksStorage = {
     };
   },
 
-  deleteUserAccount(accountId: string): { success: boolean; message: string } {
-    const accounts = this.getUserAccounts();
-    const updated = accounts.filter((a) => a.id !== accountId);
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(updated));
-    pushToServer('accounts', updated);
+  async archiveUserAccountAsync(accountId: string): Promise<{ success: boolean; message: string }> {
+    const active = this.getActiveUser();
+    const isSA = this.isSuperAdmin(active);
+    const targetAcc = this.getAllUserAccountsIncludingArchived().find((a) => a.id === accountId);
+    const targetEmp = targetAcc?.employeeId
+      ? this.getAllEmployeesIncludingArchived().find((e) => e.id === targetAcc.employeeId)
+      : undefined;
+
+    const check = this.canDeleteTargetEmployee(active, targetEmp, targetAcc);
+    if (!check.allowed) {
+      return {
+        success: false,
+        message: check.reason || 'Bu kullanıcı hesabını silme yetkiniz bulunmamaktadır.',
+      };
+    }
+
+    if (!targetAcc) {
+      return { success: false, message: 'Kullanıcı hesabı bulunamadı.' };
+    }
+
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      if (!saToken && !userToken) {
+        return {
+          success: false,
+          message: 'Hesap silme işlemi için oturum doğrulaması gereklidir. Lütfen tekrar giriş yapınız.',
+        };
+      }
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (isSA && saToken) headers['X-Super-Admin-Token'] = saToken;
+        else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+        const res = await fetch(`/api/accounts/${encodeURIComponent(accountId)}/archive`, {
+          method: 'POST',
+          headers,
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.success) {
+          return {
+            success: false,
+            message: json?.message || 'Kullanıcı hesabı silme/arşivleme işlemi reddedildi.',
+          };
+        }
+        if (typeof json.version === 'number') {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+        this.applyLocalArchive({
+          accountId,
+          employeeId: targetAcc.employeeId,
+          archiveEmployee: false,
+          actorName: active.name,
+          archivedAccountsFromServer: json.archivedAccounts,
+        });
+        window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+        return {
+          success: true,
+          message:
+            json.message ||
+            `${targetAcc.name} (@${targetAcc.username}) hesabı kapatıldı ve geçmiş kayıtları korunarak arşivlendi.`,
+        };
+      } catch {
+        if (!isSA) {
+          return {
+            success: false,
+            message: 'Sunucu bağlantısı doğrulanamadığı için hesap silme işlemi tamamlanamadı.',
+          };
+        }
+      }
+    }
+
+    this.applyLocalArchive({
+      accountId,
+      employeeId: targetAcc.employeeId,
+      archiveEmployee: false,
+      actorName: active.name,
+    });
+    pushBatchToServer({
+      accounts: this.getAllUserAccountsIncludingArchived(),
+      supervisorAssignments: this.getSupervisorAssignments(),
+      deviceApprovals: this.getDeviceEntryApprovals(),
+    });
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
-    return { success: true, message: 'Kullanıcı hesabı başarıyla silindi.' };
+    return {
+      success: true,
+      message: `${targetAcc.name} (@${targetAcc.username}) hesabı kapatıldı ve geçmiş kayıtları korunarak arşivlendi.`,
+    };
+  },
+
+  deleteUserAccount(accountId: string): { success: boolean; message: string } {
+    const active = this.getActiveUser();
+    const targetAcc = this.getAllUserAccountsIncludingArchived().find((a) => a.id === accountId);
+    const targetEmp = targetAcc?.employeeId
+      ? this.getAllEmployeesIncludingArchived().find((e) => e.id === targetAcc.employeeId)
+      : undefined;
+    const check = this.canDeleteTargetEmployee(active, targetEmp, targetAcc);
+    if (!check.allowed) {
+      return { success: false, message: check.reason || 'Silme yetkiniz bulunmamaktadır.' };
+    }
+    this.applyLocalArchive({
+      accountId,
+      employeeId: targetAcc?.employeeId,
+      archiveEmployee: false,
+      actorName: active.name,
+    });
+    pushBatchToServer({
+      accounts: this.getAllUserAccountsIncludingArchived(),
+      supervisorAssignments: this.getSupervisorAssignments(),
+      deviceApprovals: this.getDeviceEntryApprovals(),
+    });
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return { success: true, message: 'Kullanıcı hesabı kapatıldı ve geçmiş kayıtları korunarak arşivlendi.' };
   },
 
   createUserAccount(params: {
@@ -2575,10 +3076,11 @@ export const pdksStorage = {
     const employees = this.getEmployees();
     const emp = employees.find((e) => e.id === params.employeeId);
     if (!emp || isHiddenRecord(emp)) {
-      return { success: false, message: 'İlgili personel bulunamadı.' };
+      return { success: false, message: 'İlgili aktif personel bulunamadı.' };
     }
 
-    const accounts = this.getUserAccounts();
+    const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrentAccs.filter((a) => !isArchivedAccount(a));
     const rawUsername = params.username.trim().replace(/^@+/, '');
     const cleanUsername = normalizeUsername(rawUsername) || rawUsername.toLowerCase().replace(/[^a-z0-9._-]/g, '');
     const cleanPassword = params.password.trim();
@@ -2590,7 +3092,7 @@ export const pdksStorage = {
       return { success: false, message: 'Şifre boş bırakılamaz.' };
     }
 
-    // Check if username is already taken
+    // Check if username is already taken by active accounts
     const existingUsername = accounts.find(
       (a) =>
         normalizeUsername(a.username) === cleanUsername ||
@@ -2600,7 +3102,7 @@ export const pdksStorage = {
       return { success: false, message: `'${cleanUsername}' kullanıcı adı zaten kullanımda. Farklı bir kullanıcı adı seçiniz.` };
     }
 
-    // Check if employee already has an account
+    // Check if employee already has an active account
     const existingForEmp = accounts.find((a) => a.employeeId === params.employeeId);
     if (existingForEmp) {
       return { success: false, message: `${emp.fullName} personeli için zaten '@${existingForEmp.username}' hesabı tanımlı.` };
@@ -2630,8 +3132,9 @@ export const pdksStorage = {
     };
 
     accounts.push(newAccount);
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
-    pushToServer('accounts', accounts);
+    const combinedAccs = mergeAccountsPreservingArchived(allCurrentAccs, accounts);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(combinedAccs));
+    pushToServer('accounts', combinedAccs);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
     if (isSupervisor) {
@@ -2655,22 +3158,28 @@ export const pdksStorage = {
   },
 
   updateUserPassword(accountId: string, newPassword: string): { success: boolean; message: string } {
-    const accounts = this.getUserAccounts();
+    const allCurrent = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrent.filter((a) => !isArchivedAccount(a));
     const acc = accounts.find((a) => a.id === accountId);
     if (!acc) {
       return { success: false, message: 'Hesap bulunamadı.' };
     }
     acc.password = newPassword.trim();
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+    const combined = mergeAccountsPreservingArchived(allCurrent, accounts);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(combined));
+    pushToServer('accounts', combined);
     return { success: true, message: 'Şifre başarıyla güncellendi.' };
   },
 
   toggleUserAccountStatus(accountId: string): { success: boolean; isActive: boolean } {
-    const accounts = this.getUserAccounts();
+    const allCurrent = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrent.filter((a) => !isArchivedAccount(a));
     const acc = accounts.find((a) => a.id === accountId);
     if (!acc) return { success: false, isActive: false };
     acc.isActive = !acc.isActive;
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+    const combined = mergeAccountsPreservingArchived(allCurrent, accounts);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(combined));
+    pushToServer('accounts', combined);
     return { success: true, isActive: acc.isActive };
   },
 
@@ -2700,6 +3209,14 @@ export const pdksStorage = {
           body: JSON.stringify({ username: rawUser, password: cleanPass }),
         });
         const json = await res.json().catch(() => null);
+        if (res.status === 403 || json?.blocked === true) {
+          return {
+            success: false,
+            message:
+              json?.message ||
+              'Bu hesap işten ayrılmış / arşivlenmiş (Eski Personel) statüsünde olduğu için sisteme giriş yapılamaz.',
+          };
+        }
         if (res.ok && json?.success && json?.isSuperAdmin && json?.user?.role === 'SUPER_ADMIN') {
           clearLoginAttempts(rawUser);
           setUserSessionToken(null);
@@ -2760,8 +3277,8 @@ export const pdksStorage = {
       };
     }
 
-    const accounts = this.getUserAccounts();
-    const found = accounts.find((a) => {
+    const allAccounts = this.getAllUserAccountsIncludingArchived();
+    const found = allAccounts.find((a) => {
       const aUsernameClean = (a.username || '').trim().toLowerCase().replace(/^@+/, '');
       const aUsernameNormalized = normalizeUsername(a.username || '');
       const aEmployeeIdClean = (a.employeeId || '').trim().toLowerCase();
@@ -2797,8 +3314,18 @@ export const pdksStorage = {
       };
     }
 
-    // Clear failed attempts upon successful login
+    // Clear failed attempts upon credential match
     clearLoginAttempts(rawUser);
+
+    const allEmployees = this.getAllEmployeesIncludingArchived();
+    const linkedEmp = found.employeeId ? allEmployees.find((e) => e.id === found.employeeId) : undefined;
+
+    if (isArchivedAccount(found) || (linkedEmp && isArchivedEmployee(linkedEmp))) {
+      return {
+        success: false,
+        message: 'Bu hesap işten ayrılmış / arşivlenmiş (Eski Personel) statüsünde olduğu için sisteme giriş yapılamaz.',
+      };
+    }
 
     if (!found.isActive) {
       return {
@@ -2923,15 +3450,17 @@ export const pdksStorage = {
     found.lastLoginDeviceName = device.deviceName;
     found.lastLogin = nowIso;
 
-    const allAccounts = this.getUserAccounts();
-    const accIdx = allAccounts.findIndex((a) => a.id === found.id);
-    if (accIdx >= 0) allAccounts[accIdx] = found;
-    else allAccounts.push(found);
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(allAccounts));
+    const activeAccounts = allAccounts.filter((a) => !isArchivedAccount(a));
+    const accIdx = activeAccounts.findIndex((a) => a.id === found.id);
+    if (accIdx >= 0) activeAccounts[accIdx] = found;
+    else activeAccounts.push(found);
+    const combinedAccounts = mergeAccountsPreservingArchived(allAccounts, activeAccounts);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(combinedAccounts));
 
     // Mirror registered & last-login MAC/Device info onto the Employee profile
-    const employees = this.getEmployees();
-    const empMatch = employees.find((e) => e.id === found.employeeId);
+    const activeEmployees = allEmployees.filter((e) => !isArchivedEmployee(e));
+    const empMatch = activeEmployees.find((e) => e.id === found.employeeId);
+    let combinedEmployees = allEmployees;
     if (empMatch) {
       if (found.registeredDeviceId) {
         empMatch.registeredDeviceId = found.registeredDeviceId;
@@ -2944,7 +3473,8 @@ export const pdksStorage = {
       empMatch.lastLoginMacAddress = device.macAddress;
       empMatch.lastLoginDeviceName = device.deviceName;
       empMatch.lastLoginAt = nowIso;
-      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+      combinedEmployees = mergeEmployeesPreservingArchived(allEmployees, activeEmployees);
+      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combinedEmployees));
     }
 
     // Critical Cross-Employee Device Alert + Security Log Entry in AttendanceLogs
@@ -2969,16 +3499,16 @@ export const pdksStorage = {
 
     if (newDeviceDetected || crossEmployeeDeviceDetected || firstDeviceRegistered) {
       pushBatchToServer({
-        accounts: allAccounts,
-        employees: this.getEmployees(),
+        accounts: combinedAccounts,
+        employees: combinedEmployees,
         records: this.getAttendanceRecords(),
         deviceApprovals: this.getDeviceEntryApprovals(),
         notifications: this.getNotifications(),
       });
     } else {
       pushBatchToServer({
-        accounts: allAccounts,
-        employees: this.getEmployees(),
+        accounts: combinedAccounts,
+        employees: combinedEmployees,
       });
     }
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
@@ -3146,7 +3676,8 @@ export const pdksStorage = {
   },
 
   bindRegisteredDeviceToEmployee(employeeId: string, device: DeviceIdentity, timestampIso: string): void {
-    const accounts = this.getUserAccounts();
+    const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrentAccs.filter((a) => !isArchivedAccount(a));
     let accChanged = false;
     for (const acc of accounts) {
       if (acc.employeeId === employeeId) {
@@ -3163,10 +3694,11 @@ export const pdksStorage = {
       }
     }
     if (accChanged) {
-      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergeAccountsPreservingArchived(allCurrentAccs, accounts)));
     }
 
-    const employees = this.getEmployees();
+    const allCurrentEmps = this.getAllEmployeesIncludingArchived();
+    const employees = allCurrentEmps.filter((e) => !isArchivedEmployee(e));
     const emp = employees.find((e) => e.id === employeeId);
     if (emp) {
       emp.registeredDeviceId = device.deviceId;
@@ -3178,12 +3710,13 @@ export const pdksStorage = {
       emp.lastLoginMacAddress = device.macAddress;
       emp.lastLoginDeviceName = device.deviceName;
       emp.lastLoginAt = timestampIso;
-      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(mergeEmployeesPreservingArchived(allCurrentEmps, employees)));
     }
   },
 
   syncEmployeeLastDevice(employeeId: string, device: DeviceIdentity, timestampIso: string): void {
-    const accounts = this.getUserAccounts();
+    const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrentAccs.filter((a) => !isArchivedAccount(a));
     let accChanged = false;
     for (const acc of accounts) {
       if (acc.employeeId === employeeId) {
@@ -3196,17 +3729,18 @@ export const pdksStorage = {
       }
     }
     if (accChanged) {
-      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergeAccountsPreservingArchived(allCurrentAccs, accounts)));
     }
 
-    const employees = this.getEmployees();
+    const allCurrentEmps = this.getAllEmployeesIncludingArchived();
+    const employees = allCurrentEmps.filter((e) => !isArchivedEmployee(e));
     const emp = employees.find((e) => e.id === employeeId);
     if (emp) {
       emp.lastLoginDeviceId = device.deviceId;
       emp.lastLoginMacAddress = device.macAddress;
       emp.lastLoginDeviceName = device.deviceName;
       emp.lastLoginAt = timestampIso;
-      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(mergeEmployeesPreservingArchived(allCurrentEmps, employees)));
     }
   },
 
@@ -3490,7 +4024,8 @@ export const pdksStorage = {
     localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(list));
 
     // Optionally bind the new device as registered device on the user account & employee profile
-    const accounts = this.getUserAccounts();
+    const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrentAccs.filter((a) => !isArchivedAccount(a));
     if (options?.bindNewDevice) {
       const acc = accounts.find((a) => a.id === req.accountId || a.employeeId === req.employeeId);
       if (acc) {
@@ -3499,12 +4034,13 @@ export const pdksStorage = {
         acc.registeredDeviceFingerprint = req.newDeviceFingerprint || acc.registeredDeviceFingerprint;
         acc.registeredDeviceName = req.newDeviceName;
         acc.registeredDeviceAt = nowIso;
-        localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+        localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergeAccountsPreservingArchived(allCurrentAccs, accounts)));
       }
     }
 
     // Perform the employee's first workplace check-in if currently outside
-    const employees = this.getEmployees();
+    const allCurrentEmps = this.getAllEmployeesIncludingArchived();
+    const employees = allCurrentEmps.filter((e) => !isArchivedEmployee(e));
     const empIdx = employees.findIndex((e) => e.id === req.employeeId);
     let createdRecord: AttendanceRecord | undefined;
 
@@ -3536,7 +4072,7 @@ export const pdksStorage = {
         emp.currentPresence = 'inside';
         emp.lastActionTime = timeStr;
         employees[empIdx] = emp;
-        localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+        localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(mergeEmployeesPreservingArchived(allCurrentEmps, employees)));
 
         createdRecord = {
           id: `DEVIN-${Date.now().toString().slice(-6)}`,
@@ -3562,7 +4098,7 @@ export const pdksStorage = {
         localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
       } else if (options?.bindNewDevice) {
         employees[empIdx] = emp;
-        localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+        localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(mergeEmployeesPreservingArchived(allCurrentEmps, employees)));
       }
 
       this.addNotification({
@@ -3584,9 +4120,9 @@ export const pdksStorage = {
 
     pushBatchToServer({
       deviceApprovals: this.getDeviceEntryApprovals(),
-      employees: this.getEmployees(),
+      employees: this.getAllEmployeesIncludingArchived(),
       records: this.getAttendanceRecords(),
-      accounts: this.getUserAccounts(),
+      accounts: this.getAllUserAccountsIncludingArchived(),
       notifications: this.getNotifications(),
     });
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
@@ -3661,31 +4197,37 @@ export const pdksStorage = {
     if (!this.canManageDevices(active)) {
       return { success: false, message: 'Yetkisiz İşlem: Cihaz sıfırlama yetkiniz bulunmamaktadır.' };
     }
-    const accounts = this.getUserAccounts();
+    const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrentAccs.filter((a) => !isArchivedAccount(a));
     const acc = accounts.find((a) => a.employeeId === employeeId);
-    const employees = this.getEmployees();
+    const allCurrentEmps = this.getAllEmployeesIncludingArchived();
+    const employees = allCurrentEmps.filter((e) => !isArchivedEmployee(e));
     const emp = employees.find((e) => e.id === employeeId);
 
     if (!acc && !emp) {
       return { success: false, message: 'Personel veya giriş hesabı bulunamadı.' };
     }
 
+    let combinedAccs = allCurrentAccs;
     if (acc) {
       delete acc.registeredDeviceId;
       delete acc.registeredMacAddress;
       delete acc.registeredDeviceFingerprint;
       delete acc.registeredDeviceName;
       delete acc.registeredDeviceAt;
-      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+      combinedAccs = mergeAccountsPreservingArchived(allCurrentAccs, accounts);
+      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(combinedAccs));
     }
 
+    let combinedEmps = allCurrentEmps;
     if (emp) {
       delete emp.registeredDeviceId;
       delete emp.registeredMacAddress;
       delete emp.registeredDeviceFingerprint;
       delete emp.registeredDeviceName;
       delete emp.registeredDeviceAt;
-      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
+      combinedEmps = mergeEmployeesPreservingArchived(allCurrentEmps, employees);
+      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combinedEmps));
     }
 
     // Expire any active lock for this employee
@@ -3698,8 +4240,8 @@ export const pdksStorage = {
     localStorage.setItem(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(approvals));
 
     pushBatchToServer({
-      accounts,
-      employees,
+      accounts: combinedAccs,
+      employees: combinedEmps,
       deviceApprovals: approvals,
     });
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
@@ -3780,13 +4322,26 @@ export const pdksStorage = {
     if (current.role === 'SUPER_ADMIN' || current.isHiddenSuperAdmin) {
       return current;
     }
-    const accounts = this.getUserAccounts();
-    const matched = accounts.find(
+    const allAccounts = this.getAllUserAccountsIncludingArchived();
+    const matched = allAccounts.find(
       (a) =>
         a.id === current.id ||
         normalizeUsername(a.username) === normalizeUsername(current.username)
     );
-    if (!matched) return current;
+    const linkedEmp = matched?.employeeId
+      ? this.getAllEmployeesIncludingArchived().find((e) => e.id === matched.employeeId)
+      : current.employeeId
+      ? this.getAllEmployeesIncludingArchived().find((e) => e.id === current.employeeId)
+      : undefined;
+
+    if (!matched || isArchivedAccount(matched) || !matched.isActive || (linkedEmp && isArchivedEmployee(linkedEmp))) {
+      this.logout();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('pdks-force-logout'));
+      }
+      return null;
+    }
+
     const updated: CurrentUser = {
       ...current,
       username: matched.username,
@@ -3881,10 +4436,11 @@ export const pdksStorage = {
       };
     }
 
-    // 1. Update matching UserAccount in STORAGE_KEYS.ACCOUNTS
+    // 1. Update matching UserAccount in STORAGE_KEYS.ACCOUNTS (preserving archived accounts)
     let matchedAccountId = active.id;
     try {
-      const accounts = this.getUserAccounts();
+      const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+      const accounts = allCurrentAccs.filter((a) => !isArchivedAccount(a));
       const idx = accounts.findIndex(
         (a) =>
           (active.id && a.id === active.id) ||
@@ -3898,7 +4454,7 @@ export const pdksStorage = {
           themeId,
           themeUpdatedAt: nowIso,
         };
-        localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+        localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergeAccountsPreservingArchived(allCurrentAccs, accounts)));
       }
     } catch {}
 
@@ -3985,7 +4541,8 @@ export const pdksStorage = {
       const entries = Object.entries(cloudMap);
       if (entries.length === 0) return;
 
-      const accounts = this.getUserAccounts();
+      const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+      const accounts = allCurrentAccs.filter((a) => !isArchivedAccount(a));
       let changed = false;
       for (const [accountKey, cloudTheme] of entries) {
         if (!isValidThemeId(cloudTheme)) continue;
@@ -4002,7 +4559,7 @@ export const pdksStorage = {
       }
 
       if (changed) {
-        localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+        localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergeAccountsPreservingArchived(allCurrentAccs, accounts)));
         if (this.isLoggedIn()) {
           const active = this.getActiveUser();
           const refreshedTheme = this.getUserTheme(active);
@@ -4407,8 +4964,9 @@ export const pdksStorage = {
     pushToServer('supervisorAssignments', list);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
 
-    // Also sync to UserAccount if present
-    const accounts = this.getUserAccounts();
+    // Also sync to UserAccount if present (preserving archived accounts)
+    const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrentAccs.filter((a) => !isArchivedAccount(a));
     const acc = accounts.find(
       (a) => a.employeeId === assignment.supervisorId || a.id === assignment.supervisorId
     );
@@ -4416,8 +4974,9 @@ export const pdksStorage = {
       acc.role = 'birim_amiri';
       acc.isShiftSupervisor = true;
       acc.assignedEmployeeIds = assignment.assignedEmployeeIds;
-      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
-      pushToServer('accounts', accounts);
+      const combined = mergeAccountsPreservingArchived(allCurrentAccs, accounts);
+      localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(combined));
+      pushToServer('accounts', combined);
     }
 
     return {
@@ -4567,6 +5126,156 @@ export const pdksStorage = {
     return Boolean(perms.isFullAdmin || perms.canManagePermissions);
   },
 
+  isAdminOrManagerTarget(
+    acc?: Partial<UserAccount> | null,
+    emp?: Partial<Employee> | null
+  ): boolean {
+    if (isHiddenRecord(acc) || isHiddenRecord(emp)) return true;
+    let resolvedAcc = acc;
+    if (!resolvedAcc && emp?.id) {
+      resolvedAcc = this.getAllUserAccountsIncludingArchived().find((a) => a.employeeId === emp.id);
+    }
+    if (!resolvedAcc) return false;
+    const role = resolvedAcc.role;
+    const formerRole = resolvedAcc.formerRole;
+    if (
+      role === 'SUPER_ADMIN' ||
+      role === 'ik_yoneticisi' ||
+      role === 'birim_amiri' ||
+      role === 'yonetici' ||
+      formerRole === 'SUPER_ADMIN' ||
+      formerRole === 'ik_yoneticisi' ||
+      formerRole === 'birim_amiri' ||
+      formerRole === 'yonetici'
+    ) {
+      return true;
+    }
+    if (resolvedAcc.customPermissions?.isFullAdmin || resolvedAcc.customPermissions?.canManagePermissions) {
+      return true;
+    }
+    return false;
+  },
+
+  canDeleteTargetEmployee(
+    actor: CurrentUser | null | undefined,
+    targetEmp?: Partial<Employee> | null,
+    targetAcc?: Partial<UserAccount> | null
+  ): { allowed: boolean; reason?: string } {
+    if (!actor) {
+      return { allowed: false, reason: 'Oturum doğrulanamadı.' };
+    }
+    if (isHiddenRecord(targetEmp) || isHiddenRecord(targetAcc)) {
+      return { allowed: false, reason: 'Kullanıcı kaydı bulunamadı.' };
+    }
+    if (this.isSuperAdmin(actor)) {
+      return { allowed: true };
+    }
+    if (!this.canDeleteEmployee(actor)) {
+      return { allowed: false, reason: 'Personel silme yetkiniz bulunmamaktadır.' };
+    }
+    if (this.isAdminOrManagerTarget(targetAcc, targetEmp)) {
+      return {
+        allowed: false,
+        reason:
+          'Güvenlik Kuralı: Yönetici rolüne veya yönetim yetkisine sahip kullanıcılar yalnızca Gizli Süper Admin (Admin.Admin) tarafından silinebilir.',
+      };
+    }
+    return { allowed: true };
+  },
+
+  canViewArchivedEmployees(actor?: CurrentUser | null): boolean {
+    if (!actor) return false;
+    if (this.isSuperAdmin(actor)) return true;
+    const perms = this.getEffectivePermissions(actor);
+    return Boolean(
+      actor.role === 'ik_yoneticisi' ||
+        actor.role === 'birim_amiri' ||
+        actor.role === 'yonetici' ||
+        perms.isFullAdmin ||
+        perms.canManagePermissions ||
+        perms.canManageSettings
+    );
+  },
+
+  async getArchivedEmployeesWithLogsAsync(): Promise<{
+    allowed: boolean;
+    employees: Array<Employee & { formerRole?: UserRole; formerUsername?: string }>;
+    records: AttendanceRecord[];
+    message?: string;
+  }> {
+    const active = this.getActiveUser();
+    const isSA = this.isSuperAdmin(active);
+    if (!this.canViewArchivedEmployees(active)) {
+      return {
+        allowed: false,
+        employees: [],
+        records: [],
+        message: 'Erişim Reddedildi: Eski personel listesi yalnızca Süper Yönetici ve yetkili yöneticilere açıktır.',
+      };
+    }
+
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+    if (typeof window !== 'undefined' && typeof fetch === 'function' && (saToken || userToken)) {
+      try {
+        const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+        if (isSA && saToken) headers['X-Super-Admin-Token'] = saToken;
+        else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+        const res = await fetch('/api/employees/archived', {
+          cache: 'no-store',
+          headers,
+        });
+        const json = await res.json().catch(() => null);
+        if (res.status === 403) {
+          return {
+            allowed: false,
+            employees: [],
+            records: [],
+            message: json?.message || 'Erişim Reddedildi.',
+          };
+        }
+        if (res.ok && json?.success) {
+          const archivedEmps: Array<Employee & { formerRole?: UserRole; formerUsername?: string }> =
+            Array.isArray(json.archivedEmployees) ? json.archivedEmployees : [];
+          // Keep local archived cache aligned
+          try {
+            const allCurrent = this.getAllEmployeesIncludingArchived();
+            const merged = mergeEmployeesPreservingArchived(allCurrent, allCurrent, archivedEmps);
+            localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(merged));
+          } catch {}
+          return {
+            allowed: true,
+            employees: archivedEmps,
+            records: Array.isArray(json.records) ? json.records : [],
+          };
+        }
+      } catch {
+        // Fallback cleanly to local archived cache when offline
+      }
+    }
+
+    const localArchived = this.getArchivedEmployees();
+    const archivedAccByEmpId = new Map<string, UserAccount>();
+    for (const a of this.getArchivedAccounts()) {
+      if (a.employeeId) archivedAccByEmpId.set(a.employeeId, a);
+    }
+    const archivedIdSet = new Set(localArchived.map((e) => e.id));
+    const enriched = localArchived.map((emp) => {
+      const linked = archivedAccByEmpId.get(emp.id);
+      return {
+        ...emp,
+        formerRole: linked?.formerRole || linked?.role,
+        formerUsername: linked?.username,
+      };
+    });
+    const historicalRecords = this.getAttendanceRecords().filter((r) => archivedIdSet.has(r.employeeId));
+    return {
+      allowed: true,
+      employees: enriched,
+      records: historicalRecords,
+    };
+  },
+
   canModifyTargetPermissions(
     actor: CurrentUser | UserAccount | null | undefined,
     target: UserAccount | null | undefined
@@ -4594,10 +5303,11 @@ export const pdksStorage = {
       };
     }
     const targetPerms = this.getEffectivePermissions(target);
-    if (targetPerms.isFullAdmin) {
+    if (targetPerms.isFullAdmin || this.isAdminOrManagerTarget(target)) {
       return {
         allowed: false,
-        reason: 'Aynı seviyedeki Tam Yetkili bir yöneticinin yetkileri yalnızca Süper Admin tarafından değiştirilebilir.',
+        reason:
+          'Güvenlik Kuralı: Yönetici rolüne veya yönetim yetkisine sahip kullanıcıların yetkileri yalnızca Gizli Süper Admin (Admin.Admin) tarafından düşürülebilir veya değiştirilebilir.',
       };
     }
     if (!actorPerms.isFullAdmin && targetPerms.canManagePermissions) {
@@ -4673,7 +5383,8 @@ export const pdksStorage = {
       return { success: false, message: 'Süper Yönetici rolü başka kullanıcılara atanamaz.' };
     }
 
-    const accounts = this.getUserAccounts();
+    const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrentAccs.filter((a) => !isArchivedAccount(a));
     const idx = accounts.findIndex((a) => a.id === accountId);
     if (idx < 0 || isHiddenRecord(accounts[idx])) {
       return { success: false, message: 'Kullanıcı hesabı bulunamadı.' };
@@ -4758,7 +5469,7 @@ export const pdksStorage = {
           customPermissions: finalPerms,
         };
         accounts[idx] = serverAcc;
-        const clean = filterVisibleList(accounts);
+        const clean = mergeAccountsPreservingArchived(allCurrentAccs, accounts);
         localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
         window.dispatchEvent(new CustomEvent('pdks-data-synced'));
         return {
@@ -4784,7 +5495,7 @@ export const pdksStorage = {
       customPermissions: finalPerms,
     };
     accounts[idx] = updatedAccount;
-    const clean = filterVisibleList(accounts);
+    const clean = mergeAccountsPreservingArchived(allCurrentAccs, accounts);
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
     pushToServer('accounts', clean);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
@@ -4815,7 +5526,8 @@ export const pdksStorage = {
       };
     }
 
-    const accounts = this.getUserAccounts();
+    const allCurrentAccs = this.getAllUserAccountsIncludingArchived();
+    const accounts = allCurrentAccs.filter((a) => !isArchivedAccount(a));
     const idx = accounts.findIndex((a) => a.id === accountId);
     if (idx < 0 || isHiddenRecord(accounts[idx])) {
       return { success: false, message: 'Kullanıcı hesabı bulunamadı.' };
@@ -4869,7 +5581,7 @@ export const pdksStorage = {
       username: cleanUsername,
     };
     accounts[idx] = updatedAccount;
-    const clean = filterVisibleList(accounts);
+    const clean = mergeAccountsPreservingArchived(allCurrentAccs, accounts);
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
 
     if (!updatedFromServer) {
@@ -4936,6 +5648,42 @@ export const pdksStorage = {
   getCompanyName(): string {
     const wallQR = this.getInternalCompanyWallQR();
     return sanitizeString(wallQR.companyName, 100) || DEFAULT_COMPANY_NAME;
+  },
+
+  async fetchCompanyNameFromServer(): Promise<string | null> {
+    if (typeof window === 'undefined' || typeof fetch !== 'function') return null;
+    try {
+      const res = await fetch('/api/system/settings', {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' },
+      });
+      if (!res.ok) return null;
+      const json = await res.json().catch(() => null);
+      const srvName = sanitizeString(
+        json?.systemSettings?.companyName || json?.companyName || '',
+        100
+      );
+      if (srvName) {
+        const current = this.getInternalCompanyWallQR();
+        const srvBranch = json?.systemSettings?.branchName
+          ? sanitizeString(json.systemSettings.branchName, 100)
+          : current.branchName;
+        if (current.companyName !== srvName || (srvBranch && current.branchName !== srvBranch)) {
+          const updated: CompanyWallQRConfig = {
+            ...current,
+            companyName: srvName,
+            ...(srvBranch ? { branchName: srvBranch } : {}),
+          };
+          localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
+          window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: updated }));
+        }
+        window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: srvName }));
+        return srvName;
+      }
+    } catch {
+      // Offline / network error fallback
+    }
+    return null;
   },
 
   async updateCompanyNameWithPassword(
@@ -5099,7 +5847,7 @@ export const pdksStorage = {
       return localRes;
     }
 
-    const accounts = this.getUserAccounts().map((a) => {
+    const accounts = this.getAllUserAccountsIncludingArchived().map((a) => {
       const copy = { ...a };
       delete copy.registeredDeviceId;
       delete copy.registeredMacAddress;
@@ -5108,7 +5856,7 @@ export const pdksStorage = {
       delete copy.registeredDeviceAt;
       return copy;
     });
-    const employees = this.getEmployees().map((e) => {
+    const employees = this.getAllEmployeesIncludingArchived().map((e) => {
       const copy = { ...e };
       delete copy.registeredDeviceId;
       delete copy.registeredMacAddress;
