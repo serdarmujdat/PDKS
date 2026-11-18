@@ -4,23 +4,15 @@ import {
   Clock,
   AlertTriangle,
   CheckCircle2,
-  XCircle,
   Timer,
   Calendar,
-  CalendarCheck,
   Send,
-  Coffee,
   Check,
   X,
   Search,
-  Filter,
   ArrowRight,
   ShieldCheck,
-  Lock,
-  ChevronRight,
-  Info,
   BellRing,
-  UserCheck,
   AlertCircle,
   RefreshCw,
 } from 'lucide-react';
@@ -228,7 +220,6 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
     return responsibleEmployees.map((emp) => {
       const hasShiftId = Boolean(emp.shiftId && emp.shiftId.trim() !== '');
       const assignedShift = shifts.find((s) => s.id === emp.shiftId);
-      const isShiftValid = Boolean(hasShiftId && assignedShift);
       const hasWorkDays = assignedShift ? (assignedShift.workDays || []).length > 0 : false;
 
       let issueType: 'no_shift' | 'invalid_shift' | 'no_workdays' | 'ok' = 'ok';
@@ -739,7 +730,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                 onClick={() => setAttendanceStatusFilter('all')}
                 className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                   attendanceStatusFilter === 'all'
-                    ? 'bg-slate-900 text-white'
+                    ? 'bg-slate-900 dark:bg-indigo-600 text-white'
                     : 'text-slate-600 hover:bg-slate-100'
                 }`}
               >
@@ -1160,7 +1151,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                   onClick={() => setOvertimeFilter('pending')}
                   className={`px-3 py-1 rounded-lg font-bold transition-colors cursor-pointer ${
                     overtimeFilter === 'pending'
-                      ? 'bg-white text-slate-900 shadow-2xs'
+                      ? 'bg-white dark:bg-indigo-600 text-slate-900 dark:text-white shadow-2xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
@@ -1171,7 +1162,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                   onClick={() => setOvertimeFilter('approved')}
                   className={`px-3 py-1 rounded-lg font-semibold transition-colors cursor-pointer ${
                     overtimeFilter === 'approved'
-                      ? 'bg-white text-slate-900 shadow-2xs'
+                      ? 'bg-white dark:bg-indigo-600 text-slate-900 dark:text-white shadow-2xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
@@ -1182,7 +1173,7 @@ export const SupervisorDashboard: React.FC<SupervisorDashboardProps> = ({
                   onClick={() => setOvertimeFilter('all')}
                   className={`px-3 py-1 rounded-lg font-semibold transition-colors cursor-pointer ${
                     overtimeFilter === 'all'
-                      ? 'bg-white text-slate-900 shadow-2xs'
+                      ? 'bg-white dark:bg-indigo-600 text-slate-900 dark:text-white shadow-2xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >

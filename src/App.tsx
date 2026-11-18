@@ -84,6 +84,9 @@ function getDefaultTabForUser(user: CurrentUser): ActiveTab {
       return page;
     }
   }
+  if (pdksStorage.canAccessPermissions(user)) {
+    return 'permissions';
+  }
   return 'portal';
 }
 
@@ -120,7 +123,7 @@ export default function App() {
   // Dynamic per-user route & permission enforcement
   useEffect(() => {
     if (activeTab === 'permissions') {
-      if (!pdksStorage.isSuperAdmin(currentUser)) {
+      if (!pdksStorage.canAccessPermissions(currentUser)) {
         setActiveTab(getDefaultTabForUser(currentUser));
       }
       return;
@@ -276,11 +279,13 @@ export default function App() {
       {/* Main Content Area Protected by ErrorBoundary */}
       <ErrorBoundary>
         <main className="flex-1 flex flex-col w-full max-w-full min-w-0" data-sync-tick={refreshKey}>
-          {activeTab === 'permissions' && pdksStorage.isSuperAdmin(currentUser) && (
+          {activeTab === 'permissions' && pdksStorage.canAccessPermissions(currentUser) && (
             <RolePermissionManagement
               currentUser={currentUser}
-              onOpenLogoManager={() => setIsLogoModalOpen(true)}
-              onOpenWallQR={() => setIsWallQRModalOpen(true)}
+              onOpenLogoManager={pdksStorage.canAccessSettings(currentUser) ? () => setIsLogoModalOpen(true) : undefined}
+              onOpenWallQR={pdksStorage.canAccessSettings(currentUser) ? () => setIsWallQRModalOpen(true) : undefined}
+              onOpenThemeSettings={() => setIsThemeModalOpen(true)}
+              onLogout={handleLogout}
             />
           )}
 
@@ -303,6 +308,8 @@ export default function App() {
               onNavigateToPerformance={() => setActiveTab('performance')}
               onOpenWallQR={pdksStorage.canAccessSettings(currentUser) ? () => setIsWallQRModalOpen(true) : undefined}
               onOpenLogoManager={() => setIsLogoModalOpen(true)}
+              onOpenThemeSettings={() => setIsThemeModalOpen(true)}
+              onLogout={handleLogout}
               companyLogo={companyLogo}
               companyName={companyName}
             />

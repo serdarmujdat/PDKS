@@ -2,17 +2,12 @@ import React, { useState } from 'react';
 import {
   Database,
   Server,
-  Code2,
   Copy,
   Check,
   X,
-  Terminal,
   Layers,
-  ArrowRight,
-  ShieldCheck,
   CheckCircle2,
   BookOpen,
-  Smartphone,
   Cpu,
 } from 'lucide-react';
 

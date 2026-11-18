@@ -16,17 +16,56 @@ import type { ThemeId } from './types/pdks';
 import { isValidThemeId } from './themes/themes';
 
 const env = (import.meta as any).env || {};
+const localConfigModules = import.meta.glob('/firebase-applet-config.json', {
+  eager: true,
+}) as Record<string, { default?: Record<string, unknown> } | Record<string, unknown>>;
+const rawLocalConfigModule = localConfigModules['/firebase-applet-config.json'];
+const localAppletConfig = (
+  rawLocalConfigModule && 'default' in rawLocalConfigModule && rawLocalConfigModule.default
+    ? rawLocalConfigModule.default
+    : rawLocalConfigModule || {}
+) as Record<string, unknown>;
 
-const firebaseConfig = {
-  apiKey: String(env.VITE_FIREBASE_API_KEY || '').trim(),
-  authDomain: String(env.VITE_FIREBASE_AUTH_DOMAIN || '').trim(),
-  projectId: String(env.VITE_FIREBASE_PROJECT_ID || '').trim(),
-  storageBucket: String(env.VITE_FIREBASE_STORAGE_BUCKET || '').trim(),
-  messagingSenderId: String(env.VITE_FIREBASE_MESSAGING_SENDER_ID || '').trim(),
-  appId: String(env.VITE_FIREBASE_APP_ID || '').trim(),
+const pickConfigValue = (fileVal: unknown, envVal: unknown): string => {
+  const fromFile = String(fileVal || '').trim();
+  if (
+    fromFile &&
+    fromFile !== 'remixed-project-id' &&
+    !fromFile.includes('your-project') &&
+    !fromFile.includes('your_firebase_') &&
+    !fromFile.includes('your-firestore')
+  ) {
+    return fromFile;
+  }
+  const fromEnv = String(envVal || '').trim();
+  if (
+    fromEnv &&
+    !fromEnv.includes('your_firebase_') &&
+    !fromEnv.includes('your-project') &&
+    !fromEnv.includes('your-firestore')
+  ) {
+    return fromEnv;
+  }
+  return '';
 };
 
-const firestoreDatabaseId = String(env.VITE_FIREBASE_DATABASE_ID || '').trim() || undefined;
+const firebaseConfig = {
+  apiKey: pickConfigValue(localAppletConfig.apiKey, env.VITE_FIREBASE_API_KEY),
+  authDomain: pickConfigValue(localAppletConfig.authDomain, env.VITE_FIREBASE_AUTH_DOMAIN),
+  projectId: pickConfigValue(localAppletConfig.projectId, env.VITE_FIREBASE_PROJECT_ID),
+  storageBucket: pickConfigValue(localAppletConfig.storageBucket, env.VITE_FIREBASE_STORAGE_BUCKET),
+  messagingSenderId: pickConfigValue(localAppletConfig.messagingSenderId, env.VITE_FIREBASE_MESSAGING_SENDER_ID),
+  appId: pickConfigValue(localAppletConfig.appId, env.VITE_FIREBASE_APP_ID),
+};
+
+const rawDatabaseId = pickConfigValue(
+  localAppletConfig.firestoreDatabaseId,
+  env.VITE_FIREBASE_DATABASE_ID
+);
+const firestoreDatabaseId =
+  rawDatabaseId && rawDatabaseId !== 'default' && rawDatabaseId !== '(default)'
+    ? rawDatabaseId
+    : undefined;
 
 export const isFirebaseConfigured = Boolean(
   firebaseConfig.apiKey &&

@@ -76,6 +76,9 @@ export interface UserCustomPermissions {
   canManageDevices: boolean;
   canManageSettings: boolean;
   canClearLogs: boolean;
+  canChangeCompanyName?: boolean;
+  canManagePermissions?: boolean;
+  isFullAdmin?: boolean;
 }
 
 export type ThemeId =

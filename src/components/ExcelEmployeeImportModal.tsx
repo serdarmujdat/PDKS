@@ -7,12 +7,7 @@ import {
   CheckCircle2,
   AlertCircle,
   X,
-  Trash2,
   Users,
-  Shield,
-  Key,
-  Sparkles,
-  Info
 } from 'lucide-react';
 import { Employee, Department, Shift, UserAccount } from '../types/pdks';
 import { pdksStorage, slugifyNameToUsername, getTodayString } from '../services/storage';

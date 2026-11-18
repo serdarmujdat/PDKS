@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Download, Printer, Filter, TrendingUp, Clock, AlertTriangle, UserX, Award, BarChart3, Users, ArrowUpRight } from 'lucide-react';
+import { Download, Printer, TrendingUp, Clock, AlertTriangle, UserX, Award } from 'lucide-react';
 import { Department, Employee, ReportFilter, EmployeeReportSummary } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
 
@@ -11,7 +11,6 @@ export const AnalyticsReports: React.FC = () => {
   const formatYMD = (d: Date) => d.toISOString().split('T')[0];
 
   const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-  const sevenDaysAgo = new Date(Date.now() - 6 * 24 * 3600 * 1000);
 
   const [datePreset, setDatePreset] = useState<'this_month' | 'last_7_days' | 'today' | 'custom'>('this_month');
   const [filter, setFilter] = useState<ReportFilter>({
@@ -190,9 +189,9 @@ export const AnalyticsReports: React.FC = () => {
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
             <button
               onClick={() => handlePresetChange('today')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
                 datePreset === 'today'
-                  ? 'bg-white text-indigo-700 shadow-xs font-semibold'
+                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-xs font-semibold'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
@@ -200,9 +199,9 @@ export const AnalyticsReports: React.FC = () => {
             </button>
             <button
               onClick={() => handlePresetChange('last_7_days')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
                 datePreset === 'last_7_days'
-                  ? 'bg-white text-indigo-700 shadow-xs font-semibold'
+                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-xs font-semibold'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
@@ -210,9 +209,9 @@ export const AnalyticsReports: React.FC = () => {
             </button>
             <button
               onClick={() => handlePresetChange('this_month')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
                 datePreset === 'this_month'
-                  ? 'bg-white text-indigo-700 shadow-xs font-semibold'
+                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-xs font-semibold'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
@@ -220,9 +219,9 @@ export const AnalyticsReports: React.FC = () => {
             </button>
             <button
               onClick={() => setDatePreset('custom')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
                 datePreset === 'custom'
-                  ? 'bg-white text-indigo-700 shadow-xs font-semibold'
+                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-xs font-semibold'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { QrCode, Users, Clock, ShieldCheck, CalendarCheck, Smartphone, Maximize2, BarChart3, ChevronDown, Shield, TrendingUp, Key, LogOut, Lock, LogIn, LayoutDashboard, Printer, Image as ImageIcon, Sun, Moon, Palette, ShieldAlert } from 'lucide-react';
+import { QrCode, Users, Clock, ShieldCheck, CalendarCheck, Smartphone, Maximize2, BarChart3, ChevronDown, TrendingUp, Key, LogOut, Lock, LogIn, LayoutDashboard, Image as ImageIcon, Sun, Moon, Palette, ShieldAlert } from 'lucide-react';
 import { AppPageKey, CurrentUser, ThemeId } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
 import { NotificationCenter } from './NotificationCenter';
@@ -29,7 +29,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   setActiveTab,
   onEnterFullscreenKiosk,
   currentUser,
-  onSwitchUser,
+  onSwitchUser: _onSwitchUser,
   onOpenLogin,
   onLogout,
   onOpenWallQR,
@@ -84,6 +84,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   }, []);
 
   const isSuperAdmin = pdksStorage.isSuperAdmin(currentUser);
+  const isFullAdmin = pdksStorage.isFullAdminAccount(currentUser);
+  const canAccessPermissions = pdksStorage.canAccessPermissions(currentUser);
   const isHRManager = pdksStorage.isHRorSuperAdmin(currentUser);
   const canManageSettings = pdksStorage.canAccessSettings(currentUser);
   const isSupervisor = pdksStorage.canUserAccessShiftManagement(currentUser);
@@ -159,10 +161,10 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       )}
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          {/* Zone 1: Standard Company Logo & Single Brand Wordmark */}
-          <div className="flex items-center gap-3">
+      <div className="max-w-7xl mx-auto px-2.5 sm:px-5">
+        <div className="flex items-center justify-between gap-2 h-12 min-w-0">
+          {/* Zone 1: Compact Company Logo & Single-Line Dynamic Company Name */}
+          <div className="flex items-center min-w-0 shrink-0">
             <button
               onClick={() => {
                 if (isSuperAdmin) {
@@ -175,54 +177,52 @@ export const Navbar: React.FC<NavbarProps> = ({
                   setActiveTab(allowedPages[0] || 'portal');
                 }
               }}
-              className="text-left group flex items-center gap-2.5 focus:outline-none cursor-pointer"
+              className="text-left group flex items-center gap-2 focus:outline-none cursor-pointer min-w-0"
+              title={companyName}
             >
-              <div className="h-9 max-w-[160px] flex items-center shrink-0">
+              <div className="h-7 max-w-[96px] sm:max-w-[120px] flex items-center shrink-0">
                 <CompanyLogoImage
                   src={companyLogo}
                   alt={companyName}
                   companyName={companyName}
-                  className="max-h-8 max-w-[150px] w-auto h-auto object-contain"
+                  className="max-h-7 max-w-[96px] sm:max-w-[120px] w-auto h-auto object-contain"
                   variant="light"
                 />
               </div>
-              <div className="hidden sm:block border-l border-slate-200 pl-2.5 max-w-[170px]">
-                <span className="text-sm font-bold tracking-tight text-slate-900 block leading-tight truncate" title={companyName}>
+              <div className="border-l border-slate-200 pl-2 min-w-0 max-w-[125px] sm:max-w-[180px]">
+                <span className="text-xs sm:text-sm font-bold tracking-tight text-slate-900 block leading-none truncate">
                   {companyName}
-                </span>
-                <span className="text-[10px] font-medium text-slate-500 block leading-none">
-                  Personel Devam Takip
                 </span>
               </div>
             </button>
           </div>
 
-          {/* Zone 2: Navigation Links (Dynamic per-user permissions) */}
-          <nav className="hidden lg:flex items-center gap-1">
-            {isSuperAdmin && (
+          {/* Zone 2: Single-Line Navigation Links (Overflow-safe horizontal scroll on narrow lg screens) */}
+          <nav className="hidden lg:flex items-center gap-0.5 flex-1 min-w-0 overflow-x-auto scrollbar-none px-1">
+            {canAccessPermissions && (
               <button
                 onClick={() => setActiveTab('permissions')}
-                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-bold rounded-lg transition-colors whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'permissions'
                     ? 'bg-purple-600 text-white shadow-xs'
                     : 'text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200'
                 }`}
               >
-                <ShieldAlert className="w-4 h-4 shrink-0" />
-                <span>Yetki & Rol Yönetimi</span>
+                <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                <span>{isSuperAdmin ? 'Yetki & Rol' : 'Kullanıcı Yetkilendirme'}</span>
               </button>
             )}
 
             {canAccess('dashboard') && (
               <button
                 onClick={() => setActiveTab('dashboard')}
-                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'dashboard'
-                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                <Clock className="w-4 h-4 text-slate-500" />
+                <Clock className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'dashboard' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500'}`} />
                 <span>Canlı Pano</span>
               </button>
             )}
@@ -230,13 +230,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             {canAccess('employees') && (
               <button
                 onClick={() => setActiveTab('employees')}
-                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'employees'
-                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                <Users className="w-4 h-4 text-slate-500" />
+                <Users className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'employees' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500'}`} />
                 <span>Personel</span>
               </button>
             )}
@@ -244,13 +244,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             {canAccess('records') && (
               <button
                 onClick={() => setActiveTab('records')}
-                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'records'
-                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                <ShieldCheck className="w-4 h-4 text-slate-500" />
+                <ShieldCheck className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'records' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500'}`} />
                 <span>Kayıtlar</span>
               </button>
             )}
@@ -258,34 +258,29 @@ export const Navbar: React.FC<NavbarProps> = ({
             {canAccess('shifts') && (
               <button
                 onClick={() => setActiveTab('shifts')}
-                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'shifts'
                     ? isSupervisor && !isHRManager
-                      ? 'bg-amber-50 text-amber-800 border border-amber-300 font-semibold shadow-xs'
-                      : 'bg-indigo-50 text-indigo-700 font-semibold'
+                      ? 'bg-amber-50 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200 border border-amber-300 dark:border-amber-400/40 font-semibold shadow-xs'
+                      : 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                <CalendarCheck className={`w-4 h-4 ${isSupervisor && !isHRManager ? 'text-amber-600' : 'text-indigo-600'}`} />
+                <CalendarCheck className={`w-3.5 h-3.5 shrink-0 ${isSupervisor && !isHRManager ? 'text-amber-600 dark:text-amber-300' : 'text-indigo-600 dark:text-indigo-300'}`} />
                 <span>{isSupervisor && !isHRManager ? 'Vardiya Yönetimi' : 'Vardiya & İzin'}</span>
-                {isSupervisor && !isHRManager && (
-                  <span className="text-[10px] bg-amber-200/90 text-amber-900 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
-                    Birim Amiri
-                  </span>
-                )}
               </button>
             )}
 
             {canAccess('performance') && (
               <button
                 onClick={() => setActiveTab('performance')}
-                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'performance'
-                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                <TrendingUp className="w-4 h-4 text-emerald-600" />
+                <TrendingUp className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                 <span>Performans</span>
               </button>
             )}
@@ -293,13 +288,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             {canAccess('reports') && (
               <button
                 onClick={() => setActiveTab('reports')}
-                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'reports'
-                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                <BarChart3 className="w-4 h-4 text-slate-500" />
+                <BarChart3 className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'reports' ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-500'}`} />
                 <span>Raporlar</span>
               </button>
             )}
@@ -307,13 +302,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             {canAccess('kiosk') && (
               <button
                 onClick={() => setActiveTab('kiosk')}
-                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'kiosk'
-                    ? 'bg-indigo-50 text-indigo-700 font-semibold'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                <QrCode className="w-4 h-4 text-indigo-600" />
+                <QrCode className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
                 <span>{isHRManager ? 'Kiosk' : 'Kiosk Tarama'}</span>
               </button>
             )}
@@ -321,123 +316,65 @@ export const Navbar: React.FC<NavbarProps> = ({
             {canAccess('portal') && (
               <button
                 onClick={() => setActiveTab('portal')}
-                className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'portal'
-                    ? 'bg-indigo-50 text-indigo-700 font-semibold shadow-xs'
+                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                <Smartphone className="w-4 h-4 text-indigo-600" />
-                <span>{isHRManager ? 'Mobil Önizleme' : 'QR Okut & Mola Portalı'}</span>
+                <Smartphone className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                <span>{isHRManager ? 'Mobil Önizleme' : 'QR Okut & Mola'}</span>
               </button>
             )}
 
             {!isHRManager && allowedPages.length <= 3 && (
               <button
                 onClick={() => handleRestrictedTabClick('Diğer Yönetim Panelleri')}
-                className="flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium text-slate-400 hover:text-amber-700 hover:bg-amber-50/50 rounded-lg transition-colors cursor-pointer"
+                className="flex items-center gap-1 px-2 py-1.5 text-[11px] font-medium text-slate-400 hover:text-amber-700 hover:bg-amber-50/50 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 title="Diğer yönetim panelleri için yetki gereklidir"
               >
-                <Lock className="w-3.5 h-3.5 text-amber-500" />
-                <span>Diğer Paneller (Yetki Gerekli)</span>
+                <Lock className="w-3 h-3 text-amber-500 shrink-0" />
+                <span>Diğer Paneller</span>
               </button>
             )}
           </nav>
 
-          {/* Zone 3: Actions, Wall QR, Login Button, Notification Bell & Active Role Switcher */}
-          <div className="flex items-center gap-2">
-            {canManageSettings && onOpenLogoManager && (
-              <button
-                onClick={onOpenLogoManager}
-                className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors cursor-pointer"
-                title="Şirket logosunu standart boyutlarda ekleyin veya değiştirin"
-              >
-                <ImageIcon className="w-3.5 h-3.5 text-indigo-600" />
-                <span>Logo Değiştir</span>
-              </button>
-            )}
-
-            {canManageSettings && onOpenWallQR && (
-              <button
-                onClick={onOpenWallQR}
-                className="hidden lg:inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors cursor-pointer"
-                title="Şirket duvarına asılacak sabit QR kodu görüntüle, düzenle ve yazdır"
-              >
-                <QrCode className="w-3.5 h-3.5 text-purple-600" />
-                <span>Duvar QR'ı</span>
-              </button>
-            )}
-
-            {/* Direct Login / Logout Button - Dynamically switches when logged in */}
-            {pdksStorage.isLoggedIn() ? (
-              <button
-                onClick={onLogout}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors whitespace-nowrap cursor-pointer shadow-xs active:scale-95"
-                title={`Oturumu Kapat (${currentUser.name})`}
-              >
-                <LogOut className="w-3.5 h-3.5 text-rose-600" />
-                <span>Çıkış Yap</span>
-              </button>
-            ) : (
-              <button
-                onClick={onOpenLogin}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors whitespace-nowrap cursor-pointer shadow-xs active:scale-95"
-                title="Kullanıcı Adı ve Şifre ile Giriş Yap"
-              >
-                <LogIn className="w-3.5 h-3.5 text-indigo-600" />
-                <span>Giriş Yap</span>
-              </button>
-            )}
-
-
-            {onOpenThemeSettings && (
-              <button
-                onClick={onOpenThemeSettings}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg transition-colors cursor-pointer"
-                title={`Hesap Teması: ${currentThemeDef.name} (${currentThemeDef.mode === 'dark' ? 'Koyu' : 'Açık'})`}
-              >
-                {currentThemeDef.mode === 'dark' ? (
-                  <Moon className="w-3.5 h-3.5 text-indigo-600" />
-                ) : (
-                  <Sun className="w-3.5 h-3.5 text-amber-600" />
-                )}
-                <span className="hidden md:inline">Tema</span>
-              </button>
-            )}
-
+          {/* Zone 3: Minimal Notification Bell & Active User Profile Dropdown */}
+          <div className="flex items-center gap-1.5 shrink-0">
             {/* Notification Center */}
             <NotificationCenter
               currentUser={currentUser}
               filterEmployeeId={isHRManager || canAccess('dashboard') ? undefined : currentUser.employeeId}
             />
 
-            {/* Role Switcher & Account Profile Dropdown */}
+            {!pdksStorage.isLoggedIn() && (
+              <button
+                onClick={onOpenLogin}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                title="Kullanıcı Adı ve Şifre ile Giriş Yap"
+              >
+                <LogIn className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Giriş</span>
+              </button>
+            )}
+
+            {/* Compact Account Profile Dropdown (Houses Tema, Duvar QR, Logo, Kiosk Tam Ekran, Çıkış Yap) */}
             <div className="relative">
               <button
                 onClick={() => setIsRoleDropdownOpen(!isRoleDropdownOpen)}
-                className="flex items-center gap-2 pl-2 pr-2.5 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 transition-colors text-left"
-                title="Kullanıcı Profili ve Oturum Seçenekleri"
+                className="flex items-center gap-1.5 pl-1.5 pr-2 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors text-left cursor-pointer"
+                title={`${currentUser.name} · Profil ve Sistem Menüsü`}
               >
                 <img
                   src={currentUser.avatar}
                   alt={currentUser.name}
-                  className="w-7 h-7 rounded-full object-cover border border-slate-200"
+                  className="w-6 h-6 rounded-full object-cover border border-slate-200 shrink-0"
                   referrerPolicy="no-referrer"
                 />
-                <div className="hidden sm:block text-left">
-                  <div className="text-xs font-bold text-slate-900 leading-tight flex items-center gap-1">
-                    <span>{currentUser.name}</span>
-                    {currentUser.username && (
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        (@{currentUser.username})
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-slate-500 leading-tight">
-                    {getRoleLabel(currentUser.role)}
-                  </div>
-                </div>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                <span className="hidden sm:inline text-xs font-semibold text-slate-800 truncate max-w-[110px]">
+                  {currentUser.name}
+                </span>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               </button>
 
               {isRoleDropdownOpen && (
@@ -446,81 +383,94 @@ export const Navbar: React.FC<NavbarProps> = ({
                     className="fixed inset-0 z-40"
                     onClick={() => setIsRoleDropdownOpen(false)}
                   />
-                  <div className="absolute right-0 mt-2 w-[calc(100vw-24px)] max-w-xs sm:w-80 bg-white rounded-2xl shadow-xl border border-slate-200 z-50 p-2 overflow-hidden">
+                  <div className="absolute right-0 mt-1.5 w-[calc(100vw-20px)] max-w-xs sm:w-80 bg-white rounded-2xl shadow-xl border border-slate-200 z-50 p-2 overflow-hidden">
                     {/* User Profile Header */}
-                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 mb-2">
+                    <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100 mb-2">
                       <div className="flex items-center gap-2.5">
                         <img
                           src={currentUser.avatar}
                           alt={currentUser.name}
-                          className="w-9 h-9 rounded-full object-cover border border-slate-200"
+                          className="w-9 h-9 rounded-full object-cover border border-slate-200 shrink-0"
                           referrerPolicy="no-referrer"
                         />
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <div className="text-xs font-bold text-slate-900 truncate">
                             {currentUser.name}
                           </div>
-                          <div className="text-[11px] font-mono text-indigo-600">
+                          <div className="text-[11px] font-mono text-indigo-600 truncate">
                             @{currentUser.username || 'hesap'}
                           </div>
-                          <div className="text-[10px] text-slate-500">
+                          <div className="text-[10px] text-slate-500 truncate">
                             {currentUser.title}
                           </div>
                         </div>
                       </div>
 
-                      <div className="mt-2 pt-2 border-t border-slate-200 flex items-center justify-between text-[11px]">
-                        <span className={`px-2 py-0.5 rounded-full border text-[9px] font-semibold ${getRoleBadgeStyle(currentUser.role)}`}>
+                      <div className="mt-2 pt-2 border-t border-slate-200 flex items-center justify-between gap-2 text-[11px]">
+                        <span className={`px-2 py-0.5 rounded-full border text-[9px] font-semibold truncate ${getRoleBadgeStyle(currentUser.role)}`}>
                           {getRoleLabel(currentUser.role)}
+                          {!isSuperAdmin && isFullAdmin ? ' · Tam Yetkili' : !isSuperAdmin && canAccessPermissions ? ' · Alt Yetkili' : ''}
                         </span>
-
-                        <button
-                          onClick={() => {
-                            setIsRoleDropdownOpen(false);
-                            onLogout();
-                          }}
-                          className="text-rose-600 hover:text-rose-700 font-semibold flex items-center gap-1 text-[11px]"
-                        >
-                          <LogOut className="w-3 h-3" />
-                          <span>Çıkış Yap</span>
-                        </button>
+                        <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold text-[10px] shrink-0">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                          Aktif
+                        </span>
                       </div>
                     </div>
 
-                    {canManageSettings && onOpenLogoManager && (
-                      <button
-                        onClick={() => {
-                          setIsRoleDropdownOpen(false);
-                          onOpenLogoManager();
-                        }}
-                        className="w-full mb-2 p-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-purple-200 cursor-pointer"
-                      >
-                        <ImageIcon className="w-3.5 h-3.5 text-purple-600" />
-                        <span>Kurumsal Logo Yönetimi</span>
-                      </button>
-                    )}
+                    {/* Relocated Management & System Actions */}
+                    <div className="space-y-1.5 mb-2">
+                      {canManageSettings && onOpenLogoManager && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsRoleDropdownOpen(false);
+                            onOpenLogoManager();
+                          }}
+                          className="w-full p-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-xs font-semibold flex items-center justify-between gap-2 transition-colors border border-indigo-200 cursor-pointer"
+                        >
+                          <span className="flex items-center gap-2">
+                            <ImageIcon className="w-3.5 h-3.5 text-indigo-600" />
+                            <span>Logoyu Değiştir</span>
+                          </span>
+                          <span className="text-[10px] text-indigo-500 font-normal">Kurumsal</span>
+                        </button>
+                      )}
 
-                    {/* User Details & Permissions Summary */}
-                    <div className="p-3 bg-slate-50/80 rounded-xl border border-slate-100 text-[11px] space-y-2 mb-2">
-                      <div className="flex items-center justify-between text-slate-600">
-                        <span className="text-slate-400">Sicil / Kullanıcı:</span>
-                        <span className="font-mono font-semibold text-slate-800">
-                          {currentUser.employeeId || currentUser.username}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-slate-600">
-                        <span className="text-slate-400">Departman:</span>
-                        <span className="font-medium text-slate-800 truncate max-w-[170px]">
-                          {currentUser.department}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-slate-600">
-                        <span className="text-slate-400">Oturum Durumu:</span>
-                        <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold text-[10px]">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                          Aktif Oturum
-                        </span>
-                      </div>
+                      {canManageSettings && onOpenWallQR && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsRoleDropdownOpen(false);
+                            onOpenWallQR();
+                          }}
+                          className="w-full p-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-800 text-xs font-semibold flex items-center justify-between gap-2 transition-colors border border-purple-200 cursor-pointer"
+                        >
+                          <span className="flex items-center gap-2">
+                            <QrCode className="w-3.5 h-3.5 text-purple-600" />
+                            <span>Duvar QR Yönetimi & Yazdır</span>
+                          </span>
+                          <span className="text-[10px] text-purple-500 font-normal">Sabit QR</span>
+                        </button>
+                      )}
+
+                      {canAccess('kiosk') && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsRoleDropdownOpen(false);
+                            setActiveTab('kiosk');
+                            onEnterFullscreenKiosk();
+                          }}
+                          className="w-full p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold flex items-center justify-between gap-2 transition-colors border border-slate-200 cursor-pointer"
+                        >
+                          <span className="flex items-center gap-2">
+                            <Maximize2 className="w-3.5 h-3.5 text-slate-600" />
+                            <span>Tam Ekran Kiosk Terminali</span>
+                          </span>
+                          <span className="text-[10px] text-slate-500 font-normal">Kiosk</span>
+                        </button>
+                      )}
                     </div>
 
                     {/* Per-Account Personal Theme Switcher (Available for ALL roles) */}
@@ -528,7 +478,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
                           <Palette className="w-3.5 h-3.5 text-indigo-600" />
-                          <span>Hesap Teması</span>
+                          <span>Tema Değiştir</span>
                         </span>
                         <span className="text-[10px] font-medium text-slate-500">
                           {currentThemeDef.name}
@@ -585,11 +535,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                           ) : (
                             <Sun className="w-3 h-3" />
                           )}
-                          <span>Tüm Tema Önizlemelerini Aç</span>
+                          <span>Tüm Tema Seçeneklerini Aç</span>
                         </button>
                       )}
                     </div>
-
 
                     {/* Quick Login with Different Username */}
                     <button
@@ -597,9 +546,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                         setIsRoleDropdownOpen(false);
                         onOpenLogin();
                       }}
-                      className="w-full mb-2 p-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-indigo-200 cursor-pointer"
+                      className="w-full mb-1.5 p-2 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-slate-200 cursor-pointer"
                     >
-                      <Key className="w-3.5 h-3.5 text-indigo-600" />
+                      <Key className="w-3.5 h-3.5 text-slate-500" />
                       <span>Farklı Kullanıcı ile Giriş Yap</span>
                     </button>
 
@@ -609,61 +558,48 @@ export const Navbar: React.FC<NavbarProps> = ({
                         setIsRoleDropdownOpen(false);
                         onLogout();
                       }}
-                      className="w-full p-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold flex items-center justify-center gap-2 transition-colors border border-rose-200 cursor-pointer mb-2"
+                      className="w-full p-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold flex items-center justify-center gap-2 transition-colors border border-rose-200 cursor-pointer mb-1.5"
                     >
                       <LogOut className="w-4 h-4 text-rose-600" />
-                      <span>Sistemden Çıkış Yap</span>
+                      <span>Çıkış Yap</span>
                     </button>
 
-                    <div className="px-3 py-1.5 border-t border-slate-100 text-center text-[10px] text-slate-400 truncate">
-                      {companyName} · Güvenli Kurumsal Giriş
+                    <div className="px-3 py-1 border-t border-slate-100 text-center text-[10px] text-slate-400 truncate">
+                      {companyName}
                     </div>
                   </div>
                 </>
               )}
             </div>
-
-            {/* Kiosk Fullscreen Action */}
-            <button
-              onClick={() => {
-                setActiveTab('kiosk');
-                onEnterFullscreenKiosk();
-              }}
-              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-xs transition-colors whitespace-nowrap"
-              title="Kiosk Terminalini Tam Ekranda Aç"
-            >
-              <Maximize2 className="w-3.5 h-3.5" />
-              <span>Kiosk</span>
-            </button>
           </div>
         </div>
 
-        {/* Mobile secondary tab strip */}
-        <div className="flex lg:hidden overflow-x-auto py-2 gap-1.5 border-t border-slate-100 -mx-4 px-4 scrollbar-none items-center">
-          {isSuperAdmin && (
+        {/* Compact Mobile / Tablet Tab Strip (Single-line horizontal scroll, zero Duvar QR clutter) */}
+        <div className="flex lg:hidden overflow-x-auto py-1.5 gap-1 border-t border-slate-100 -mx-2.5 px-2.5 scrollbar-none items-center">
+          {canAccessPermissions && (
             <button
               onClick={() => setActiveTab('permissions')}
-              className={`px-3 py-1.5 text-xs font-bold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              className={`px-2.5 py-1 text-[11px] font-bold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'permissions'
                   ? 'bg-purple-600 text-white shadow-xs'
                   : 'text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200'
               }`}
             >
-              <ShieldAlert className="w-3.5 h-3.5" />
-              <span>Yetki & Rol Yönetimi</span>
+              <ShieldAlert className="w-3 h-3" />
+              <span>{isSuperAdmin ? 'Yetki & Rol' : 'Kullanıcı Yetkilendirme'}</span>
             </button>
           )}
 
           {canAccess('dashboard') && (
             <button
               onClick={() => setActiveTab('dashboard')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'dashboard'
                   ? 'bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
               }`}
             >
-              <LayoutDashboard className="w-3.5 h-3.5" />
+              <LayoutDashboard className="w-3 h-3" />
               <span>Canlı Pano</span>
             </button>
           )}
@@ -671,13 +607,13 @@ export const Navbar: React.FC<NavbarProps> = ({
           {canAccess('employees') && (
             <button
               onClick={() => setActiveTab('employees')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'employees'
                   ? 'bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
               }`}
             >
-              <Users className="w-3.5 h-3.5" />
+              <Users className="w-3 h-3" />
               <span>Personel</span>
             </button>
           )}
@@ -685,13 +621,13 @@ export const Navbar: React.FC<NavbarProps> = ({
           {canAccess('records') && (
             <button
               onClick={() => setActiveTab('records')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'records'
                   ? 'bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
               }`}
             >
-              <Clock className="w-3.5 h-3.5" />
+              <Clock className="w-3 h-3" />
               <span>Kayıtlar</span>
             </button>
           )}
@@ -699,7 +635,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           {canAccess('shifts') && (
             <button
               onClick={() => setActiveTab('shifts')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'shifts'
                   ? isSupervisor && !isHRManager
                     ? 'bg-amber-600 text-white shadow-xs'
@@ -709,21 +645,21 @@ export const Navbar: React.FC<NavbarProps> = ({
                   : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
               }`}
             >
-              <CalendarCheck className="w-3.5 h-3.5" />
-              <span>{isSupervisor && !isHRManager ? 'Vardiya (Birim Amiri)' : 'Vardiya & İzin'}</span>
+              <CalendarCheck className="w-3 h-3" />
+              <span>{isSupervisor && !isHRManager ? 'Vardiya' : 'Vardiya & İzin'}</span>
             </button>
           )}
 
           {canAccess('performance') && (
             <button
               onClick={() => setActiveTab('performance')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'performance'
                   ? 'bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
               }`}
             >
-              <TrendingUp className="w-3.5 h-3.5" />
+              <TrendingUp className="w-3 h-3" />
               <span>Performans</span>
             </button>
           )}
@@ -731,53 +667,42 @@ export const Navbar: React.FC<NavbarProps> = ({
           {canAccess('reports') && (
             <button
               onClick={() => setActiveTab('reports')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'reports'
                   ? 'bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
               }`}
             >
-              <BarChart3 className="w-3.5 h-3.5" />
+              <BarChart3 className="w-3 h-3" />
               <span>Raporlar</span>
-            </button>
-          )}
-
-          {canManageSettings && onOpenWallQR && (
-            <button
-              onClick={onOpenWallQR}
-              className="px-2.5 py-1.5 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0"
-              title="Şirket Duvar QR Kodunu Görüntüle / Yazdır"
-            >
-              <Printer className="w-3.5 h-3.5 text-purple-600" />
-              <span>Duvar QR</span>
             </button>
           )}
 
           {canAccess('kiosk') && (
             <button
               onClick={() => setActiveTab('kiosk')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'kiosk'
                   ? 'bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
               }`}
             >
-              <QrCode className="w-3.5 h-3.5" />
-              <span>{isHRManager ? 'Kiosk' : 'Kiosk Terminali'}</span>
+              <QrCode className="w-3 h-3" />
+              <span>Kiosk</span>
             </button>
           )}
 
           {canAccess('portal') && (
             <button
               onClick={() => setActiveTab('portal')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-xl whitespace-nowrap flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg whitespace-nowrap flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
                 activeTab === 'portal'
                   ? 'bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-700 bg-slate-100 hover:bg-slate-200'
               }`}
             >
-              <Smartphone className="w-3.5 h-3.5" />
-              <span>{isHRManager ? 'Mobil Önizleme' : 'QR Okut & Mola'}</span>
+              <Smartphone className="w-3 h-3" />
+              <span>{isHRManager ? 'Mobil' : 'QR Okut & Mola'}</span>
             </button>
           )}
         </div>

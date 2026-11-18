@@ -10,7 +10,6 @@ import {
   Building2,
   X,
   Download,
-  AlertCircle,
   Smartphone,
   Compass,
   Info,

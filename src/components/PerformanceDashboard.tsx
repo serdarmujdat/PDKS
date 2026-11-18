@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Award, TrendingUp, ShieldCheck, Clock, UserCheck, Flame, Download, CheckCircle2, AlertCircle, ArrowUpRight, ArrowDownRight, Coffee, Calendar, Search } from 'lucide-react';
-import { EmployeePerformanceMetric, Department } from '../types/pdks';
+import { Award, TrendingUp, ShieldCheck, Flame, Download, Coffee, Search } from 'lucide-react';
+import { EmployeePerformanceMetric } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
 
 export const PerformanceDashboard: React.FC = () => {

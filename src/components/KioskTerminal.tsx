@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import jsQR from 'jsqr';
-import { Camera, RefreshCw, CheckCircle2, AlertTriangle, Shield, Clock, Smartphone, Volume2, Sparkles, SwitchCamera, Maximize2, Minimize2, Keyboard, HelpCircle, X, Check, Lock, Unlock, Key, ShieldCheck, Flashlight, FlashlightOff, Sun, SunMedium, Lightbulb, Zap, Info, ShieldAlert, AlertCircle, Sliders, Focus, Gauge, Video, Cpu, Crosshair, ExternalLink } from 'lucide-react';
+import { Camera, RefreshCw, CheckCircle2, AlertTriangle, Shield, Clock, Smartphone, Sparkles, SwitchCamera, Maximize2, Minimize2, Keyboard, HelpCircle, X, Check, Lock, Unlock, Key, ShieldCheck, Flashlight, SunMedium, Zap, ShieldAlert, Sliders, Focus, Gauge, Video, ExternalLink } from 'lucide-react';
 import { Employee, ActionType, AttendanceRecord, CurrentUser } from '../types/pdks';
 import { pdksStorage, PDKS_SYSTEM_API_KEY } from '../services/storage';
 import { playSuccessChime, playErrorBuzzer } from '../utils/audio';
@@ -85,7 +85,6 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
   );
 
   // Torch / Flashlight and Ambient Light States
-  const [hasHardwareTorch, setHasHardwareTorch] = useState<boolean>(false);
   const [isTorchOn, setIsTorchOn] = useState<boolean>(false);
   const [autoTorchEnabled, setAutoTorchEnabled] = useState<boolean>(true);
   const [isLowLightDetected, setIsLowLightDetected] = useState<boolean>(false);
@@ -212,7 +211,7 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
     if (scanLockRef.current) return;
     scanLockRef.current = true;
 
-    const { employeeId, isValid } = parseQRPayload(rawCode);
+    const { employeeId } = parseQRPayload(rawCode);
 
     // Check if user scanned company wall QR in kiosk
     const wallCheck = pdksStorage.parseWallQRToken(rawCode);
@@ -418,8 +417,7 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
               setActiveResolutionLabel(`${settings.width}x${settings.height}${settings.frameRate ? ` @${Math.round(settings.frameRate)}fps` : ''}`);
             }
 
-            // Check hardware torch capability
-            setHasHardwareTorch(Boolean(capabilities.torch));
+            // Continuous autofocus & exposure constraints applied below
 
             // Ultra-fast continuous autofocus & continuous auto-exposure
             const advancedConstraints: any = {};
@@ -1119,15 +1117,16 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
                             <span>İzin Verdim, Kamerayı Başlat</span>
                           </button>
 
-                          <button
-                            type="button"
-                            onClick={() => window.open(window.location.href, '_blank')}
+                          <a
+                            href={typeof window !== 'undefined' ? window.location.href : '#'}
+                            target="_blank"
+                            rel="noopener noreferrer"
                             className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold rounded-xl transition-colors flex items-center gap-2 border border-slate-700 cursor-pointer"
                             title="Önizleme çerçevesi dışına çıkarak kamera iznini tarayıcıdan onaylayın"
                           >
                             <ExternalLink className="w-4 h-4 text-indigo-400" />
                             <span>Yeni Sekmede Aç</span>
-                          </button>
+                          </a>
                         </div>
                       </div>
 
@@ -1499,14 +1498,15 @@ export const KioskTerminal: React.FC<KioskTerminalProps> = ({
                 İç içe çerçeveler (iframe) tarayıcı güvenlik politikası gereği kamerayı doğrudan engelleyebilir. Sayfayı bağımsız yeni sekmede açarak kamera iznini onaylayabilirsiniz:
               </p>
               <div className="flex gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => window.open(window.location.href, '_blank')}
+                <a
+                  href={typeof window !== 'undefined' ? window.location.href : '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="flex-1 py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer shadow-xs transition-colors"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   <span>Yeni Sekmede Aç</span>
-                </button>
+                </a>
               </div>
             </div>
 

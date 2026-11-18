@@ -8,15 +8,12 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Coffee,
-  Calendar,
   Download,
   QrCode,
   TrendingUp,
   Printer,
   Search,
-  Filter,
   CheckCircle2,
-  Sparkles,
   Image as ImageIcon,
   Bell,
   Timer,
@@ -26,6 +23,8 @@ import {
   FileCheck2,
   Smartphone,
   ShieldAlert,
+  Palette,
+  LogOut,
 } from 'lucide-react';
 import { Employee, AttendanceRecord, Department, OvertimeRequest, LeaveRequest, DeviceEntryApproval, PDKSNotification } from '../types/pdks';
 import { pdksStorage, getTodayString } from '../services/storage';
@@ -40,6 +39,8 @@ interface DashboardOverviewProps {
   onNavigateToPerformance?: () => void;
   onOpenWallQR?: () => void;
   onOpenLogoManager?: () => void;
+  onOpenThemeSettings?: () => void;
+  onLogout?: () => void;
   currentUser?: import('../types/pdks').CurrentUser;
   companyLogo?: string;
   companyName?: string;
@@ -52,13 +53,17 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   onNavigateToPerformance,
   onOpenWallQR,
   onOpenLogoManager,
+  onOpenThemeSettings,
+  onLogout,
   currentUser,
   companyLogo: propCompanyLogo,
   companyName: propCompanyName,
 }) => {
   const activeUser = currentUser || pdksStorage.getActiveUser();
+  const isSuperAdmin = pdksStorage.isSuperAdmin(activeUser);
   const isHRManager = pdksStorage.isHRorSuperAdmin(activeUser);
   const canManageSettings = pdksStorage.canAccessSettings(activeUser);
+  const canManageLogo = pdksStorage.canManageLogo(activeUser);
   const canApprove = pdksStorage.canApproveRequests(activeUser);
   const canExport = pdksStorage.canExportReports(activeUser);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -389,6 +394,30 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             <QrCode className="w-3.5 h-3.5" />
             <span>Kiosk</span>
           </button>
+
+          {onOpenThemeSettings && (
+            <button
+              type="button"
+              onClick={onOpenThemeSettings}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 border border-slate-200 hover:bg-slate-200 rounded-lg shadow-xs transition-colors cursor-pointer"
+              title="Tema ayarlarını değiştir"
+            >
+              <Palette className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Tema</span>
+            </button>
+          )}
+
+          {onLogout && (
+            <button
+              type="button"
+              onClick={onLogout}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 rounded-lg shadow-xs transition-colors cursor-pointer"
+              title="Oturumu Kapat"
+            >
+              <LogOut className="w-3.5 h-3.5 text-rose-600" />
+              <span>Çıkış Yap</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -424,7 +453,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           </div>
         </div>
 
-        {onOpenLogoManager && (
+        {canManageLogo && onOpenLogoManager && (
           <button
             onClick={onOpenLogoManager}
             className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold shadow-sm transition-all cursor-pointer whitespace-nowrap active:scale-95 shrink-0"
@@ -435,8 +464,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         )}
       </div>
 
-      {/* Yönetici Paneli - Sistem / Şirket Ayarları (Mevcut Şirket Adı + Yönetici Şifresi Kilidi) */}
-      {canManageSettings && (
+      {/* Sistem / Şirket Ayarları (Yalnızca Gizli Süper Yönetici - Admin.Admin) */}
+      {isSuperAdmin && (
         <CompanySettingsPanel
           currentUser={activeUser}
           onCompanyUpdated={(updatedName) => setCompanyName(updatedName)}
@@ -647,7 +676,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               onClick={() => setApprovalFilter('all')}
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
                 approvalFilter === 'all'
-                  ? 'bg-slate-900 text-white shadow-xs'
+                  ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
@@ -1281,7 +1310,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             onClick={() => setStatusFilter('all')}
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap cursor-pointer shrink-0 ${
               statusFilter === 'all'
-                ? 'bg-slate-900 text-white shadow-xs'
+                ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
           >
@@ -1460,7 +1489,6 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                   const isInside = emp.currentPresence === 'inside';
                   const isBreak = emp.currentPresence === 'break';
                   const isLeave = emp.status === 'leave';
-                  const isOutside = !isInside && !isBreak;
 
                   return (
                     <tr key={emp.id} className="hover:bg-slate-50/80 transition-colors">

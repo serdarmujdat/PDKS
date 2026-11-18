@@ -29,17 +29,13 @@ import {
   ChevronRight,
   CalendarDays,
   Search,
-  Filter,
   Timer,
   UserCheck,
-  FileCheck2,
   UserPlus,
   Edit3,
-  CheckSquare,
-  Square,
   ShieldCheck,
 } from 'lucide-react';
-import { Shift, LeaveRequest, Employee, CurrentUser, OvertimeRequest, SupervisorAssignment, Department } from '../types/pdks';
+import { Shift, LeaveRequest, Employee, CurrentUser, OvertimeRequest, SupervisorAssignment } from '../types/pdks';
 import { pdksStorage } from '../services/storage';
 
 interface ShiftAndLeaveManagementProps {
@@ -410,7 +406,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
 
   // Single employee mobile/in-app notification trigger
   const handleSendShiftNotification = (item: UpcomingShiftItem) => {
-    const notif = pdksStorage.addNotification({
+    pdksStorage.addNotification({
       title: `⏰ Vardiya Hatırlatması (${item.shift.name})`,
       message: `Sayın ${item.employee.fullName}, "${item.shift.name}" mesainiz saat ${item.shift.startTime}'te başlayacaktır (${item.formattedRemaining}). Lütfen turnike veya duvar QR koduyla işyeri girişinizi tamamlayınız.`,
       type: 'shift_reminder',
@@ -1323,7 +1319,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
             onClick={() => setActiveViewTab('all')}
             className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl font-semibold transition-all cursor-pointer whitespace-nowrap ${
               activeViewTab === 'all'
-                ? 'bg-slate-900 text-white shadow-xs'
+                ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
                 : 'bg-white text-slate-500 hover:bg-slate-100 border border-slate-200'
             }`}
           >
@@ -2244,7 +2240,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                 onClick={() => setOvertimeFilter('all')}
                 className={`px-3 py-1.5 rounded-lg font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                   overtimeFilter === 'all'
-                    ? 'bg-slate-900 text-white shadow-xs'
+                    ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >

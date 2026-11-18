@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Filter, QrCode, Printer, Trash2, Edit2, Download, Check, X, Shield, User, Building2, Phone, Mail, Lock, ShieldAlert, Key, Camera, CheckCircle2, AlertCircle, Clock, Image as ImageIcon, MapPin, FileSpreadsheet, Smartphone, RotateCcw } from 'lucide-react';
+import { Plus, Search, QrCode, Printer, Trash2, Edit2, Download, Check, X, Shield, Lock, ShieldAlert, Key, Camera, CheckCircle2, AlertCircle, Clock, MapPin, FileSpreadsheet, Smartphone, RotateCcw } from 'lucide-react';
 import { Employee, Department, Shift, CurrentUser, UserAccount, PresenceStatus, DeviceEntryApproval } from '../types/pdks';
 import { pdksStorage, slugifyNameToUsername, normalizeUsername, getTodayString } from '../services/storage';
 import { generateQRDataURL } from '../utils/qr';
@@ -564,9 +564,9 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
         <div className="flex items-center gap-1.5 overflow-x-auto w-full md:w-auto scrollbar-none">
           <button
             onClick={() => setSelectedDepartment('all')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
               selectedDepartment === 'all'
-                ? 'bg-slate-900 text-white shadow-xs'
+                ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
                 : 'text-slate-600 hover:bg-slate-100'
             }`}
           >
@@ -583,9 +583,9 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
             <button
               key={dept}
               onClick={() => setSelectedDepartment(dept)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
                 selectedDepartment === dept
-                  ? 'bg-slate-900 text-white shadow-xs'
+                  ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
                   : 'text-slate-600 hover:bg-slate-100'
               }`}
             >

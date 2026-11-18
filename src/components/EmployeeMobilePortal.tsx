@@ -13,23 +13,15 @@ import {
   Coffee,
   RefreshCw,
   Send,
-  Lock,
-  Plus,
   AlertCircle,
   Camera,
   Flashlight,
-  FlashlightOff,
   SwitchCamera,
   MapPin,
   Sparkles,
   Info,
   Check,
   X,
-  Zap,
-  Upload,
-  Image as ImageIcon,
-  Download,
-  Eye,
   Compass,
   ShieldAlert,
   Bell,
@@ -42,7 +34,6 @@ import {
 import {
   Employee,
   AttendanceRecord,
-  Shift,
   CurrentUser,
   LeaveRequest,
   OvertimeRequest,
@@ -116,7 +107,6 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
   const [employeeUnreadCount, setEmployeeUnreadCount] = useState(0);
   const [newPhotoData, setNewPhotoData] = useState<string | null>(null);
   const [photoFeedback, setPhotoFeedback] = useState<string | null>(null);
-  const [directPhotoInput, setDirectPhotoInput] = useState<string>('');
 
   // Current Company Wall QR configuration
   const [companyQR, setCompanyQR] = useState<CompanyWallQRConfig>(pdksStorage.getCompanyWallQR());
@@ -772,15 +762,6 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     };
   }, [stopCamera]);
 
-  // Quick Action: Open camera with break or normal mode (Strict camera QR scan requirement)
-  const handleQuickBreak = () => {
-    if (currentEmp?.currentPresence === 'break') {
-      handleOpenScanner('normal');
-    } else {
-      handleOpenScanner('break');
-    }
-  };
-
   // Submit Leave Request
   const handleSubmitLeave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -909,7 +890,6 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     setPhotoFeedback('Fotoğraf doğrudan güncellendi ve sisteme uygulandı.');
     loadData();
     setNewPhotoData(null);
-    setDirectPhotoInput('');
     setTimeout(() => setPhotoFeedback(null), 3000);
   };
 
@@ -927,7 +907,6 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
   const todayStr = getTodayString();
   const todayRecords = recentRecords.filter((r) => r.date === todayStr);
   const firstCheckIn = todayRecords.find((r) => r.type === 'check_in');
-  const lastRecord = todayRecords[0];
 
   return (
     <div className="w-full max-w-md sm:max-w-xl mx-auto min-w-0 px-3 sm:px-4 py-3 sm:py-5 space-y-3.5">
@@ -1310,7 +1289,9 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
                   {gpsStatus === 'loading'
                     ? 'Konum servisi doğrulanıyor...'
                     : gpsStatus === 'denied'
-                    ? 'Konum izni verilmedi (İzin gereklidir)'
+                    ? gpsErrorText || 'Konum izni verilmedi (İzin gereklidir)'
+                    : gpsStatus === 'error'
+                    ? gpsErrorText || 'Konum bilgisi alınamadı'
                     : userLocation
                     ? 'GPS servisi bağlı ve aktif'
                     : 'Konum bekleniyor'}
@@ -1568,15 +1549,16 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
 
                 <div className="flex items-center gap-2">
                   {/* 2. Open in New Tab for Iframe permission bypass */}
-                  <button
-                    type="button"
-                    onClick={() => window.open(window.location.href, '_blank')}
+                  <a
+                    href={typeof window !== 'undefined' ? window.location.href : '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="flex-1 py-2 px-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-[11px] rounded-xl cursor-pointer flex items-center justify-center gap-1.5 border border-slate-700 transition-colors"
                     title="Önizleme çerçevesi dışına çıkarak kamera iznini onaylayın"
                   >
                     <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
                     <span>Yeni Sekmede Aç</span>
-                  </button>
+                  </a>
 
                   {/* 3. Retry */}
                   <button
@@ -2470,14 +2452,15 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
             </div>
 
             <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => window.open(window.location.href, '_blank')}
+              <a
+                href={typeof window !== 'undefined' ? window.location.href : '#'}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
                 <span>Sayfayı Yeni Sekmede Aç (Harici Tarayıcı)</span>
-              </button>
+              </a>
 
               <button
                 type="button"

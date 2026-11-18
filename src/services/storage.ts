@@ -72,6 +72,7 @@ const STORAGE_KEYS = {
 };
 
 const SESSION_SA_TOKEN_KEY = 'pdks_sa_token_v1';
+const SESSION_USER_TOKEN_KEY = 'pdks_user_token_v1';
 
 export const ALL_APP_PAGES: { key: AppPageKey; label: string }[] = [
   { key: 'dashboard', label: 'Canlı Pano' },
@@ -94,6 +95,24 @@ export const FULL_SUPER_ADMIN_PERMISSIONS: UserCustomPermissions = {
   canManageDevices: true,
   canManageSettings: true,
   canClearLogs: true,
+  canChangeCompanyName: true,
+  canManagePermissions: true,
+  isFullAdmin: true,
+};
+
+export const DELEGATED_FULL_ADMIN_PERMISSIONS: UserCustomPermissions = {
+  allowedPages: ['dashboard', 'employees', 'records', 'shifts', 'performance', 'reports', 'kiosk', 'portal'],
+  canCreate: true,
+  canEdit: true,
+  canDelete: true,
+  canApprove: true,
+  canExportReports: true,
+  canManageDevices: true,
+  canManageSettings: true,
+  canClearLogs: true,
+  canChangeCompanyName: false,
+  canManagePermissions: true,
+  isFullAdmin: true,
 };
 
 function isHiddenRecord(item: any): boolean {
@@ -130,6 +149,26 @@ function setSuperAdminToken(token?: string | null): void {
   } catch {}
 }
 
+function getUserSessionToken(): string {
+  if (typeof sessionStorage === 'undefined') return '';
+  try {
+    return sessionStorage.getItem(SESSION_USER_TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function setUserSessionToken(token?: string | null): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    if (token) {
+      sessionStorage.setItem(SESSION_USER_TOKEN_KEY, token);
+    } else {
+      sessionStorage.removeItem(SESSION_USER_TOKEN_KEY);
+    }
+  } catch {}
+}
+
 export function getDefaultPermissionsForRole(
   role: UserRole,
   isShiftSupervisor?: boolean
@@ -148,6 +187,9 @@ export function getDefaultPermissionsForRole(
       canManageDevices: true,
       canManageSettings: true,
       canClearLogs: false,
+      canChangeCompanyName: false,
+      canManagePermissions: false,
+      isFullAdmin: false,
     };
   }
   if (role === 'birim_amiri') {
@@ -161,6 +203,9 @@ export function getDefaultPermissionsForRole(
       canManageDevices: false,
       canManageSettings: false,
       canClearLogs: false,
+      canChangeCompanyName: false,
+      canManagePermissions: false,
+      isFullAdmin: false,
     };
   }
   if (role === 'yonetici') {
@@ -174,6 +219,9 @@ export function getDefaultPermissionsForRole(
       canManageDevices: false,
       canManageSettings: false,
       canClearLogs: false,
+      canChangeCompanyName: false,
+      canManagePermissions: false,
+      isFullAdmin: false,
     };
   }
   return {
@@ -186,6 +234,9 @@ export function getDefaultPermissionsForRole(
     canManageDevices: false,
     canManageSettings: false,
     canClearLogs: false,
+    canChangeCompanyName: false,
+    canManagePermissions: false,
+    isFullAdmin: false,
   };
 }
 
@@ -759,6 +810,7 @@ export async function syncWithServer(force = false): Promise<boolean> {
                       if (matchedAcc) {
                         let activeChanged = false;
                         if (
+                          matchedAcc.username !== activeParsed.username ||
                           matchedAcc.registeredDeviceId !== activeParsed.registeredDeviceId ||
                           matchedAcc.registeredMacAddress !== activeParsed.registeredMacAddress ||
                           matchedAcc.lastLoginDeviceId !== activeParsed.lastLoginDeviceId ||
@@ -767,6 +819,7 @@ export async function syncWithServer(force = false): Promise<boolean> {
                           JSON.stringify(matchedAcc.customPermissions || null) !==
                             JSON.stringify(activeParsed.customPermissions || null)
                         ) {
+                          activeParsed.username = matchedAcc.username;
                           activeParsed.registeredDeviceId = matchedAcc.registeredDeviceId;
                           activeParsed.registeredMacAddress = matchedAcc.registeredMacAddress;
                           activeParsed.registeredDeviceFingerprint = matchedAcc.registeredDeviceFingerprint;
@@ -2445,14 +2498,21 @@ export const pdksStorage = {
       return { success: false, message: 'Bu rol atanamaz.' };
     }
 
-    const cleanUsername = newUsername.trim().toLowerCase();
-    if (!cleanUsername) {
-      return { success: false, message: 'Kullanıcı adı boş bırakılamaz.' };
+    const cleanUsername = normalizeUsername(newUsername) || newUsername.trim().replace(/^@+/, '').toLowerCase();
+    if (!cleanUsername || cleanUsername.length < 2) {
+      return { success: false, message: 'Kullanıcı adı en az 2 geçerli karakter içermelidir.' };
+    }
+
+    const currentUsernameNorm = normalizeUsername(acc.username) || acc.username.trim().toLowerCase();
+    if (cleanUsername !== currentUsernameNorm && !this.isSuperAdmin(this.getActiveUser())) {
+      return { success: false, message: 'Kullanıcı adı değiştirme yetkisi yalnızca Süper Yönetici hesabına aittir.' };
     }
 
     // Check if new username is already taken by another account
     const taken = accounts.find(
-      (a) => a.id !== accountId && a.username.toLowerCase() === cleanUsername
+      (a) =>
+        a.id !== accountId &&
+        (normalizeUsername(a.username) === cleanUsername || a.username.toLowerCase() === cleanUsername)
     );
     if (taken) {
       return { success: false, message: `'${cleanUsername}' kullanıcı adı zaten kullanımda.` };
@@ -2642,6 +2702,7 @@ export const pdksStorage = {
         const json = await res.json().catch(() => null);
         if (res.ok && json?.success && json?.isSuperAdmin && json?.user?.role === 'SUPER_ADMIN') {
           clearLoginAttempts(rawUser);
+          setUserSessionToken(null);
           setSuperAdminToken(json.token || '');
           let savedSaTheme: ThemeId = json.user.themeId || 'gece_arduvaz';
           try {
@@ -2664,6 +2725,10 @@ export const pdksStorage = {
             message: json.message || 'Süper Yönetici oturumu açıldı.',
             user: saUser,
           };
+        }
+        if (res.ok && json?.success && !json?.isSuperAdmin && json?.token) {
+          setSuperAdminToken(null);
+          setUserSessionToken(json.token);
         }
       } catch {
         // Fallback to local account verification below when offline
@@ -3126,11 +3191,22 @@ export const pdksStorage = {
         acc.lastLoginMacAddress = device.macAddress;
         acc.lastLoginDeviceFingerprint = device.fingerprint;
         acc.lastLoginDeviceName = device.deviceName;
+        acc.lastLogin = timestampIso;
         accChanged = true;
       }
     }
     if (accChanged) {
       localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+    }
+
+    const employees = this.getEmployees();
+    const emp = employees.find((e) => e.id === employeeId);
+    if (emp) {
+      emp.lastLoginDeviceId = device.deviceId;
+      emp.lastLoginMacAddress = device.macAddress;
+      emp.lastLoginDeviceName = device.deviceName;
+      emp.lastLoginAt = timestampIso;
+      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
     }
   },
 
@@ -3637,6 +3713,7 @@ export const pdksStorage = {
 
   logout(): void {
     setSuperAdminToken(null);
+    setUserSessionToken(null);
     localStorage.setItem(STORAGE_KEYS.IS_LOGGED_OUT, 'true');
     localStorage.removeItem(STORAGE_KEYS.ACTIVE_USER);
     applyThemeToDocument(DEFAULT_THEME_ID);
@@ -3712,6 +3789,7 @@ export const pdksStorage = {
     if (!matched) return current;
     const updated: CurrentUser = {
       ...current,
+      username: matched.username,
       role: matched.role,
       name: matched.name,
       title: matched.title,
@@ -4209,6 +4287,9 @@ export const pdksStorage = {
         canManageDevices: false,
         canManageSettings: false,
         canClearLogs: false,
+        canChangeCompanyName: false,
+        canManagePermissions: false,
+        isFullAdmin: false,
       };
     }
     if (user.role === 'SUPER_ADMIN' || user.isHiddenSuperAdmin) {
@@ -4237,6 +4318,7 @@ export const pdksStorage = {
 
     const base = getDefaultPermissionsForRole(latestRole, latestSupervisor);
     if (!latestCustom) return base;
+    const isFullAdmin = Boolean(latestCustom.isFullAdmin);
     return {
       allowedPages: Array.isArray(latestCustom.allowedPages) ? latestCustom.allowedPages : base.allowedPages,
       canCreate: typeof latestCustom.canCreate === 'boolean' ? latestCustom.canCreate : base.canCreate,
@@ -4247,6 +4329,9 @@ export const pdksStorage = {
       canManageDevices: typeof latestCustom.canManageDevices === 'boolean' ? latestCustom.canManageDevices : base.canManageDevices,
       canManageSettings: typeof latestCustom.canManageSettings === 'boolean' ? latestCustom.canManageSettings : base.canManageSettings,
       canClearLogs: typeof latestCustom.canClearLogs === 'boolean' ? latestCustom.canClearLogs : base.canClearLogs,
+      canChangeCompanyName: false,
+      canManagePermissions: isFullAdmin || Boolean(latestCustom.canManagePermissions),
+      isFullAdmin,
     };
   },
 
@@ -4433,7 +4518,7 @@ export const pdksStorage = {
     if (!user) return false;
     if (this.isSuperAdmin(user)) return true;
     const perms = this.getEffectivePermissions(user);
-    return (user.role === 'ik_yoneticisi' || perms.canManageSettings) && perms.canCreate;
+    return (user.role === 'ik_yoneticisi' || perms.canManageSettings || Boolean(perms.canManagePermissions) || Boolean(perms.isFullAdmin)) && perms.canCreate;
   },
 
   canApproveLeaves(user?: CurrentUser | null): boolean {
@@ -4460,12 +4545,118 @@ export const pdksStorage = {
     return this.getEffectivePermissions(user).canManageSettings;
   },
 
+  canChangeCompanyName(user?: CurrentUser | null): boolean {
+    if (!user) return false;
+    return this.isSuperAdmin(user);
+  },
+
   canClearLogs(user?: CurrentUser | null): boolean {
     return this.getEffectivePermissions(user).canClearLogs;
   },
 
+  isFullAdminAccount(user?: CurrentUser | UserAccount | null): boolean {
+    if (!user) return false;
+    if (user.role === 'SUPER_ADMIN' || user.isHiddenSuperAdmin) return true;
+    return Boolean(this.getEffectivePermissions(user).isFullAdmin);
+  },
+
+  canAccessPermissions(user?: CurrentUser | null): boolean {
+    if (!user) return false;
+    if (this.isSuperAdmin(user)) return true;
+    const perms = this.getEffectivePermissions(user);
+    return Boolean(perms.isFullAdmin || perms.canManagePermissions);
+  },
+
+  canModifyTargetPermissions(
+    actor: CurrentUser | UserAccount | null | undefined,
+    target: UserAccount | null | undefined
+  ): { allowed: boolean; reason?: string } {
+    if (!actor || !target || isHiddenRecord(target)) {
+      return { allowed: false, reason: 'Kullanıcı hesabı bulunamadı.' };
+    }
+    if (actor.role === 'SUPER_ADMIN' || actor.isHiddenSuperAdmin) {
+      return { allowed: true };
+    }
+    const actorPerms = this.getEffectivePermissions(actor);
+    if (!actorPerms.isFullAdmin && !actorPerms.canManagePermissions) {
+      return { allowed: false, reason: 'Kullanıcı yetkilendirme işlemi için izniniz bulunmamaktadır.' };
+    }
+    const actorUserNorm = normalizeUsername(actor.username || '');
+    const targetUserNorm = normalizeUsername(target.username || '');
+    const isSelf =
+      (actor.id && target.id === actor.id) ||
+      (actor.employeeId && target.employeeId && target.employeeId === actor.employeeId) ||
+      (actorUserNorm && targetUserNorm && actorUserNorm === targetUserNorm);
+    if (isSelf) {
+      return {
+        allowed: false,
+        reason: 'Kendi yetkilerinizi Süper Admin onayı olmadan değiştiremez veya düşüremezsiniz.',
+      };
+    }
+    const targetPerms = this.getEffectivePermissions(target);
+    if (targetPerms.isFullAdmin) {
+      return {
+        allowed: false,
+        reason: 'Aynı seviyedeki Tam Yetkili bir yöneticinin yetkileri yalnızca Süper Admin tarafından değiştirilebilir.',
+      };
+    }
+    if (!actorPerms.isFullAdmin && targetPerms.canManagePermissions) {
+      return {
+        allowed: false,
+        reason: 'Eşit veya üst düzeydeki yetki yöneticilerinin izinlerini değiştiremezsiniz.',
+      };
+    }
+    return { allowed: true };
+  },
+
+  clampDelegatedPermissionsToActorPool(
+    actor: CurrentUser | UserAccount,
+    requestedPerms: UserCustomPermissions,
+    existingTarget?: UserAccount | null
+  ): UserCustomPermissions {
+    if (actor.role === 'SUPER_ADMIN' || actor.isHiddenSuperAdmin) {
+      const isFull = Boolean(requestedPerms.isFullAdmin);
+      return {
+        ...requestedPerms,
+        isFullAdmin: isFull,
+        canManagePermissions: isFull || Boolean(requestedPerms.canManagePermissions),
+        canChangeCompanyName: false,
+      };
+    }
+    const actorPerms = this.getEffectivePermissions(actor);
+    const targetPerms = existingTarget ? this.getEffectivePermissions(existingTarget) : getDefaultPermissionsForRole('personel');
+    const actorPageSet = new Set(actorPerms.allowedPages);
+    const targetPageSet = new Set(targetPerms.allowedPages);
+
+    const clampedPages = Array.from(
+      new Set(
+        (requestedPerms.allowedPages || []).filter((p) => actorPageSet.has(p) || targetPageSet.has(p))
+      )
+    );
+    for (const prevPage of targetPerms.allowedPages) {
+      if (!actorPageSet.has(prevPage) && !clampedPages.includes(prevPage)) {
+        clampedPages.push(prevPage);
+      }
+    }
+
+    return {
+      allowedPages: clampedPages,
+      canCreate: actorPerms.canCreate ? Boolean(requestedPerms.canCreate) : Boolean(targetPerms.canCreate),
+      canEdit: actorPerms.canEdit ? Boolean(requestedPerms.canEdit) : Boolean(targetPerms.canEdit),
+      canDelete: actorPerms.canDelete ? Boolean(requestedPerms.canDelete) : Boolean(targetPerms.canDelete),
+      canApprove: actorPerms.canApprove ? Boolean(requestedPerms.canApprove) : Boolean(targetPerms.canApprove),
+      canExportReports: actorPerms.canExportReports ? Boolean(requestedPerms.canExportReports) : Boolean(targetPerms.canExportReports),
+      canManageDevices: actorPerms.canManageDevices ? Boolean(requestedPerms.canManageDevices) : Boolean(targetPerms.canManageDevices),
+      canManageSettings: actorPerms.canManageSettings ? Boolean(requestedPerms.canManageSettings) : Boolean(targetPerms.canManageSettings),
+      canClearLogs: actorPerms.canClearLogs ? Boolean(requestedPerms.canClearLogs) : Boolean(targetPerms.canClearLogs),
+      canChangeCompanyName: false,
+      canManagePermissions: actorPerms.canManagePermissions ? Boolean(requestedPerms.canManagePermissions) : Boolean(targetPerms.canManagePermissions),
+      isFullAdmin: false,
+    };
+  },
+
   // =========================================================================
-  // HIDDEN SUPER ADMIN CONTROL PANEL ACTIONS
+  // HIERARCHICAL PERMISSION DELEGATION & HIDDEN SUPER ADMIN ACTIONS
   // =========================================================================
 
   async updateUserCustomPermissions(
@@ -4474,8 +4665,9 @@ export const pdksStorage = {
     newRole?: UserRole
   ): Promise<{ success: boolean; message: string; account?: UserAccount }> {
     const active = this.getActiveUser();
-    if (!this.isSuperAdmin(active)) {
-      return { success: false, message: 'Bu işlem yalnızca Gizli Süper Yönetici tarafından yapılabilir.' };
+    const isSA = this.isSuperAdmin(active);
+    if (!this.canAccessPermissions(active)) {
+      return { success: false, message: 'Bu işlem için yetki yönetimi izniniz bulunmamaktadır.' };
     }
     if (newRole === 'SUPER_ADMIN') {
       return { success: false, message: 'Süper Yönetici rolü başka kullanıcılara atanamaz.' };
@@ -4483,46 +4675,211 @@ export const pdksStorage = {
 
     const accounts = this.getUserAccounts();
     const idx = accounts.findIndex((a) => a.id === accountId);
-    if (idx < 0) {
+    if (idx < 0 || isHiddenRecord(accounts[idx])) {
       return { success: false, message: 'Kullanıcı hesabı bulunamadı.' };
     }
 
+    const targetAccount = accounts[idx];
+    const modCheck = this.canModifyTargetPermissions(active, targetAccount);
+    if (!modCheck.allowed) {
+      return { success: false, message: modCheck.reason || 'Bu kullanıcının yetkilerini değiştirme izniniz yok.' };
+    }
+
+    if (!isSA) {
+      if (customPermissions.isFullAdmin) {
+        return { success: false, message: 'Tam Yetki (Full Admin) statüsü yalnızca Süper Admin tarafından atanabilir.' };
+      }
+      if (customPermissions.canChangeCompanyName) {
+        return { success: false, message: 'Şirket ismini değiştirme yetkisi yalnızca Gizli Süper Yöneticiye aittir ve devredilemez.' };
+      }
+      const actorPerms = this.getEffectivePermissions(active);
+      const targetPerms = this.getEffectivePermissions(targetAccount);
+      const actorPageSet = new Set(actorPerms.allowedPages);
+      const targetPageSet = new Set(targetPerms.allowedPages);
+
+      for (const page of customPermissions.allowedPages || []) {
+        if (!actorPageSet.has(page) && !targetPageSet.has(page)) {
+          return { success: false, message: `Yetki Aşımı: Sahip olmadığınız '${page}' sayfası yetkisini veremezsiniz.` };
+        }
+      }
+
+      const checkFlags: (keyof Omit<UserCustomPermissions, 'allowedPages' | 'isFullAdmin'>)[] = [
+        'canCreate',
+        'canEdit',
+        'canDelete',
+        'canApprove',
+        'canExportReports',
+        'canManageDevices',
+        'canManageSettings',
+        'canClearLogs',
+        'canManagePermissions',
+      ];
+      for (const flag of checkFlags) {
+        if (Boolean(customPermissions[flag]) && !actorPerms[flag] && !targetPerms[flag]) {
+          return { success: false, message: `Yetki Aşımı: Kendi yetki havuzunuzda olmayan bir izni atayamazsınız.` };
+        }
+      }
+    }
+
+    const finalPerms: UserCustomPermissions = {
+      ...this.clampDelegatedPermissionsToActorPool(active, customPermissions, targetAccount),
+      canChangeCompanyName: false,
+    };
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function' && (saToken || userToken)) {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (isSA && saToken) {
+          headers['X-Super-Admin-Token'] = saToken;
+        } else if (userToken) {
+          headers['X-PDKS-Session-Token'] = userToken;
+        }
+        const res = await fetch('/api/permissions/update', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ accountId, customPermissions: finalPerms, role: newRole }),
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.success) {
+          return {
+            success: false,
+            message: json?.message || 'Yetki güncellemesi güvenlik kuralları gereği reddedildi.',
+          };
+        }
+        if (typeof json.version === 'number') {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+        const serverAcc: UserAccount = json.account || {
+          ...targetAccount,
+          ...(newRole ? { role: newRole, isShiftSupervisor: newRole === 'birim_amiri' || targetAccount.isShiftSupervisor } : {}),
+          customPermissions: finalPerms,
+        };
+        accounts[idx] = serverAcc;
+        const clean = filterVisibleList(accounts);
+        localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
+        window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+        return {
+          success: true,
+          message: `${serverAcc.name} (@${serverAcc.username}) kullanıcısının yetkileri güncellendi ve anlık olarak uygulandı.`,
+          account: serverAcc,
+        };
+      } catch {
+        if (!isSA) {
+          return { success: false, message: 'Sunucu bağlantısı sağlanamadığı için yetki değişikliği doğrulanamadı.' };
+        }
+      }
+    } else if (!isSA) {
+      return {
+        success: false,
+        message: 'Yetki tanımlama için oturum doğrulaması gereklidir. Lütfen kullanıcı adı ve şifrenizle tekrar giriş yapın.',
+      };
+    }
+
     const updatedAccount: UserAccount = {
-      ...accounts[idx],
-      ...(newRole ? { role: newRole, isShiftSupervisor: newRole === 'birim_amiri' || accounts[idx].isShiftSupervisor } : {}),
-      customPermissions,
+      ...targetAccount,
+      ...(newRole ? { role: newRole, isShiftSupervisor: newRole === 'birim_amiri' || targetAccount.isShiftSupervisor } : {}),
+      customPermissions: finalPerms,
     };
     accounts[idx] = updatedAccount;
     const clean = filterVisibleList(accounts);
     localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
+    pushToServer('accounts', clean);
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return {
+      success: true,
+      message: `${updatedAccount.name} (@${updatedAccount.username}) kullanıcısının yetkileri güncellendi ve anlık olarak uygulandı.`,
+      account: updatedAccount,
+    };
+  },
+
+  async updateUsernameSuperAdmin(
+    accountId: string,
+    newUsername: string
+  ): Promise<{ success: boolean; message: string; account?: UserAccount }> {
+    const active = this.getActiveUser();
+    if (!this.isSuperAdmin(active)) {
+      return {
+        success: false,
+        message: 'Kullanıcı adı değiştirme yetkisi yalnızca Süper Yönetici hesabına aittir.',
+      };
+    }
+
+    const cleanUsername = normalizeUsername(newUsername);
+    if (!cleanUsername || cleanUsername.length < 2) {
+      return {
+        success: false,
+        message: 'Kullanıcı adı en az 2 geçerli karakter (harf, rakam, nokta, tire veya alt çizgi) içermelidir.',
+      };
+    }
+
+    const accounts = this.getUserAccounts();
+    const idx = accounts.findIndex((a) => a.id === accountId);
+    if (idx < 0 || isHiddenRecord(accounts[idx])) {
+      return { success: false, message: 'Kullanıcı hesabı bulunamadı.' };
+    }
+
+    const duplicate = accounts.find(
+      (a) =>
+        a.id !== accountId &&
+        (normalizeUsername(a.username) === cleanUsername || a.username.toLowerCase() === cleanUsername)
+    );
+    if (duplicate) {
+      return {
+        success: false,
+        message: `'@${cleanUsername}' kullanıcı adı başka bir personel (${duplicate.name}) tarafından zaten kullanılıyor.`,
+      };
+    }
 
     const saToken = getSuperAdminToken();
+    let updatedFromServer: UserAccount | undefined;
     if (saToken && typeof window !== 'undefined' && typeof fetch === 'function') {
       try {
-        const res = await fetch('/api/super-admin/permissions', {
+        const res = await fetch('/api/super-admin/username', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'X-Super-Admin-Token': saToken,
           },
-          body: JSON.stringify({ accountId, customPermissions, role: newRole }),
+          body: JSON.stringify({ accountId, newUsername: cleanUsername }),
         });
         const json = await res.json().catch(() => null);
-        if (res.ok && json?.version) {
+        if (!res.ok || !json?.success) {
+          return {
+            success: false,
+            message: json?.message || 'Kullanıcı adı sunucuda güncellenemedi.',
+          };
+        }
+        if (typeof json.version === 'number') {
           localDbVersion = json.version;
           try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
         }
+        if (json.account && typeof json.account === 'object') {
+          updatedFromServer = json.account as UserAccount;
+        }
       } catch {
-        pushToServer('accounts', clean);
+        // Fallback to syncing full accounts list if offline
       }
-    } else {
+    }
+
+    const updatedAccount: UserAccount = updatedFromServer || {
+      ...accounts[idx],
+      username: cleanUsername,
+    };
+    accounts[idx] = updatedAccount;
+    const clean = filterVisibleList(accounts);
+    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
+
+    if (!updatedFromServer) {
       pushToServer('accounts', clean);
     }
 
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return {
       success: true,
-      message: `${updatedAccount.name} (@${updatedAccount.username}) kullanıcısının yetkileri güncellendi ve anlık olarak uygulandı.`,
+      message: `${updatedAccount.name} kullanıcısının kullanıcı adı '@${updatedAccount.username}' olarak güncellendi.`,
       account: updatedAccount,
     };
   },
@@ -4588,8 +4945,8 @@ export const pdksStorage = {
     caller?: CurrentUser
   ): Promise<{ success: boolean; message: string; companyName?: string }> {
     const active = caller || this.getActiveUser();
-    if (!this.canAccessSettings(active)) {
-      return { success: false, message: 'Şirket bilgilerini değiştirme yetkiniz bulunmamaktadır.' };
+    if (!this.isSuperAdmin(active)) {
+      return { success: false, message: 'Şirket ismini değiştirme yetkisi yalnızca Gizli Süper Yönetici hesabına aittir.' };
     }
     const cleanCompany = sanitizeString(companyName, 100);
     if (!cleanCompany) {
@@ -4602,12 +4959,16 @@ export const pdksStorage = {
 
     const cleanBranch = branchName ? sanitizeString(branchName, 100) : undefined;
     const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
 
     if (typeof window !== 'undefined' && typeof fetch === 'function') {
       try {
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (saToken) {
           headers['X-Super-Admin-Token'] = saToken;
+        }
+        if (userToken) {
+          headers['X-PDKS-Session-Token'] = userToken;
         }
         const res = await fetch('/api/company/name', {
           method: 'POST',
@@ -4631,31 +4992,16 @@ export const pdksStorage = {
           try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
         }
       } catch {
-        // Offline / server unreachable fallback for standard local admins only
-        if (this.isSuperAdmin(active)) {
-          return {
-            success: false,
-            message: 'Sunucu bağlantısı doğrulanamadığı için şifre kontrolü yapılamadı.',
-          };
-        }
-        const matchedAcc = this.getUserAccounts().find(
-          (a) =>
-            normalizeUsername(a.username) === normalizeUsername(active.username || '') ||
-            (active.id && a.id === active.id)
-        );
-        if (!matchedAcc || (matchedAcc.password || '').trim() !== cleanPass) {
-          return { success: false, message: 'Hatalı yönetici şifresi, değişiklik onaylanmadı' };
-        }
+        return {
+          success: false,
+          message: 'Sunucu bağlantısı doğrulanamadığı için şifre kontrolü yapılamadı.',
+        };
       }
     } else {
-      const matchedAcc = this.getUserAccounts().find(
-        (a) =>
-          normalizeUsername(a.username) === normalizeUsername(active.username || '') ||
-          (active.id && a.id === active.id)
-      );
-      if (!matchedAcc || (matchedAcc.password || '').trim() !== cleanPass) {
-        return { success: false, message: 'Hatalı yönetici şifresi, değişiklik onaylanmadı' };
-      }
+      return {
+        success: false,
+        message: 'Şirket ismi değişikliği sunucu doğrulaması gerektirir.',
+      };
     }
 
     const current = this.getInternalCompanyWallQR();
@@ -4681,8 +5027,8 @@ export const pdksStorage = {
     branchName?: string
   ): Promise<{ success: boolean; message: string }> {
     const active = this.getActiveUser();
-    if (!this.canAccessSettings(active)) {
-      return { success: false, message: 'Şirket bilgilerini değiştirme yetkiniz bulunmamaktadır.' };
+    if (!this.isSuperAdmin(active)) {
+      return { success: false, message: 'Şirket ismini değiştirme yetkisi yalnızca Süper Yönetici hesabına aittir.' };
     }
     const cleanCompany = sanitizeString(companyName, 100);
     if (!cleanCompany) {
@@ -4902,7 +5248,6 @@ export const pdksStorage = {
     // Date range calculations
     const start = new Date(filter.startDate);
     const end = new Date(filter.endDate);
-    const dayDelta = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 3600 * 24)) + 1);
 
     // Business days estimate (exclude weekends approx)
     let businessDays = 0;

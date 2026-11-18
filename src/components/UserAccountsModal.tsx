@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Key, User, Plus, Search, Check, Copy, X, Lock, Shield, ShieldAlert, CheckCircle2, AlertCircle, RefreshCw, Trash2, Power, Eye, EyeOff, UserCheck, Smartphone, RotateCcw } from 'lucide-react';
-import { Employee, UserAccount, UserRole, CurrentUser } from '../types/pdks';
+import { Key, User, Plus, Search, Check, Copy, X, Shield, ShieldAlert, CheckCircle2, AlertCircle, Trash2, Power, Eye, EyeOff, Smartphone, RotateCcw, Edit3 } from 'lucide-react';
+import { UserAccount, UserRole, CurrentUser } from '../types/pdks';
 import { pdksStorage, slugifyNameToUsername, normalizeUsername } from '../services/storage';
 
 interface UserAccountsModalProps {
@@ -37,7 +37,6 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
   // Credentials edit state (Username and Password)
   const [editingAccId, setEditingAccId] = useState<string | null>(null);
   const [editUsernameValue, setEditUsernameValue] = useState<string>('');
-  const [editPasswordValue, setEditPasswordValue] = useState<string>('');
   const [editingPasswordAccId, setEditingPasswordAccId] = useState<string | null>(null);
   const [newPasswordValue, setNewPasswordValue] = useState<string>('');
   const [revealedPasswordAccIds, setRevealedPasswordAccIds] = useState<Set<string>>(new Set());
@@ -70,6 +69,7 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
   const accounts = pdksStorage.getUserAccounts();
   const employees = pdksStorage.getEmployees();
   const canManage = pdksStorage.canCreateUserAccount(currentUser);
+  const isSuperAdmin = pdksStorage.isSuperAdmin(currentUser);
 
   // Auto populate username when employee is selected
   const handleSelectEmployee = (empId: string) => {
@@ -158,28 +158,21 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
   const handleStartEdit = (acc: UserAccount) => {
     setEditingAccId(acc.id);
     setEditUsernameValue(acc.username);
-    setEditPasswordValue(acc.password);
   };
 
-  const handleSaveCredentials = (accId: string) => {
-    if (!editUsernameValue.trim()) {
+  const handleSaveUsernameOnly = async (accId: string) => {
+    const trimmed = editUsernameValue.trim().replace(/^@+/, '');
+    if (!trimmed) {
       setFeedback({ type: 'error', message: 'Kullanıcı adı boş bırakılamaz.' });
       return;
     }
-    if (!editPasswordValue.trim()) {
-      setFeedback({ type: 'error', message: 'Şifre boş bırakılamaz.' });
-      return;
-    }
-    const res = pdksStorage.updateUserCredentials(
-      accId,
-      editUsernameValue.trim(),
-      editPasswordValue.trim()
-    );
+    const res = await pdksStorage.updateUsernameSuperAdmin(accId, trimmed);
     if (res.success) {
       setFeedback({ type: 'success', message: res.message });
       setEditingAccId(null);
+      setEditUsernameValue('');
       onAccountsUpdated();
-      setTimeout(() => setFeedback(null), 3000);
+      setTimeout(() => setFeedback(null), 3500);
     } else {
       setFeedback({ type: 'error', message: res.message });
     }
@@ -269,9 +262,9 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={() => setActiveSubTab('list')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
                 activeSubTab === 'list'
-                  ? 'bg-white text-indigo-700 shadow-xs'
+                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
               }`}
             >
@@ -285,13 +278,13 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                   setActiveSubTab('create');
                   if (initialSelectedEmpId) handleSelectEmployee(initialSelectedEmpId);
                 }}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
                   activeSubTab === 'create'
-                    ? 'bg-white text-indigo-700 shadow-xs'
+                    ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
                 }`}
               >
-                <Plus className="w-3.5 h-3.5 text-indigo-600" />
+                <Plus className={`w-3.5 h-3.5 ${activeSubTab === 'create' ? 'text-indigo-600 dark:text-white' : 'text-indigo-600'}`} />
                 <span>Yeni Personel Hesabı Aç</span>
               </button>
             )}
@@ -381,7 +374,6 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                   </div>
                 ) : (
                   filteredAccounts.map((acc) => {
-                    const isRestricted = acc.role === 'personel';
                     const isEditingPassword = editingPasswordAccId === acc.id;
 
                     return (
@@ -409,9 +401,57 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
 
                         {/* Username & Password */}
                         <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-slate-50 rounded-lg text-xs font-mono">
-                          <div className="flex items-center gap-1 text-indigo-700 font-bold">
-                            <span>@{acc.username}</span>
-                          </div>
+                          {isSuperAdmin && editingAccId === acc.id ? (
+                            <div className="flex items-center gap-1">
+                              <span className="text-indigo-600 font-bold">@</span>
+                              <input
+                                type="text"
+                                value={editUsernameValue}
+                                onChange={(e) => setEditUsernameValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    void handleSaveUsernameOnly(acc.id);
+                                  } else if (e.key === 'Escape') {
+                                    setEditingAccId(null);
+                                  }
+                                }}
+                                className="w-28 px-1.5 py-0.5 border border-indigo-400 rounded text-xs bg-white text-slate-900"
+                                placeholder="Kullanıcı adı"
+                                autoFocus
+                              />
+                              <button
+                                type="button"
+                                onClick={() => void handleSaveUsernameOnly(acc.id)}
+                                className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 cursor-pointer"
+                                title="Kaydet"
+                              >
+                                <Check className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingAccId(null)}
+                                className="p-1 bg-slate-200 text-slate-700 rounded hover:bg-slate-300 cursor-pointer"
+                                title="İptal"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5 text-indigo-700 font-bold">
+                              <span>@{acc.username}</span>
+                              {isSuperAdmin && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartEdit(acc)}
+                                  className="p-0.5 text-indigo-500 hover:text-indigo-800 rounded transition-colors cursor-pointer"
+                                  title="Kullanıcı Adını Değiştir (Süper Yönetici)"
+                                >
+                                  <Edit3 className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          )}
 
                           {isEditingPassword ? (
                             <div className="flex items-center gap-1">
@@ -602,7 +642,57 @@ export const UserAccountsModal: React.FC<UserAccountsModalProps> = ({
                           </td>
 
                           <td className="py-2.5 px-3 font-mono font-semibold text-indigo-700">
-                            @{acc.username}
+                            {isSuperAdmin && editingAccId === acc.id ? (
+                              <div className="flex items-center gap-1">
+                                <span className="text-indigo-600">@</span>
+                                <input
+                                  type="text"
+                                  value={editUsernameValue}
+                                  onChange={(e) => setEditUsernameValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      void handleSaveUsernameOnly(acc.id);
+                                    } else if (e.key === 'Escape') {
+                                      setEditingAccId(null);
+                                    }
+                                  }}
+                                  className="w-28 px-1.5 py-0.5 border border-indigo-400 rounded text-xs bg-white text-slate-900"
+                                  placeholder="Kullanıcı adı"
+                                  autoFocus
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSaveUsernameOnly(acc.id)}
+                                  className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 cursor-pointer"
+                                  title="Kaydet"
+                                >
+                                  <Check className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingAccId(null)}
+                                  className="p-1 bg-slate-200 text-slate-700 rounded hover:bg-slate-300 cursor-pointer"
+                                  title="İptal"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5">
+                                <span>@{acc.username}</span>
+                                {isSuperAdmin && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartEdit(acc)}
+                                    className="p-1 text-slate-400 hover:text-indigo-700 rounded transition-colors cursor-pointer"
+                                    title="Kullanıcı Adını Değiştir (Süper Yönetici)"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </td>
 
                           <td className="py-2.5 px-3 font-mono">

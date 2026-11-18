@@ -13,14 +13,8 @@ import {
   VolumeX,
   ShieldAlert,
   Trash2,
-  Filter,
   Search,
-  CheckCheck,
-  Send,
   Calendar,
-  Sparkles,
-  Info,
-  CalendarCheck,
   Smartphone
 } from 'lucide-react';
 import { PDKSNotification, NotificationSettings, CurrentUser } from '../types/pdks';

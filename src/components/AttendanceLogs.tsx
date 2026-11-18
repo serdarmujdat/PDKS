@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Search, Filter, Plus, ArrowDownRight, ArrowUpRight, Coffee, Calendar, Shield, ShieldAlert, Smartphone, Clock, X, Check, Trash2 } from 'lucide-react';
-import { AttendanceRecord, Employee, Department, ActionType } from '../types/pdks';
+import { Download, Search, Plus, ArrowDownRight, ArrowUpRight, Coffee, ShieldAlert, Smartphone, X, Trash2 } from 'lucide-react';
+import { AttendanceRecord, Employee, ActionType } from '../types/pdks';
 import { pdksStorage, getTodayString } from '../services/storage';
 
 export const AttendanceLogs: React.FC = () => {
@@ -15,7 +15,6 @@ export const AttendanceLogs: React.FC = () => {
 
   // Filter state
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedDept, setSelectedDept] = useState<string>('all');
   const [selectedType, setSelectedType] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [selectedDate, setSelectedDate] = useState<string>('');
@@ -68,7 +67,6 @@ export const AttendanceLogs: React.FC = () => {
       (rec.deviceOwnerEmployeeName && rec.deviceOwnerEmployeeName.toLowerCase().includes(q)) ||
       (rec.securityWarning && rec.securityWarning.toLowerCase().includes(q));
 
-    const matchesDept = selectedDept === 'all' || rec.department === selectedDept;
     const matchesType = selectedType === 'all' || rec.type === selectedType;
     const matchesStatus =
       selectedStatus === 'all' ||
@@ -77,7 +75,7 @@ export const AttendanceLogs: React.FC = () => {
         : rec.status === selectedStatus);
     const matchesDate = !selectedDate || rec.date === selectedDate;
 
-    return matchesSearch && matchesDept && matchesType && matchesStatus && matchesDate;
+    return matchesSearch && matchesType && matchesStatus && matchesDate;
   });
 
   // Handle Manual Log Submission
