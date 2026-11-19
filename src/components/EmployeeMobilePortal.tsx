@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import jsQR from 'jsqr';
+import { optimizeAvatarImageFile } from '../utils/imageOptimizer';
 import {
   Smartphone,
   QrCode,
@@ -821,18 +822,18 @@ export const EmployeeMobilePortal: React.FC<EmployeeMobilePortalProps> = ({ curr
     }, 2200);
   };
 
-  // Photo Upload Handler (FileReader DataURL)
-  const handlePhotoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Photo Upload Handler (Resized & Compressed JPEG DataURL -> Server Disk Persistence)
+  const handlePhotoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setNewPhotoData(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      const optimized = await optimizeAvatarImageFile(file);
+      setNewPhotoData(optimized);
+    } catch (err: any) {
+      setPhotoFeedback(err?.message || 'Fotoğraf yüklenemedi. Lütfen geçerli bir görsel seçiniz.');
+      setTimeout(() => setPhotoFeedback(null), 4000);
+    }
   };
 
   // Submit Photo for Approval

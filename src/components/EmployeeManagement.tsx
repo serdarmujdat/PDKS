@@ -3,6 +3,7 @@ import { Plus, Search, QrCode, Printer, Trash2, Edit2, Download, Check, X, Shiel
 import { Employee, Department, Shift, CurrentUser, UserAccount, PresenceStatus, DeviceEntryApproval, AttendanceRecord, UserRole } from '../types/pdks';
 import { pdksStorage, slugifyNameToUsername, normalizeUsername, getTodayString } from '../services/storage';
 import { generateQRDataURL } from '../utils/qr';
+import { optimizeAvatarImageFile, sanitizeAvatarUrl } from '../utils/imageOptimizer';
 import { UserAccountsModal } from './UserAccountsModal';
 import { ExcelEmployeeImportModal } from './ExcelEmployeeImportModal';
 
@@ -29,6 +30,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
   const canManageDevices = pdksStorage.canManageDevices(currentUser);
   const canManageAccounts = pdksStorage.canCreateUserAccount(currentUser);
   const canViewArchived = pdksStorage.canViewArchivedEmployees(currentUser);
+  const canManageHierarchy = pdksStorage.canToggleShiftPermission(currentUser);
 
   // Active vs Archived (Eski Personel) Read-Only View
   const [activeViewTab, setActiveViewTab] = useState<'active' | 'archived'>('active');
@@ -80,6 +82,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
     phone: '',
     shiftId: 'SHIFT-1',
     avatar: '',
+    manager_id: '',
   });
 
   // Account creation toggle inside New Employee Modal
@@ -181,6 +184,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
       phone: emp.phone,
       shiftId: emp.shiftId,
       avatar: emp.avatar,
+      manager_id: emp.manager_id || '',
     });
     setIsAddModalOpen(true);
   };
@@ -242,13 +246,27 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
     }
 
     if (editingEmployee) {
+      const sanitizedAvatar = sanitizeAvatarUrl(formData.avatar);
+      const nextManagerId = canManageHierarchy
+        ? formData.manager_id.trim() || null
+        : editingEmployee.manager_id ?? null;
       const updated: Employee = {
         ...editingEmployee,
-        ...formData,
         fullName: formData.fullName.trim(),
+        tcNo: formData.tcNo.trim() || editingEmployee.tcNo,
+        department: formData.department,
         title: formData.title.trim(),
+        email: formData.email.trim() || editingEmployee.email,
+        phone: formData.phone.trim() || editingEmployee.phone,
+        shiftId: formData.shiftId || editingEmployee.shiftId,
+        // Partial update guard: never erase existing avatar when input is blank or ephemeral blob:
+        avatar: sanitizedAvatar || editingEmployee.avatar,
+        manager_id: nextManagerId,
       };
       pdksStorage.saveEmployee(updated);
+      if (canManageHierarchy && (editingEmployee.manager_id || null) !== nextManagerId) {
+        void pdksStorage.assignEmployeeManagerAsync(updated.id, nextManagerId).then(() => loadData());
+      }
       setPhotoNotice(`${updated.fullName} bilgileri başarıyla güncellendi.`);
       setTimeout(() => setPhotoNotice(null), 4000);
     } else {
@@ -285,6 +303,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
 
       const randomSecret = Math.random().toString(36).substring(2, 7).toUpperCase();
       const cleanNameSlug = slugifyNameToUsername(formData.fullName) || `personel.${nextNum}`;
+      const assignedManagerId = canManageHierarchy ? formData.manager_id.trim() || null : null;
       const newEmp: Employee = {
         id: newId,
         fullName: formData.fullName.trim(),
@@ -294,13 +313,14 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
         email: formData.email.trim() || `${cleanNameSlug}@example.com`,
         phone: formData.phone.trim() || '+90 500 000 0000',
         avatar:
-          formData.avatar.trim() ||
+          sanitizeAvatarUrl(formData.avatar) ||
           'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=256&h=256&q=80',
         shiftId: formData.shiftId || shifts[0]?.id || 'SHIFT-1',
         startDate: getTodayString(),
         qrToken: `PDKS:${newId}:SEC_${randomSecret}`,
         status: 'active',
         currentPresence: 'outside',
+        manager_id: assignedManagerId,
       };
       pdksStorage.saveEmployee(newEmp);
 
@@ -322,6 +342,10 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
         }
       }
 
+      if (canManageHierarchy && assignedManagerId) {
+        void pdksStorage.assignEmployeeManagerAsync(newEmp.id, assignedManagerId).then(() => loadData());
+      }
+
       setPhotoNotice(`${newEmp.fullName} (${newEmp.id}) için yeni personel kartı ve QR kimliği oluşturuldu.`);
       setTimeout(() => setPhotoNotice(null), 4000);
     }
@@ -341,6 +365,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
       phone: '',
       shiftId: shifts[0]?.id || 'SHIFT-1',
       avatar: '',
+      manager_id: '',
     });
     loadData();
   };
@@ -417,16 +442,16 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
     }
   };
 
-  const handleDirectFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDirectFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setDirectPhotoInput(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      const optimizedDataUrl = await optimizeAvatarImageFile(file);
+      setDirectPhotoInput(optimizedDataUrl);
+    } catch (err: any) {
+      setActionError(err?.message || 'Fotoğraf işlenemedi. Lütfen geçerli bir görsel dosyası seçiniz.');
+      setTimeout(() => setActionError(null), 4500);
+    }
   };
 
   // Print Badge
@@ -520,6 +545,7 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                   phone: '',
                   shiftId: shifts[0]?.id || 'SHIFT-1',
                   avatar: '',
+                  manager_id: '',
                 });
                 setAccountUsername('');
                 setAccountPassword('123456');
@@ -1500,6 +1526,18 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                       <td className="py-3 px-4">
                         <div className="font-medium text-slate-900">{emp.department}</div>
                         <div className="text-[11px] text-slate-500">{emp.title}</div>
+                        {(() => {
+                          const assignedMgr = emp.manager_id
+                            ? accounts.find((a) => a.id === emp.manager_id && a.isActive)
+                            : undefined;
+                          if (!assignedMgr) return null;
+                          return (
+                            <div className="text-[10px] text-indigo-700 font-medium mt-0.5 flex items-center gap-1">
+                              <Users className="w-2.5 h-2.5 shrink-0" />
+                              <span>Amir: {assignedMgr.name}</span>
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       <td className="py-3 px-4">
@@ -2001,12 +2039,45 @@ export const EmployeeManagement: React.FC<EmployeeManagementProps> = ({ currentU
                 </label>
                 <input
                   type="url"
-                  placeholder="https://..."
+                  placeholder="https://... (Boş bırakılırsa mevcut fotoğraf korunur)"
                   value={formData.avatar}
                   onChange={(e) => setFormData({ ...formData, avatar: e.target.value })}
                   className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
+
+              {canManageHierarchy && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Bağlı Olduğu Birim Amiri (Vardiya & Ekip Yetkisi)
+                  </label>
+                  <select
+                    value={formData.manager_id}
+                    onChange={(e) => setFormData({ ...formData, manager_id: e.target.value })}
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                  >
+                    <option value="">Atanmamış (Birim Amiri Yok)</option>
+                    {accounts
+                      .filter(
+                        (a) =>
+                          a.isActive &&
+                          a.employeeId !== editingEmployee?.id &&
+                          (a.role === 'birim_amiri' ||
+                            a.role === 'yonetici' ||
+                            a.role === 'ik_yoneticisi' ||
+                            a.can_manage_shifts === true)
+                      )
+                      .map((mgr) => (
+                        <option key={mgr.id} value={mgr.id}>
+                          {mgr.name} (@{mgr.username} · {mgr.department || 'Genel'})
+                        </option>
+                      ))}
+                  </select>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Sadece Süper Admin ve İK bu personeli bir Birim Amirinin ekibine atayabilir.
+                  </p>
+                </div>
+              )}
 
               {/* Login Account creation block for new employees */}
               {!editingEmployee && (

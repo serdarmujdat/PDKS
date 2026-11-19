@@ -78,7 +78,13 @@ function getDefaultTabForUser(user: CurrentUser): ActiveTab {
   if (pdksStorage.isSuperAdmin(user)) {
     return 'permissions';
   }
-  const preferredOrder: AppPageKey[] = ['dashboard', 'shifts', 'portal', 'kiosk', 'employees', 'records', 'performance', 'reports'];
+  if (pdksStorage.canAccessPage(user, 'dashboard')) {
+    return 'dashboard';
+  }
+  if (pdksStorage.hasShiftManagePermission(user) && pdksStorage.canAccessPage(user, 'shifts')) {
+    return 'shifts';
+  }
+  const preferredOrder: AppPageKey[] = ['portal', 'shifts', 'kiosk', 'employees', 'records', 'performance', 'reports'];
   for (const page of preferredOrder) {
     if (pdksStorage.canAccessPage(user, page)) {
       return page;

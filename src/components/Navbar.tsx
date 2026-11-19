@@ -90,7 +90,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   const canAccessPermissions = pdksStorage.canAccessPermissions(currentUser);
   const isHRManager = pdksStorage.isHRorSuperAdmin(currentUser);
   const canManageSettings = pdksStorage.canAccessSettings(currentUser);
-  const isSupervisor = pdksStorage.canUserAccessShiftManagement(currentUser);
+  const hasShiftManagePerm = pdksStorage.hasShiftManagePermission(currentUser);
+  const isSupervisor = hasShiftManagePerm && !isHRManager;
 
   const canAccess = (page: AppPageKey) => pdksStorage.canAccessPage(currentUser, page);
   const allowedPages = pdksStorage.getUserAllowedPages(currentUser);
@@ -261,14 +262,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                 onClick={() => setActiveTab('shifts')}
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'shifts'
-                    ? isSupervisor && !isHRManager
+                    ? isSupervisor
                       ? 'bg-amber-50 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200 border border-amber-300 dark:border-amber-400/40 font-semibold shadow-xs'
                       : 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-400/40 font-semibold'
                     : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                <CalendarCheck className={`w-3.5 h-3.5 shrink-0 ${isSupervisor && !isHRManager ? 'text-amber-600 dark:text-amber-300' : 'text-indigo-600 dark:text-indigo-300'}`} />
-                <span>{isSupervisor && !isHRManager ? 'Vardiya Yönetimi' : 'Vardiya & İzin'}</span>
+                <CalendarCheck className={`w-3.5 h-3.5 shrink-0 ${isSupervisor ? 'text-amber-600 dark:text-amber-300' : 'text-indigo-600 dark:text-indigo-300'}`} />
+                <span>{isSupervisor ? 'Vardiya Yönetimi' : isHRManager ? 'Vardiya & İzin' : 'Vardiya Takvimi'}</span>
               </button>
             )}
 

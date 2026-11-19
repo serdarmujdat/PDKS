@@ -15,16 +15,10 @@ import {
 import type { ThemeId } from './types/pdks';
 import { isValidThemeId } from './themes/themes';
 
+import firebaseAppletConfig from '../firebase-applet-config.json';
+
 const env = (import.meta as any).env || {};
-const localConfigModules = import.meta.glob('/firebase-applet-config.json', {
-  eager: true,
-}) as Record<string, { default?: Record<string, unknown> } | Record<string, unknown>>;
-const rawLocalConfigModule = localConfigModules['/firebase-applet-config.json'];
-const localAppletConfig = (
-  rawLocalConfigModule && 'default' in rawLocalConfigModule && rawLocalConfigModule.default
-    ? rawLocalConfigModule.default
-    : rawLocalConfigModule || {}
-) as Record<string, unknown>;
+const localAppletConfig = (firebaseAppletConfig || {}) as Record<string, unknown>;
 
 const pickConfigValue = (fileVal: unknown, envVal: unknown): string => {
   const fromFile = String(fileVal || '').trim();

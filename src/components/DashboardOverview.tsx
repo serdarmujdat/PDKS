@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Users,
   UserCheck,
@@ -28,8 +28,23 @@ import {
   Sun,
   Moon,
 } from 'lucide-react';
-import { Employee, AttendanceRecord, Department, OvertimeRequest, LeaveRequest, DeviceEntryApproval, PDKSNotification } from '../types/pdks';
+import {
+  Employee,
+  AttendanceRecord,
+  Department,
+  OvertimeRequest,
+  LeaveRequest,
+  DeviceEntryApproval,
+  PDKSNotification,
+  Shift,
+  EmployeeShiftAssignment,
+} from '../types/pdks';
 import { pdksStorage, getTodayString } from '../services/storage';
+import {
+  calculateLiveShiftDelay,
+  formatMinutesTurkish,
+  LiveShiftDelayInfo,
+} from '../utils/shiftTimeAnalytics';
 import { useTheme } from '../contexts/ThemeContext';
 import { NotificationCenter } from './NotificationCenter';
 import { CompanyLogoImage } from './CompanyLogoImage';
@@ -71,13 +86,15 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   const canApprove = pdksStorage.canApproveRequests(activeUser);
   const canExport = pdksStorage.canExportReports(activeUser);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [shifts, setShifts] = useState<Shift[]>([]);
+  const [employeeShifts, setEmployeeShifts] = useState<EmployeeShiftAssignment[]>([]);
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [overtimeRequests, setOvertimeRequests] = useState<OvertimeRequest[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
   const [deviceApprovals, setDeviceApprovals] = useState<DeviceEntryApproval[]>([]);
   const [crossDeviceAlerts, setCrossDeviceAlerts] = useState<PDKSNotification[]>([]);
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
-  const [statusFilter, setStatusFilter] = useState<'all' | 'inside' | 'break' | 'outside' | 'leave'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'inside' | 'break' | 'outside' | 'leave' | 'delayed'>('all');
   const [approvalFilter, setApprovalFilter] = useState<'all' | 'device' | 'overtime' | 'leave'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
@@ -96,6 +113,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
 
   const loadData = () => {
     setEmployees(pdksStorage.getEmployees());
+    setShifts(pdksStorage.getShifts());
+    setEmployeeShifts(pdksStorage.getEmployeeShifts());
     setRecords(pdksStorage.getAttendanceRecords());
     setOvertimeRequests(pdksStorage.getOvertimeRequests());
     setLeaveRequests(pdksStorage.getLeaveRequests());
@@ -235,8 +254,30 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       if (timeCompare !== 0) return timeCompare;
       return (b.timestamp || '').localeCompare(a.timestamp || '');
     });
-  const lateRecords = todayRecords.filter((r) => r.type === 'check_in' && r.status === 'late');
-  
+
+  // Real-time live delay evaluation per employee (auto-ticks every 10s + SSE/polling sync)
+  const liveDelayMap = useMemo(() => {
+    const nowDate = new Date(nowTick);
+    const map = new Map<string, LiveShiftDelayInfo>();
+    for (const emp of employees) {
+      map.set(
+        emp.id,
+        calculateLiveShiftDelay(emp, nowDate, shifts, employeeShifts, records, leaveRequests)
+      );
+    }
+    return map;
+  }, [employees, shifts, employeeShifts, records, leaveRequests, nowTick]);
+
+  const delayedEmployees = useMemo(
+    () => employees.filter((e) => liveDelayMap.get(e.id)?.isDelayed),
+    [employees, liveDelayMap]
+  );
+  const absentLateCount = useMemo(
+    () => delayedEmployees.filter((e) => liveDelayMap.get(e.id)?.state === 'absent_late').length,
+    [delayedEmployees, liveDelayMap]
+  );
+  const lateCheckinCount = delayedEmployees.length - absentLateCount;
+
   // Employees who haven't arrived yet (not in office, not on break, not on leave)
   const notArrivedEmployees = outsideEmployees;
 
@@ -571,17 +612,26 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
           </div>
         </div>
 
-        {/* Late Today */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 sm:p-4 shadow-xs transition-colors">
+        {/* Late Today (Live Shift Delay Counter) */}
+        <div
+          onClick={() => setStatusFilter('delayed')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && setStatusFilter('delayed')}
+          className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-rose-300 dark:hover:border-rose-600/60 rounded-xl p-3 sm:p-4 shadow-xs transition-colors cursor-pointer"
+          title="Geciken ve henüz giriş yapmamış personelleri filtrele"
+        >
           <div className="flex items-center justify-between text-rose-600 dark:text-rose-400 text-xs font-medium mb-1.5 sm:mb-2">
-            <span className="truncate">Geç Kalan</span>
+            <span className="truncate">Canlı Gecikme</span>
             <AlertTriangle className="w-4 h-4 text-rose-500 dark:text-rose-400 shrink-0" />
           </div>
           <div className="font-mono text-xl sm:text-2xl font-bold text-rose-700 dark:text-rose-300 tabular-nums">
-            {lateRecords.length}
+            {delayedEmployees.length}
           </div>
-          <div className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 sm:mt-1 truncate">
-            Toleransı aşan
+          <div className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 sm:mt-1 truncate tabular-nums">
+            {delayedEmployees.length > 0
+              ? `${lateCheckinCount} geç giriş · ${absentLateCount} gelmedi`
+              : 'Gecikme yok'}
           </div>
         </div>
 
@@ -1404,6 +1454,18 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             <span className="w-2 h-2 rounded-full bg-blue-400" />
             <span>İzinli ({leaveEmployees.length})</span>
           </button>
+
+          <button
+            onClick={() => setStatusFilter('delayed')}
+            className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer shrink-0 ${
+              statusFilter === 'delayed'
+                ? 'bg-orange-600 text-white shadow-xs'
+                : 'bg-orange-50 dark:bg-orange-500/15 text-orange-800 dark:text-orange-300 hover:bg-orange-100 dark:hover:bg-orange-500/25 border border-orange-200 dark:border-orange-500/30'
+            }`}
+          >
+            <AlertTriangle className="w-3.5 h-3.5" />
+            <span>Geciken / Gelmeyen ({delayedEmployees.length})</span>
+          </button>
         </div>
 
         {/* Mobile View: Personnel Live Status Cards (md:hidden) */}
@@ -1414,6 +1476,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               if (statusFilter === 'break') return emp.currentPresence === 'break';
               if (statusFilter === 'outside') return emp.currentPresence === 'outside' && emp.status !== 'leave';
               if (statusFilter === 'leave') return emp.status === 'leave';
+              if (statusFilter === 'delayed') return Boolean(liveDelayMap.get(emp.id)?.isDelayed);
               return true;
             })
             .filter((emp) => {
@@ -1429,11 +1492,18 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               const isInside = emp.currentPresence === 'inside';
               const isBreak = emp.currentPresence === 'break';
               const isLeave = emp.status === 'leave';
+              const delayInfo = liveDelayMap.get(emp.id);
 
               return (
                 <div
                   key={emp.id}
-                  className="p-3.5 bg-slate-50/90 dark:bg-slate-800/70 rounded-xl border border-slate-200 dark:border-slate-700 space-y-2.5"
+                  className={`p-3.5 rounded-xl border space-y-2.5 ${
+                    delayInfo?.state === 'absent_late'
+                      ? 'bg-rose-50/60 dark:bg-rose-950/20 border-rose-300 dark:border-rose-500/40'
+                      : delayInfo?.isDelayed
+                      ? 'bg-amber-50/50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-500/40'
+                      : 'bg-slate-50/90 dark:bg-slate-800/70 border-slate-200 dark:border-slate-700'
+                  }`}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2.5 min-w-0">
@@ -1453,40 +1523,58 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                       </div>
                     </div>
 
-                    <div className="shrink-0">
+                    <div className="shrink-0 text-right space-y-1">
                       {isLeave ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30">
-                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30">
                           İzinli
                         </span>
                       ) : isInside ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
                           İçeride (Mesaide)
                         </span>
                       ) : isBreak ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30">
                           <Coffee className="w-3 h-3 text-amber-600 dark:text-amber-400" />
                           Molada
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30">
-                          <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
                           Dışarıda
                         </span>
                       )}
                     </div>
                   </div>
 
-                  <div className="pt-2 border-t border-slate-200/60 dark:border-slate-700 flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300">
-                    <div>
-                      <span className="text-slate-400 dark:text-slate-400">Son İşlem: </span>
-                      <span className="font-mono font-medium text-slate-800 dark:text-slate-200">
-                        {emp.lastActionTime || 'Bugün hareket yok'}
+                  {/* Live Delay Warning Strip on Mobile Card */}
+                  {delayInfo?.isDelayed && delayInfo.badgeText && (
+                    <div
+                      className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border tabular-nums ${
+                        delayInfo.state === 'absent_late' || delayInfo.severity === 'critical'
+                          ? 'bg-rose-100/90 dark:bg-rose-500/20 text-rose-800 dark:text-rose-200 border-rose-300 dark:border-rose-500/40'
+                          : 'bg-amber-100/90 dark:bg-amber-500/20 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-500/40'
+                      }`}
+                    >
+                      <span className="inline-flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{delayInfo.badgeText}</span>
+                      </span>
+                      <span className="font-mono text-[10px]">
+                        Vardiya {delayInfo.resolvedShift.startTime}
                       </span>
                     </div>
-                    <div className="text-[10px] text-slate-500 dark:text-slate-400">
-                      {emp.title}
+                  )}
+
+                  <div className="pt-2 border-t border-slate-200/60 dark:border-slate-700 flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300">
+                    <div className="font-mono tabular-nums">
+                      <span className="text-slate-400 dark:text-slate-400 font-sans">Vardiya: </span>
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">
+                        {delayInfo?.resolvedShift.isOffDay
+                          ? 'OFF'
+                          : `${delayInfo?.resolvedShift.startTime || '08:30'}–${delayInfo?.resolvedShift.endTime || '17:30'}`}
+                      </span>
+                    </div>
+                    <div className="font-mono tabular-nums text-[10px] text-slate-500 dark:text-slate-400">
+                      Giriş: {delayInfo?.checkInTime || emp.lastActionTime || 'Yok'}
                     </div>
                   </div>
                 </div>
@@ -1498,13 +1586,14 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         <div className="hidden md:block overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider">
+              <tr className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-semibold">
                 <th className="py-3 px-4">Personel Bilgisi</th>
                 <th className="py-3 px-4">Departman & Görev</th>
-                <th className="py-3 px-4">Anlık Durum Rozeti</th>
-                <th className="py-3 px-4">Son İşlem Saati</th>
-                <th className="py-3 px-4">Vardiya & Tolerans</th>
-                <th className="py-3 px-4 text-right">Durum Detayı</th>
+                <th className="py-3 px-4">Anlık Durum</th>
+                <th className="py-3 px-4">Canlı Gecikme Takibi</th>
+                <th className="py-3 px-4">Giriş / Son İşlem</th>
+                <th className="py-3 px-4">Bugünkü Vardiya</th>
+                <th className="py-3 px-4 text-right">Mesai Süresi</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1514,6 +1603,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                   if (statusFilter === 'break') return emp.currentPresence === 'break';
                   if (statusFilter === 'outside') return emp.currentPresence === 'outside' && emp.status !== 'leave';
                   if (statusFilter === 'leave') return emp.status === 'leave';
+                  if (statusFilter === 'delayed') return Boolean(liveDelayMap.get(emp.id)?.isDelayed);
                   return true;
                 })
                 .filter((emp) => {
@@ -1529,20 +1619,29 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                   const isInside = emp.currentPresence === 'inside';
                   const isBreak = emp.currentPresence === 'break';
                   const isLeave = emp.status === 'leave';
+                  const delayInfo = liveDelayMap.get(emp.id);
+                  const shiftInfo = delayInfo?.resolvedShift;
 
                   return (
-                    <tr key={emp.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/60 transition-colors">
+                    <tr
+                      key={emp.id}
+                      className={`transition-colors ${
+                        delayInfo?.state === 'absent_late'
+                          ? 'bg-rose-50/40 dark:bg-rose-950/15 hover:bg-rose-50/80 dark:hover:bg-rose-950/25'
+                          : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/60'
+                      }`}
+                    >
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-3">
                           <img
                             src={emp.avatar}
                             alt={emp.fullName}
-                            className="w-9 h-9 rounded-full object-cover border border-slate-200 dark:border-slate-700"
+                            className="w-9 h-9 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
                             referrerPolicy="no-referrer"
                           />
                           <div>
                             <div className="font-bold text-slate-900 dark:text-slate-100">{emp.fullName}</div>
-                            <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{emp.id}</div>
+                            <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">{emp.id}</div>
                           </div>
                         </div>
                       </td>
@@ -1552,40 +1651,93 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                       </td>
                       <td className="py-3 px-4">
                         {isLeave ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30">
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                            İzinli (Yıllık / Rapor)
+                          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 dark:text-blue-300">
+                            İzinli
                           </span>
                         ) : isInside ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
                             İçeride (Çalışıyor)
                           </span>
                         ) : isBreak ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30">
+                          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300">
                             <Coffee className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                            Molada (Dinlenmede)
+                            Molada
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-rose-50 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-500/30">
-                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                            Dışarıda (Ayrıldı)
+                          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400">
+                            {delayInfo?.checkOutTime ? 'Çıkış Yaptı' : 'Giriş Yapmadı'}
                           </span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        {delayInfo?.isDelayed && delayInfo.badgeText ? (
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold border tabular-nums whitespace-nowrap ${
+                              delayInfo.state === 'absent_late' || delayInfo.severity === 'critical'
+                                ? 'bg-rose-50 dark:bg-rose-500/20 text-rose-800 dark:text-rose-200 border-rose-300 dark:border-rose-500/40'
+                                : 'bg-amber-50 dark:bg-amber-500/20 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-500/40'
+                            }`}
+                            title={
+                              delayInfo.state === 'absent_late'
+                                ? 'Vardiya başlangıç saati geçti — gecikme sayacı canlı artıyor'
+                                : 'Vardiya başlangıç saatinden sonra giriş yapıldı'
+                            }
+                          >
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                            <span>{delayInfo.badgeText}</span>
+                          </span>
+                        ) : delayInfo?.state === 'on_time' || delayInfo?.state === 'checked_out' ? (
+                          <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
+                            Zamanında
+                          </span>
+                        ) : delayInfo?.state === 'off_day' ? (
+                          <span className="text-[11px] text-slate-400 dark:text-slate-500">Hafta Tatili</span>
+                        ) : delayInfo?.state === 'on_leave' ? (
+                          <span className="text-[11px] text-blue-600 dark:text-blue-400">Resmi İzin</span>
+                        ) : (
+                          <span className="text-[11px] text-slate-400 dark:text-slate-500">Vardiya Başlamadı</span>
                         )}
                       </td>
                       <td className="py-3 px-4 font-mono font-medium text-slate-800 dark:text-slate-200 tabular-nums">
-                        {emp.lastActionTime || (
-                          <span className="text-slate-400 dark:text-slate-500 font-normal">Bugün işlem yok</span>
+                        {delayInfo?.checkInTime ? (
+                          <div>
+                            <span>{delayInfo.checkInTime}</span>
+                            {delayInfo.checkOutTime && (
+                              <div className="text-[10px] text-slate-400 dark:text-slate-500">
+                                Çıkış: {delayInfo.checkOutTime}
+                              </div>
+                            )}
+                          </div>
+                        ) : emp.lastActionTime ? (
+                          emp.lastActionTime
+                        ) : (
+                          <span className="text-slate-400 dark:text-slate-500 font-sans font-normal">Giriş yok</span>
                         )}
                       </td>
                       <td className="py-3 px-4 text-slate-600 dark:text-slate-300">
-                        <span className="font-medium text-slate-700 dark:text-slate-200">08:30 - 17:30</span>
-                        <div className="text-[10px] text-slate-400 dark:text-slate-500">15 dk tolerans</div>
+                        {shiftInfo?.isOffDay ? (
+                          <span className="text-slate-400 dark:text-slate-500 font-medium">Hafta Tatili / OFF</span>
+                        ) : (
+                          <>
+                            <span className="font-mono font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
+                              {shiftInfo?.startTime || '08:30'} - {shiftInfo?.endTime || '17:30'}
+                            </span>
+                            <div className="text-[10px] text-slate-400 dark:text-slate-500 truncate max-w-[150px]">
+                              {shiftInfo?.shiftName?.split('(')[0].trim() || 'Standart'} · ±{shiftInfo?.toleranceMinutes ?? 15} dk
+                            </div>
+                          </>
+                        )}
                       </td>
-                      <td className="py-3 px-4 text-right">
-                        <span className="text-slate-500 dark:text-slate-400 text-[11px]">
-                          {isInside ? 'Aktif Mesai' : isBreak ? 'Öğle / Ara Dinlenme' : isLeave ? 'Resmi İzin' : 'Henüz Giriş Yok'}
-                        </span>
+                      <td className="py-3 px-4 text-right font-mono tabular-nums">
+                        {delayInfo && delayInfo.workedMinutesToday > 0 ? (
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">
+                            {formatMinutesTurkish(delayInfo.workedMinutesToday)}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 dark:text-slate-500 text-[11px] font-sans">
+                            {isLeave ? 'İzinli' : shiftInfo?.isOffDay ? 'OFF' : '-'}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );

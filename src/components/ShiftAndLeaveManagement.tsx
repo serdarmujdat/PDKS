@@ -34,9 +34,41 @@ import {
   UserPlus,
   Edit3,
   ShieldCheck,
+  Save,
+  RotateCcw,
+  List,
+  LayoutGrid,
+  Eye,
+  Loader2,
 } from 'lucide-react';
-import { Shift, LeaveRequest, Employee, CurrentUser, OvertimeRequest, SupervisorAssignment } from '../types/pdks';
+import {
+  Shift,
+  EmployeeShiftAssignment,
+  LeaveRequest,
+  Employee,
+  CurrentUser,
+  OvertimeRequest,
+  SupervisorAssignment,
+  UserAccount,
+  AttendanceRecord,
+} from '../types/pdks';
 import { pdksStorage } from '../services/storage';
+import {
+  calculateLiveShiftDelay,
+  getCompactShiftLabel,
+  getLocalDateString,
+  LiveShiftDelayInfo,
+} from '../utils/shiftTimeAnalytics';
+
+const SHORT_DAY_LABELS: Record<string, string> = {
+  Pazartesi: 'Pzt',
+  Salı: 'Sal',
+  Çarşamba: 'Çar',
+  Perşembe: 'Per',
+  Cuma: 'Cum',
+  Cumartesi: 'Cmt',
+  Pazar: 'Paz',
+};
 
 interface ShiftAndLeaveManagementProps {
   currentUser?: CurrentUser;
@@ -129,17 +161,41 @@ export function detectShiftTimeConflict(
 
 export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = ({ currentUser }) => {
   const [shifts, setShifts] = useState<Shift[]>([]);
+  const [employeeShifts, setEmployeeShifts] = useState<EmployeeShiftAssignment[]>([]);
+  const [userAccounts, setUserAccounts] = useState<UserAccount[]>([]);
   const [leaves, setLeaves] = useState<LeaveRequest[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [records, setRecords] = useState<AttendanceRecord[]>([]);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
   const [overtimes, setOvertimes] = useState<OvertimeRequest[]>([]);
   const [overtimeFilter, setOvertimeFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [permissionNotice, setPermissionNotice] = useState<string | null>(null);
   const [notificationToast, setNotificationToast] = useState<string | null>(null);
+  const [floatingToast, setFloatingToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
   const [sentNotificationIds, setSentNotificationIds] = useState<Record<string, boolean>>({});
 
-  // View Switcher Tab: 'calendar' (Haftalık Takvim) | 'shifts' (Vardiyalar) | 'supervisors' (Birim Amirleri) | 'leaves' (İzinler) | 'overtime' (Fazla Mesailer) | 'all' (Tümü)
+  // Quick Shift Assignment UI States
+  const [calendarViewMode, setCalendarViewMode] = useState<'weekly' | 'daily'>('weekly');
+  const [selectedDailyDate, setSelectedDailyDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+  const [saveMode, setSaveMode] = useState<'auto' | 'bulk'>('auto');
+  const [pendingShiftChanges, setPendingShiftChanges] = useState<Record<string, { employeeId: string; date: string; shiftId: string }>>({});
+  const [savingCellKey, setSavingCellKey] = useState<string | null>(null);
+  const [isBulkSaving, setIsBulkSaving] = useState<boolean>(false);
+  const [togglingPermAccountId, setTogglingPermAccountId] = useState<string | null>(null);
+  const [permSearchQuery, setPermSearchQuery] = useState<string>('');
+
+  // HR-Controlled Team / Manager Hierarchy (manager_id) States
+  const [selectedTeamEmpIds, setSelectedTeamEmpIds] = useState<string[]>([]);
+  const [bulkTargetManagerId, setBulkTargetManagerId] = useState<string>('');
+  const [isAssigningManager, setIsAssigningManager] = useState<boolean>(false);
+  const [assigningSingleEmpId, setAssigningSingleEmpId] = useState<string | null>(null);
+  const [teamSearchQuery, setTeamSearchQuery] = useState<string>('');
+  const [teamManagerFilter, setTeamManagerFilter] = useState<string>('all');
+
+  // View Switcher Tab: 'calendar' (Haftalık Takvim) | 'shifts' (Vardiyalar) | 'supervisors' (Yetkilendirme) | 'leaves' (İzinler) | 'overtime' (Fazla Mesailer) | 'all' (Tümü)
   const [activeViewTab, setActiveViewTab] = useState<'calendar' | 'shifts' | 'supervisors' | 'leaves' | 'overtime' | 'all'>('calendar');
 
   // Interactive Weekly Calendar States
@@ -168,12 +224,31 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
 
   const activeUser = currentUser || pdksStorage.getActiveUser();
   const isHRManager = pdksStorage.isHRorSuperAdmin(activeUser);
+  const canToggleShiftPermissions = pdksStorage.canToggleShiftPermission(activeUser);
+  const canManageShifts = pdksStorage.hasShiftManagePermission(activeUser);
+  const managedDepartment = pdksStorage.getManagedShiftDepartment(activeUser);
+  const isUnitManagerOnly = canManageShifts && !isHRManager;
+  const isReadOnlyShiftViewer = !canManageShifts;
   const canApprove = pdksStorage.canApproveRequests(activeUser);
   const canExport = pdksStorage.canExportReports(activeUser);
   const canDelete = pdksStorage.canDeleteEmployee(activeUser);
-  const isSupervisor = pdksStorage.isUserSupervisor(activeUser);
+  const isSupervisor = isUnitManagerOnly;
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
+
+  const showFloatingToast = (type: 'success' | 'error', message: string) => {
+    setFloatingToast({ type, message });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setFloatingToast(null);
+    }, 3500);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     const syncName = (e?: any) => {
@@ -203,17 +278,19 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
   const [supervisorModalDeptFilter, setSupervisorModalDeptFilter] = useState<string>('all');
 
   // Calendar Birim Amiri Filter Controls
-  const [onlyMyResponsible, setOnlyMyResponsible] = useState<boolean>(isSupervisor && !isHRManager);
+  const [onlyMyResponsible, setOnlyMyResponsible] = useState<boolean>(isUnitManagerOnly);
   const [supervisorFilter, setSupervisorFilter] = useState<string>('all');
 
-  // Responsible Employees for currently active user
+  // Responsible Employees for currently active user (strictly department-scoped for Birim Yöneticisi / Amir)
   const responsibleEmpIds = useMemo(() => {
     return pdksStorage.getResponsibleEmployeeIdsForUser(activeUser);
-  }, [activeUser, supervisorAssignments]);
+  }, [activeUser, employees, userAccounts, supervisorAssignments]);
 
   // Dynamic 7 days of the active week (Monday to Sunday)
+  const todayLocalStr = getLocalDateString(new Date(nowTick));
+
   const weekDays = useMemo(() => {
-    const now = new Date();
+    const now = new Date(nowTick);
     const currentDay = now.getDay(); // 0 is Sunday, 1 is Monday...
     const diffToMonday = (currentDay === 0 ? -6 : 1) - currentDay;
     const monday = new Date(now);
@@ -224,18 +301,19 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     for (let i = 0; i < 7; i++) {
       const d = new Date(monday);
       d.setDate(monday.getDate() + i);
-      const dateStr = d.toISOString().split('T')[0];
-      const isToday = dateStr === new Date().toISOString().split('T')[0];
+      const dateStr = getLocalDateString(d);
+      const isToday = dateStr === todayLocalStr;
       days.push({
         date: d,
         dateStr,
         dayName: dayNames[i],
+        shortDayName: SHORT_DAY_LABELS[dayNames[i]] || dayNames[i].slice(0, 3),
         formattedDate: d.toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' }),
         isToday,
       });
     }
     return days;
-  }, [currentWeekOffset]);
+  }, [currentWeekOffset, todayLocalStr]);
 
   const weekLabel = useMemo(() => {
     if (weekDays.length === 0) return '';
@@ -244,24 +322,46 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     return `${first.formattedDate} - ${last.formattedDate} ${last.date.getFullYear()}`;
   }, [weekDays]);
 
+  // Eligible Birim Amiri / Manager accounts for HR Ekip-Amir assignment & filtering
+  const managerAccounts = useMemo(() => {
+    return userAccounts.filter(
+      (acc) =>
+        acc.isActive &&
+        (acc.role === 'birim_amiri' ||
+          acc.role === 'yonetici' ||
+          acc.can_manage_shifts === true ||
+          acc.role === 'ik_yoneticisi')
+    );
+  }, [userAccounts]);
+
+  const managerById = useMemo(() => {
+    const map = new Map<string, UserAccount>();
+    for (const acc of userAccounts) {
+      map.set(acc.id, acc);
+    }
+    return map;
+  }, [userAccounts]);
+
   const calendarEmployees = useMemo(() => {
     return employees.filter((emp) => {
-      // If Birim Amiri and "onlyMyResponsible" is active, restrict to their responsible personnel
-      if (isSupervisor && !isHRManager && onlyMyResponsible) {
-        if (!responsibleEmpIds.includes(emp.id)) return false;
+      // STRICT manager_id scoping for Unit Manager / Birim Amiri:
+      // Can ONLY view and edit employees explicitly assigned to them by HR (emp.manager_id === activeUser.id).
+      if (isUnitManagerOnly) {
+        if (emp.manager_id !== activeUser.id) return false;
       }
 
-      // If HR selected a specific Birim Amiri filter
-      if (supervisorFilter !== 'all') {
-        const supAss = supervisorAssignments.find(
-          (s) => s.id === supervisorFilter || s.supervisorId === supervisorFilter
-        );
-        if (supAss && !supAss.assignedEmployeeIds.includes(emp.id)) {
+      // HR / Super Admin Birim Amiri filter
+      if (isHRManager && supervisorFilter !== 'all') {
+        if (supervisorFilter === 'unassigned') {
+          if (emp.manager_id) return false;
+        } else if (emp.manager_id !== supervisorFilter) {
           return false;
         }
       }
 
-      const matchesDept = calendarDeptFilter === 'all' || emp.department === calendarDeptFilter;
+      const matchesDept = isUnitManagerOnly
+        ? true
+        : calendarDeptFilter === 'all' || emp.department === calendarDeptFilter;
       const matchesSearch =
         calendarSearch.trim() === '' ||
         emp.fullName.toLowerCase().includes(calendarSearch.toLowerCase()) ||
@@ -269,7 +369,276 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
         emp.title.toLowerCase().includes(calendarSearch.toLowerCase());
       return matchesDept && matchesSearch;
     });
-  }, [employees, calendarDeptFilter, calendarSearch, onlyMyResponsible, supervisorFilter, isSupervisor, isHRManager, responsibleEmpIds, supervisorAssignments]);
+  }, [
+    employees,
+    calendarDeptFilter,
+    calendarSearch,
+    supervisorFilter,
+    isUnitManagerOnly,
+    activeUser.id,
+    isHRManager,
+  ]);
+
+  // Filtered employees inside HR "Ekip / Amir Eşleştirme" panel
+  const filteredTeamEmployees = useMemo(() => {
+    return employees.filter((emp) => {
+      if (teamManagerFilter === 'unassigned') {
+        if (emp.manager_id) return false;
+      } else if (teamManagerFilter !== 'all') {
+        if (emp.manager_id !== teamManagerFilter) return false;
+      }
+      if (teamSearchQuery.trim()) {
+        const q = teamSearchQuery.toLowerCase();
+        const mgrName = emp.manager_id ? (managerById.get(emp.manager_id)?.name || '').toLowerCase() : '';
+        return (
+          emp.fullName.toLowerCase().includes(q) ||
+          emp.id.toLowerCase().includes(q) ||
+          emp.department.toLowerCase().includes(q) ||
+          emp.title.toLowerCase().includes(q) ||
+          mgrName.includes(q)
+        );
+      }
+      return true;
+    });
+  }, [employees, teamManagerFilter, teamSearchQuery, managerById]);
+
+  const handleSingleManagerAssign = async (empId: string, nextManagerId: string | null) => {
+    if (!canToggleShiftPermissions) {
+      showFloatingToast('error', 'Yetkisiz İşlem (403): Ekip–Amir eşleştirme yetkisi yalnızca Süper Admin ve İK yöneticisine aittir.');
+      return;
+    }
+    setAssigningSingleEmpId(empId);
+    try {
+      const res = await pdksStorage.assignEmployeeManagerAsync(empId, nextManagerId);
+      if (res.success) {
+        loadData();
+        showFloatingToast('success', res.message || 'Birim amiri eşleştirmesi güncellendi.');
+      } else {
+        showFloatingToast('error', res.message || 'Eşleştirme güncellenemedi.');
+      }
+    } finally {
+      setAssigningSingleEmpId(null);
+    }
+  };
+
+  const handleBulkManagerAssign = async () => {
+    if (!canToggleShiftPermissions) {
+      showFloatingToast('error', 'Yetkisiz İşlem (403): Toplu ekip atama yetkisi yalnızca Süper Admin ve İK yöneticisine aittir.');
+      return;
+    }
+    if (selectedTeamEmpIds.length === 0) {
+      showFloatingToast('error', 'Lütfen önce en az bir personel seçiniz.');
+      return;
+    }
+    setIsAssigningManager(true);
+    try {
+      const targetMgr = bulkTargetManagerId === '__UNASSIGN__' || !bulkTargetManagerId ? null : bulkTargetManagerId;
+      const res = await pdksStorage.bulkAssignManagerAsync(selectedTeamEmpIds, targetMgr);
+      if (res.success) {
+        setSelectedTeamEmpIds([]);
+        loadData();
+        showFloatingToast('success', res.message || 'Toplu ekip ataması tamamlandı.');
+      } else {
+        showFloatingToast('error', res.message || 'Toplu atama gerçekleştirilemedi.');
+      }
+    } finally {
+      setIsAssigningManager(false);
+    }
+  };
+
+  // Quick Shift Lookup Map from employee_shifts table: `${employeeId}__${date}` -> EmployeeShiftAssignment
+  const employeeShiftMap = useMemo(() => {
+    const map = new Map<string, EmployeeShiftAssignment>();
+    for (const item of employeeShifts) {
+      if (item && item.employeeId && item.date) {
+        map.set(`${item.employeeId}__${item.date}`, item);
+      }
+    }
+    return map;
+  }, [employeeShifts]);
+
+  const getShiftToneClass = (shift?: Shift | null) => {
+    if (!shift) return 'bg-slate-50 dark:bg-slate-800/70 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300';
+    if (shift.isOffDay || shift.id === 'SHIFT-OFF' || shift.colorKey === 'off') {
+      return 'bg-slate-100 dark:bg-slate-800/90 border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400';
+    }
+    if (shift.colorKey === 'night' || shift.id === 'SHIFT-GECE' || shift.startTime === '00:00') {
+      return 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-200 dark:border-indigo-700/70 text-indigo-900 dark:text-indigo-200';
+    }
+    if (shift.colorKey === 'evening' || shift.id === 'SHIFT-AKSAM' || shift.startTime >= '15:00') {
+      return 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-700/70 text-amber-900 dark:text-amber-200';
+    }
+    return 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-700/70 text-emerald-900 dark:text-emerald-200';
+  };
+
+  const getEffectiveShiftForCell = (emp: Employee, dateStr: string, dayName: string) => {
+    const cellKey = `${emp.id}__${dateStr}`;
+    const pending = pendingShiftChanges[cellKey];
+    const savedOverride = employeeShiftMap.get(cellKey);
+    const defaultShift = shifts.find((s) => s.id === emp.shiftId) || shifts[0];
+    const defaultIsWorkDay = defaultShift ? defaultShift.workDays.includes(dayName) : false;
+
+    const effectiveShiftId = pending
+      ? pending.shiftId
+      : savedOverride
+        ? savedOverride.shiftId
+        : defaultIsWorkDay && defaultShift
+          ? defaultShift.id
+          : 'SHIFT-OFF';
+
+    const shiftObj =
+      shifts.find((s) => s.id === effectiveShiftId) ||
+      shifts.find((s) => s.id === 'SHIFT-OFF') ||
+      defaultShift;
+
+    return {
+      cellKey,
+      shiftId: shiftObj?.id || effectiveShiftId,
+      shift: shiftObj,
+      isPending: Boolean(pending),
+      isOverride: Boolean(savedOverride),
+      assignment: savedOverride,
+    };
+  };
+
+  const handleInlineShiftChange = async (emp: Employee, dateStr: string, nextShiftId: string) => {
+    if (!pdksStorage.canUserManageShiftForEmployee(activeUser, emp.id)) {
+      showFloatingToast(
+        'error',
+        'Yetkisiz İşlem (403): Bu personelin vardiyasını düzenleme yetkiniz bulunmamaktadır.'
+      );
+      return;
+    }
+
+    const cellKey = `${emp.id}__${dateStr}`;
+
+    if (saveMode === 'bulk') {
+      setPendingShiftChanges((prev) => ({
+        ...prev,
+        [cellKey]: { employeeId: emp.id, date: dateStr, shiftId: nextShiftId },
+      }));
+      return;
+    }
+
+    // Auto-Save Mode: persist immediately to backend API
+    setSavingCellKey(cellKey);
+    try {
+      const result = await pdksStorage.saveEmployeeShiftAsync({
+        employeeId: emp.id,
+        date: dateStr,
+        shiftId: nextShiftId,
+      });
+      if (result.success) {
+        loadData();
+        showFloatingToast('success', 'Vardiya güncellendi');
+      } else {
+        showFloatingToast('error', result.message || 'Vardiya güncellenemedi.');
+      }
+    } finally {
+      setSavingCellKey(null);
+    }
+  };
+
+  const handleApplyRowWeekShift = async (emp: Employee, nextShiftId: string) => {
+    if (!nextShiftId) return;
+    if (!pdksStorage.canUserManageShiftForEmployee(activeUser, emp.id)) {
+      showFloatingToast('error', 'Yetkisiz İşlem (403): Bu personelin vardiyasını düzenleme yetkiniz yok.');
+      return;
+    }
+    const weekdayDates = weekDays.slice(0, 5).map((d) => d.dateStr);
+    if (saveMode === 'bulk') {
+      setPendingShiftChanges((prev) => {
+        const next = { ...prev };
+        for (const dateStr of weekdayDates) {
+          next[`${emp.id}__${dateStr}`] = { employeeId: emp.id, date: dateStr, shiftId: nextShiftId };
+        }
+        return next;
+      });
+      showFloatingToast('success', `${emp.fullName} için hafta içi 5 gün toplu kuyruğa eklendi.`);
+      return;
+    }
+
+    setSavingCellKey(`ROW__${emp.id}`);
+    try {
+      const changes = weekdayDates.map((dateStr, idx) => ({
+        employeeId: emp.id,
+        date: dateStr,
+        shiftId: nextShiftId,
+        applyAsDefault: idx === 0,
+      }));
+      const result = await pdksStorage.saveEmployeeShiftsBulkAsync(changes);
+      if (result.success) {
+        loadData();
+        showFloatingToast('success', 'Vardiya güncellendi');
+      } else {
+        showFloatingToast('error', result.message || 'Haftalık vardiya atanamadı.');
+      }
+    } finally {
+      setSavingCellKey(null);
+    }
+  };
+
+  const handleSaveBulkShifts = async () => {
+    const entries = Object.values(pendingShiftChanges);
+    if (entries.length === 0) return;
+    setIsBulkSaving(true);
+    try {
+      const result = await pdksStorage.saveEmployeeShiftsBulkAsync(entries);
+      if (result.success) {
+        setPendingShiftChanges({});
+        loadData();
+        showFloatingToast('success', `Vardiya güncellendi (${result.updatedCount || entries.length} kayıt)`);
+      } else {
+        showFloatingToast('error', result.message || 'Toplu vardiya güncellemesi başarısız oldu.');
+      }
+    } finally {
+      setIsBulkSaving(false);
+    }
+  };
+
+  const handleToggleUserShiftPermission = async (acc: UserAccount) => {
+    if (!canToggleShiftPermissions) {
+      showFloatingToast(
+        'error',
+        'Yetkisiz İşlem (403): Vardiya yetkisini yalnızca Süper Admin veya İK yöneticisi değiştirebilir.'
+      );
+      return;
+    }
+    const currentEnabled = pdksStorage.hasShiftManagePermission({
+      id: acc.id,
+      username: acc.username,
+      name: acc.name,
+      role: acc.role,
+      title: acc.title,
+      department: acc.department,
+      avatar: acc.avatar,
+      employeeId: acc.employeeId,
+      can_manage_shifts: acc.can_manage_shifts,
+      isShiftSupervisor: acc.isShiftSupervisor,
+      customPermissions: acc.customPermissions,
+    });
+    const nextEnabled = !currentEnabled;
+    setTogglingPermAccountId(acc.id);
+    try {
+      const res = await pdksStorage.updateUserShiftPermissionAsync(acc.id, nextEnabled);
+      if (res.success) {
+        loadData();
+        showFloatingToast('success', res.message || 'Vardiya yetkisi güncellendi.');
+      } else {
+        showFloatingToast('error', res.message || 'Yetki değiştirilemedi.');
+      }
+    } finally {
+      setTogglingPermAccountId(null);
+    }
+  };
+
+  const pendingChangesCount = Object.keys(pendingShiftChanges).length;
+
+  const selectedDailyDayName = useMemo(() => {
+    const d = new Date(`${selectedDailyDate}T12:00:00`);
+    const names = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'];
+    return Number.isNaN(d.getTime()) ? 'Pazartesi' : names[d.getDay()];
+  }, [selectedDailyDate]);
 
   // Shift Modal
   const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
@@ -295,8 +664,11 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
 
   const loadData = () => {
     setShifts(pdksStorage.getShifts());
+    setEmployeeShifts(pdksStorage.getEmployeeShifts());
+    setUserAccounts(pdksStorage.getUserAccounts());
     setLeaves(pdksStorage.getLeaveRequests());
     setEmployees(pdksStorage.getEmployees());
+    setRecords(pdksStorage.getAttendanceRecords());
     setOvertimes(pdksStorage.getOvertimeRequests());
     setSupervisorAssignments(pdksStorage.getSupervisorAssignments());
   };
@@ -308,7 +680,15 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
       loadData();
     };
     window.addEventListener('pdks-notification', handleLiveEvent);
-    return () => window.removeEventListener('pdks-notification', handleLiveEvent);
+    window.addEventListener('pdks-data-synced', handleLiveEvent);
+    const tickTimer = setInterval(() => {
+      setNowTick(Date.now());
+    }, 15000);
+    return () => {
+      window.removeEventListener('pdks-notification', handleLiveEvent);
+      window.removeEventListener('pdks-data-synced', handleLiveEvent);
+      clearInterval(tickTimer);
+    };
   }, []);
 
   // Close export dropdown when clicking outside
@@ -322,10 +702,31 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Live per-employee shift delay status (auto-ticks every 15s + updates on SSE/data sync)
+  const liveDelayMap = useMemo(() => {
+    const now = new Date(nowTick);
+    const map = new Map<string, LiveShiftDelayInfo>();
+    for (const emp of employees) {
+      map.set(emp.id, calculateLiveShiftDelay(emp, now, shifts, employeeShifts, records, leaves));
+    }
+    return map;
+  }, [employees, shifts, employeeShifts, records, leaves, nowTick]);
+
+  const liveDelaySummary = useMemo(() => {
+    let absentLate = 0;
+    let lateCheckIn = 0;
+    for (const emp of calendarEmployees) {
+      const info = liveDelayMap.get(emp.id);
+      if (info?.state === 'absent_late') absentLate++;
+      else if (info?.state === 'late_checkin') lateCheckIn++;
+    }
+    return { absentLate, lateCheckIn, total: absentLate + lateCheckIn };
+  }, [calendarEmployees, liveDelayMap]);
+
   // Calculate upcoming shifts for today in real-time
   const upcomingShifts: UpcomingShiftItem[] = useMemo(() => {
     const daysOfWeek = ['Pazar', 'Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'];
-    const now = new Date();
+    const now = new Date(nowTick);
     const todayDayName = daysOfWeek[now.getDay()];
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
@@ -398,7 +799,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
         };
       }
     }).filter(Boolean) as UpcomingShiftItem[];
-  }, [employees, shifts]);
+  }, [employees, shifts, nowTick]);
 
   const criticalShiftsCount = upcomingShifts.filter(
     (u) => u.timeStatus === 'critical_soon' || u.timeStatus === 'starting_soon'
@@ -1048,24 +1449,52 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
         </div>
       </div>
 
-      {/* Birim Amiri Sorumluluk & Yetki Bilgi Panosu */}
-      {isSupervisor && !isHRManager && (
-        <div className="bg-gradient-to-r from-amber-50 via-orange-50/40 to-slate-50 border border-amber-300/80 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      {/* Salt Okunur Görüntüleme Bilgi Panosu (Yetkisiz Kullanıcılar İçin) */}
+      {isReadOnlyShiftViewer && (
+        <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start sm:items-center gap-3">
-            <div className="w-11 h-11 rounded-2xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
-              <ShieldCheck className="w-6 h-6" />
+            <div className="w-9 h-9 rounded-lg bg-slate-200/80 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center shrink-0">
+              <Eye className="w-4.5 h-4.5" />
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-bold text-sm sm:text-base text-amber-950">
-                  Birim Amiri Vardiya Yönetim Paneli
+                <h3 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                  Salt Okunur Vardiya Görüntüleme Modu
                 </h3>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-900 border border-amber-300">
-                  Yetkili Birim Amiri: @{activeUser.username}
+                <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                  can_manage_shifts: Pasif
                 </span>
               </div>
-              <p className="text-xs text-amber-900/90 mt-1 leading-relaxed">
-                Hoş geldiniz <strong>{activeUser.name}</strong>. İK Yönetimi tarafından sorumlu kılındığınız <strong>{responsibleEmpIds.length} personelin</strong> haftalık vardiya planlamasını aşağıdaki çizelgeden veya "Vardiya Ata" butonuyla gerçekleştirebilirsiniz.
+              <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">
+                Vardiya düzenleme yetkiniz aktif değildir. Haftalık ve günlük çalışma çizelgelerini görüntüleyebilir, ancak vardiya değişikliği yapamazsınız.
+              </p>
+            </div>
+          </div>
+          <div className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 shrink-0">
+            <Lock className="w-3.5 h-3.5" />
+            <span>Düzenleme Kilitli</span>
+          </div>
+        </div>
+      )}
+
+      {/* Birim Amiri Sorumluluk & Yetki Bilgi Panosu (Kendi Birimine Kısıtlı) */}
+      {isUnitManagerOnly && (
+        <div className="bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-amber-600 text-white flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-bold text-sm text-amber-950 dark:text-amber-100">
+                  Birim Yöneticisi Vardiya Yetkisi — {managedDepartment || 'Birim Tanımsız'}
+                </h3>
+                <span className="text-[11px] font-mono font-semibold text-amber-800 dark:text-amber-300">
+                  can_manage_shifts: Aktif
+                </span>
+              </div>
+              <p className="text-xs text-amber-900/90 dark:text-amber-200/80 mt-0.5 leading-relaxed">
+                Hoş geldiniz <strong>{activeUser.name}</strong>. Yalnızca kendi biriminize (<strong>{managedDepartment || '—'}</strong>) bağlı <strong>{calendarEmployees.length} personelin</strong> vardiyalarını tablodaki açılır listelerden anlık veya toplu olarak güncelleyebilirsiniz.
               </p>
             </div>
           </div>
@@ -1074,21 +1503,49 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
             <button
               onClick={() => {
                 setAssignForm({
-                  employeeId: responsibleEmpIds[0] || employees[0]?.id || '',
+                  employeeId: calendarEmployees[0]?.id || '',
                   shiftId: shifts[0]?.id || '',
                 });
                 setIsAssignShiftModalOpen(true);
               }}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl shadow-xs transition-colors cursor-pointer whitespace-nowrap"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
             >
               <UserCheck className="w-4 h-4" />
-              <span>Personelime Vardiya Ata</span>
+              <span>Birimime Vardiya Ata</span>
             </button>
           </div>
         </div>
       )}
 
-      {/* Floating Notification Toast */}
+      {/* Fixed Floating Toast Notification ("Vardiya güncellendi" / Error) */}
+      {floatingToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-5 right-5 z-50 max-w-md px-4 py-3 rounded-xl border shadow-lg text-xs font-semibold flex items-center gap-2.5 animate-fade-in ${
+            floatingToast.type === 'success'
+              ? 'bg-emerald-600 text-white border-emerald-500'
+              : 'bg-rose-600 text-white border-rose-500'
+          }`}
+        >
+          {floatingToast.type === 'success' ? (
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+          ) : (
+            <ShieldAlert className="w-4 h-4 shrink-0" />
+          )}
+          <span className="leading-snug">{floatingToast.message}</span>
+          <button
+            type="button"
+            onClick={() => setFloatingToast(null)}
+            className="ml-2 text-white/80 hover:text-white cursor-pointer"
+            aria-label="Kapat"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Inline Notification Toast */}
       {notificationToast && (
         <div className="bg-emerald-600 text-white px-4 py-3 rounded-xl text-xs font-bold flex items-center justify-between shadow-lg animate-fade-in">
           <div className="flex items-center gap-2">
@@ -1350,246 +1807,558 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
         )}
       </div>
 
-      {/* ETKİLEŞİMLİ HAFTALIK VARDİYA TAKVİMİ GÖRÜNÜMÜ */}
+      {/* ETKİLEŞİMLİ HAFTALIK VARDİYA TAKVİMİ & HIZLI VARDİYA ATAMA ARAYÜZÜ */}
       {(activeViewTab === 'calendar' || activeViewTab === 'all') && (
         <div className="space-y-4">
-          <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
-            {/* Week Controls & Filters */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3 border-b border-slate-100">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5 space-y-4">
+            {/* Top Toolbar: View Switcher + Save Mode + Bulk Save Actions */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2 flex-wrap">
-                <div className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-50 p-1 shadow-2xs">
+                {/* Weekly vs Daily Quick List Switcher */}
+                <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 p-0.5">
                   <button
-                    onClick={() => setCurrentWeekOffset((prev) => prev - 1)}
-                    className="p-1.5 hover:bg-white text-slate-700 rounded-lg transition-colors cursor-pointer"
-                    title="Önceki Hafta"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => setCurrentWeekOffset(0)}
-                    className={`px-3 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
-                      currentWeekOffset === 0
-                        ? 'bg-indigo-600 text-white shadow-xs'
-                        : 'text-slate-700 hover:bg-white'
+                    type="button"
+                    onClick={() => setCalendarViewMode('weekly')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                      calendarViewMode === 'weekly'
+                        ? 'bg-white dark:bg-slate-700 text-indigo-700 dark:text-indigo-200 shadow-2xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                   >
-                    Bu Hafta
+                    <LayoutGrid className="w-3.5 h-3.5" />
+                    <span>Haftalık Takvim</span>
                   </button>
                   <button
-                    onClick={() => setCurrentWeekOffset((prev) => prev + 1)}
-                    className="p-1.5 hover:bg-white text-slate-700 rounded-lg transition-colors cursor-pointer"
-                    title="Sonraki Hafta"
+                    type="button"
+                    onClick={() => setCalendarViewMode('daily')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                      calendarViewMode === 'daily'
+                        ? 'bg-white dark:bg-slate-700 text-indigo-700 dark:text-indigo-200 shadow-2xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
                   >
-                    <ChevronRight className="w-4 h-4" />
+                    <List className="w-3.5 h-3.5" />
+                    <span>Günlük Hızlı Liste</span>
                   </button>
                 </div>
 
-                <div className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                  <Calendar className="w-4 h-4 text-indigo-600" />
-                  <span>{weekLabel}</span>
-                  {currentWeekOffset !== 0 && (
-                    <span className="text-[10px] text-slate-400 font-normal">
-                      ({currentWeekOffset > 0 ? `+${currentWeekOffset} hafta` : `${currentWeekOffset} hafta`})
+                {/* Date / Week Navigation */}
+                {calendarViewMode === 'weekly' ? (
+                  <div className="flex items-center gap-2">
+                    <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setCurrentWeekOffset((prev) => prev - 1)}
+                        className="p-1.5 hover:bg-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-md transition-colors cursor-pointer"
+                        title="Önceki Hafta"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentWeekOffset(0)}
+                        className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                          currentWeekOffset === 0
+                            ? 'bg-indigo-600 text-white'
+                            : 'text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        Bu Hafta
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentWeekOffset((prev) => prev + 1)}
+                        className="p-1.5 hover:bg-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-md transition-colors cursor-pointer"
+                        title="Sonraki Hafta"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="font-semibold text-xs sm:text-sm text-slate-900 dark:text-slate-100 flex items-center gap-1.5 tabular-nums">
+                      <Calendar className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                      <span>{weekLabel}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const d = new Date(`${selectedDailyDate}T12:00:00`);
+                        d.setDate(d.getDate() - 1);
+                        setSelectedDailyDate(d.toISOString().split('T')[0]);
+                      }}
+                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 cursor-pointer"
+                      title="Önceki Gün"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <input
+                      type="date"
+                      value={selectedDailyDate}
+                      onChange={(e) => e.target.value && setSelectedDailyDate(e.target.value)}
+                      className="px-2.5 py-1.5 text-xs font-mono font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 tabular-nums"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setSelectedDailyDate(new Date().toISOString().split('T')[0])}
+                      className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 cursor-pointer"
+                    >
+                      Bugün
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const d = new Date(`${selectedDailyDate}T12:00:00`);
+                        d.setDate(d.getDate() + 1);
+                        setSelectedDailyDate(d.toISOString().split('T')[0]);
+                      }}
+                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 cursor-pointer"
+                      title="Sonraki Gün"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                    <span className="text-xs font-semibold text-indigo-700 dark:text-indigo-300 ml-1">
+                      {selectedDailyDayName}
                     </span>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
 
-              {/* Department, Supervisor & Search Filter */}
-              <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-                <div className="relative flex-1 sm:w-44">
+              {/* Right Side: Save Mode Toggle & Bulk Save CTA (Only for authorized managers) */}
+              {canManageShifts ? (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 p-0.5 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (pendingChangesCount > 0) {
+                          setPendingShiftChanges({});
+                        }
+                        setSaveMode('auto');
+                      }}
+                      className={`px-2.5 py-1 font-semibold rounded-md transition-colors cursor-pointer ${
+                        saveMode === 'auto'
+                          ? 'bg-emerald-600 text-white'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                      title="Dropdown seçildiğinde anında veritabanına kaydeder"
+                    >
+                      Otomatik Kayıt
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSaveMode('bulk')}
+                      className={`px-2.5 py-1 font-semibold rounded-md transition-colors cursor-pointer ${
+                        saveMode === 'bulk'
+                          ? 'bg-indigo-600 text-white'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      }`}
+                      title="Birden fazla hücreyi düzenleyip tek seferde kaydedin"
+                    >
+                      Toplu Düzenle
+                    </button>
+                  </div>
+
+                  {saveMode === 'bulk' && (
+                    <div className="flex items-center gap-1.5">
+                      {pendingChangesCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setPendingShiftChanges({})}
+                          disabled={isBulkSaving}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors cursor-pointer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>İptal</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleSaveBulkShifts}
+                        disabled={pendingChangesCount === 0 || isBulkSaving}
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors tabular-nums ${
+                          pendingChangesCount > 0
+                            ? 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+                        }`}
+                      >
+                        {isBulkSaving ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Save className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          Değişiklikleri Kaydet{pendingChangesCount > 0 ? ` (${pendingChangesCount})` : ''}
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>Salt Okunur Görünüm</span>
+                </div>
+              )}
+            </div>
+
+            {/* Filter Bar: Search, Department (HR only; Unit Managers locked to own dept) & Quick Legend */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative w-full sm:w-52">
                   <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
-                    placeholder="Personel ara..."
+                    placeholder="Personel adı veya sicil ara..."
                     value={calendarSearch}
                     onChange={(e) => setCalendarSearch(e.target.value)}
-                    className="w-full pl-8 pr-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-indigo-500 text-slate-800"
+                    className="w-full pl-8 pr-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:bg-white dark:focus:bg-slate-900 focus:outline-indigo-500 text-slate-800 dark:text-slate-100"
                   />
                 </div>
 
-                <select
-                  value={calendarDeptFilter}
-                  onChange={(e) => setCalendarDeptFilter(e.target.value)}
-                  className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-700 focus:bg-white cursor-pointer"
-                >
-                  <option value="all">Tüm Departmanlar</option>
-                  <option value="Yazılım & Ar-Ge">Yazılım & Ar-Ge</option>
-                  <option value="İnsan Kaynakları">İnsan Kaynakları</option>
-                  <option value="Muhasebe & Finans">Muhasebe & Finans</option>
-                  <option value="Pazarlama & Satış">Pazarlama & Satış</option>
-                  <option value="Üretim & Operasyon">Üretim & Operasyon</option>
-                  <option value="Lojistik & Depo">Lojistik & Depo</option>
-                </select>
-
-                {/* HR Supervisor Filter */}
-                {isHRManager && (
+                {isUnitManagerOnly ? (
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 border border-amber-200 dark:border-amber-800 rounded-lg tabular-nums">
+                    <Lock className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                    <span>Ekibim: {responsibleEmpIds.length} Personel (İK Atamalı)</span>
+                  </div>
+                ) : (
                   <>
                     <select
-                      value={supervisorFilter}
-                      onChange={(e) => setSupervisorFilter(e.target.value)}
-                      className="px-2.5 py-1.5 text-xs bg-purple-50/70 border border-purple-200 text-purple-900 rounded-xl font-medium focus:bg-white cursor-pointer"
-                      title="Birim Amirinin sorumlu olduğu personelleri filtreleyin"
+                      value={calendarDeptFilter}
+                      onChange={(e) => setCalendarDeptFilter(e.target.value)}
+                      className="px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-200 focus:bg-white dark:focus:bg-slate-900 cursor-pointer"
                     >
-                      <option value="all">Tüm Personeller (Genel)</option>
-                      {supervisorAssignments.map((sa) => (
-                        <option key={sa.id} value={sa.id}>
-                          👑 {sa.supervisorName} ({sa.assignedEmployeeIds.length} Sorumlu Personel)
-                        </option>
-                      ))}
+                      <option value="all">Tüm Departmanlar</option>
+                      <option value="Yazılım & Ar-Ge">Yazılım & Ar-Ge</option>
+                      <option value="İnsan Kaynakları">İnsan Kaynakları</option>
+                      <option value="Muhasebe & Finans">Muhasebe & Finans</option>
+                      <option value="Pazarlama & Satış">Pazarlama & Satış</option>
+                      <option value="Üretim & Operasyon">Üretim & Operasyon</option>
+                      <option value="Lojistik & Depo">Lojistik & Depo</option>
                     </select>
 
-                    <button
-                      type="button"
-                      onClick={handleOpenNewSupervisorModal}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-2xs"
-                      title="Yeni Birim Amiri yetkilendir ve sorumlu personellerini seç"
-                    >
-                      <UserPlus className="w-3.5 h-3.5" />
-                      <span>Birim Amiri Yetkilendir</span>
-                    </button>
+                    {isHRManager && (
+                      <select
+                        value={supervisorFilter}
+                        onChange={(e) => setSupervisorFilter(e.target.value)}
+                        aria-label="Birim Amiri Filtresi"
+                        className="px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-200 focus:bg-white dark:focus:bg-slate-900 cursor-pointer"
+                      >
+                        <option value="all">Tüm Birim Amirleri</option>
+                        <option value="unassigned">
+                          Amir Atanmamış ({employees.filter((e) => !e.manager_id).length})
+                        </option>
+                        {managerAccounts.map((mgr) => {
+                          const teamCount = employees.filter((e) => e.manager_id === mgr.id).length;
+                          return (
+                            <option key={mgr.id} value={mgr.id}>
+                              Amir: {mgr.name} ({teamCount})
+                            </option>
+                          );
+                        })}
+                      </select>
+                    )}
                   </>
                 )}
-              </div>
-            </div>
 
-            {/* Birim Amiri Active Planning Mode Callout */}
-            {isSupervisor && !isHRManager && (
-              <div className="p-3.5 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-amber-500 text-white flex items-center justify-center font-bold shrink-0 shadow-2xs">
-                    <ShieldCheck className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <span className="font-bold text-amber-950">
-                      Birim Amiri Vardiya Planlama Modu: {activeUser.name}
+                {canToggleShiftPermissions && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveViewTab('supervisors')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-700 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Ekip & Yetki Yönetimi</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Compact Shift Color Legend + Live Delay Status */}
+              <div className="flex items-center gap-3 text-[11px] text-slate-600 dark:text-slate-400 flex-wrap">
+                {liveDelaySummary.total > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-semibold tabular-nums"
+                    title="Vardiya başlangıç saati geçtiği halde giriş yapmayan veya geç giriş yapan personeller"
+                  >
+                    <Timer className="w-3 h-3 shrink-0" />
+                    <span>
+                      Canlı Gecikme: {liveDelaySummary.total}
+                      {liveDelaySummary.absentLate > 0 ? ` (${liveDelaySummary.absentLate} gelmedi)` : ''}
                     </span>
-                    <p className="text-[11px] text-amber-800">
-                      İK tarafından sorumlu kılındığınız <strong>{responsibleEmpIds.length} personelin</strong> vardiyalarını takvim hücrelerine tıklayarak veya "Vardiya Ata" butonuyla planlayabilirsiniz.
-                    </p>
-                  </div>
-                </div>
-                <label className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/90 border border-amber-300 rounded-lg text-amber-950 font-bold text-xs cursor-pointer shadow-2xs shrink-0">
-                  <input
-                    type="checkbox"
-                    checked={onlyMyResponsible}
-                    onChange={(e) => setOnlyMyResponsible(e.target.checked)}
-                    className="rounded text-amber-600 focus:ring-amber-500"
-                  />
-                  <span>Sadece Sorumlu Olduğum Personeller ({responsibleEmpIds.length})</span>
-                </label>
+                  </span>
+                )}
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-xs bg-emerald-500" />
+                  Sabah
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-xs bg-amber-500" />
+                  Akşam
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-xs bg-indigo-500" />
+                  Gece
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-xs bg-slate-400" />
+                  OFF / İzin
+                </span>
               </div>
-            )}
-
-            {/* Mobile horizontal scroll guidance */}
-            <div className="flex sm:hidden items-center justify-between text-[11px] text-slate-600 bg-indigo-50/80 border border-indigo-200 px-3 py-2 rounded-xl">
-              <span className="flex items-center gap-1.5 font-medium">
-                <span className="text-sm">👉</span>
-                <span>Tüm günleri görmek için tabloyu sağa kaydırın</span>
-              </span>
-              <span className="font-bold text-[10px] text-indigo-700 bg-white px-2 py-0.5 rounded-full border border-indigo-200">7 Gün</span>
             </div>
 
-            {/* Interactive Grid Table */}
-            <div className="overflow-x-auto w-full max-w-full rounded-xl border border-slate-200 shadow-2xs touch-pan-x" style={{ WebkitOverflowScrolling: 'touch' }}>
-              <table className="w-full border-collapse text-left text-xs min-w-[720px] sm:min-w-[950px]">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-700">
-                    <th className="py-2.5 sm:py-3 px-2 sm:px-3.5 font-bold text-xs sticky left-0 bg-slate-50 z-10 w-32 sm:w-60 border-r border-slate-200 shadow-2xs">
-                      Personel ({calendarEmployees.length})
-                    </th>
-                    {weekDays.map((day) => (
-                      <th
-                        key={day.dateStr}
-                        className={`py-2 sm:py-2.5 px-2 sm:px-3 text-center border-r border-slate-200 last:border-r-0 min-w-[95px] sm:min-w-[110px] ${
-                          day.isToday ? 'bg-indigo-50/70 border-b-2 border-b-indigo-600' : ''
-                        }`}
-                      >
-                        <div className="flex items-center justify-center gap-1">
-                          <span className="font-bold text-slate-900">{day.dayName.slice(0, 3)}</span>
-                          {day.isToday && (
-                            <span className="px-1.5 py-0.2 rounded-full text-[9px] font-extrabold bg-indigo-600 text-white">
-                              BUGÜN
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[10px] text-slate-500 font-mono mt-0.5">{day.formattedDate}</div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 bg-white">
-                  {calendarEmployees.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="py-12 text-center text-slate-400 text-xs">
-                        Arama veya filtre kriterlerinize uygun personel bulunamadı.
-                      </td>
-                    </tr>
-                  ) : (
-                    calendarEmployees.map((emp) => {
-                      const empShift = shifts.find((s) => s.id === emp.shiftId) || shifts[0];
-                      const isResponsible = responsibleEmpIds.includes(emp.id);
+            {calendarViewMode === 'weekly' ? (
+              <>
+                {/* Weekly Interactive Quick-Dropdown Grid Table (No-Scroll Full-Fit 100%) */}
+                <div className="w-full overflow-x-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+                  <table className="w-full table-fixed border-collapse text-left text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200">
+                        <th className="w-[23%] py-2 px-2 font-semibold text-[11px] border-r border-slate-200 dark:border-slate-700">
+                          Personel ({calendarEmployees.length})
+                        </th>
+                        {weekDays.map((day) => (
+                          <th
+                            key={day.dateStr}
+                            className={`w-[11%] py-1.5 px-1 text-center border-r border-slate-200 dark:border-slate-700 last:border-r-0 ${
+                              day.isToday
+                                ? 'bg-indigo-50/80 dark:bg-indigo-950/50 border-b-2 border-b-indigo-600'
+                                : ''
+                            }`}
+                          >
+                            <div className="flex items-center justify-center gap-1 leading-none">
+                              <span className="font-bold text-[11px] text-slate-900 dark:text-slate-100">
+                                {day.shortDayName}
+                              </span>
+                              {day.isToday && (
+                                <span
+                                  className="w-1.5 h-1.5 rounded-full bg-indigo-600 dark:bg-indigo-400 shrink-0"
+                                  title="Bugün"
+                                />
+                              )}
+                            </div>
+                            <div className="text-[9.5px] text-slate-500 dark:text-slate-400 font-mono tabular-nums mt-0.5 truncate">
+                              {day.formattedDate}
+                            </div>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900">
+                      {calendarEmployees.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="py-10 text-center text-slate-500 dark:text-slate-400 text-xs">
+                            {isUnitManagerOnly && responsibleEmpIds.length === 0
+                              ? 'İK tarafından ekibinize henüz personel atanmamıştır. Vardiya düzenleyebilmek için İK yöneticisinin personel eşleştirmesi yapması gerekir.'
+                              : 'Arama veya filtre kriterlerinize uygun personel bulunamadı.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        calendarEmployees.map((emp) => {
+                          const canEditRow = pdksStorage.canUserManageShiftForEmployee(activeUser, emp.id);
+                          const isRowSaving = savingCellKey === `ROW__${emp.id}`;
+                          const assignedMgr = emp.manager_id ? managerById.get(emp.manager_id) : undefined;
+                          const delayInfo = liveDelayMap.get(emp.id);
 
-                      return (
-                        <tr key={emp.id} className="hover:bg-slate-50/60 transition-colors">
-                          {/* Sticky Employee Identity Column */}
-                          <td className="py-2 sm:py-3 px-2 sm:px-3.5 sticky left-0 bg-white hover:bg-slate-50/60 z-10 w-32 sm:w-60 border-r border-slate-200 shadow-2xs">
-                            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
-                              <img
-                                src={emp.avatar}
-                                alt={emp.fullName}
-                                className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl object-cover border border-slate-200 shrink-0"
-                              />
-                              <div className="min-w-0 flex-1">
-                                <div className="font-bold text-xs text-slate-900 truncate leading-tight">
-                                  {emp.fullName}
-                                </div>
-                                <div className="text-[10px] text-slate-500 truncate mt-0.5">
-                                  {emp.title} · <span className="font-mono text-indigo-600 font-semibold">{emp.id}</span>
-                                </div>
+                          return (
+                            <tr
+                              key={emp.id}
+                              className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors"
+                            >
+                              {/* Compact Employee Identity + Live Delay Badge + Quick Week Apply */}
+                              <td className="py-2 px-2 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 align-top">
+                                <div className="flex items-start gap-1.5 min-w-0">
+                                  <img
+                                    src={emp.avatar}
+                                    alt={emp.fullName}
+                                    className="w-7 h-7 rounded-md object-cover border border-slate-200 dark:border-slate-700 shrink-0 mt-0.5 hidden sm:block"
+                                  />
+                                  <div className="min-w-0 flex-1 space-y-0.5">
+                                    <div
+                                      className="font-semibold text-[11.5px] text-slate-900 dark:text-slate-100 truncate leading-tight"
+                                      title={`${emp.fullName} (${emp.id})`}
+                                    >
+                                      {emp.fullName}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate leading-tight">
+                                      {emp.department}
+                                      {isHRManager && assignedMgr ? ` · ${assignedMgr.name.split(' ')[0]}` : ''}
+                                    </div>
 
-                                {/* Responsibility Badge for Birim Amiri */}
-                                {isSupervisor && !isHRManager && (
-                                  <div className="mt-1">
-                                    {isResponsible ? (
-                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                        <Check className="w-2.5 h-2.5 text-emerald-600" />
-                                        <span>Sorumlu Personeliniz</span>
-                                      </span>
-                                    ) : (
-                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
-                                        <Lock className="w-2.5 h-2.5 text-slate-400" />
-                                        <span>Yetki Dışı</span>
-                                      </span>
+                                    {delayInfo?.isDelayed && (
+                                      <div
+                                        className={`inline-flex items-center gap-1 max-w-full px-1.5 py-0.5 rounded text-[9.5px] font-bold leading-tight tabular-nums truncate ${
+                                          delayInfo.severity === 'critical'
+                                            ? 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                                            : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
+                                        }`}
+                                        title={`Bugünkü vardiya: ${delayInfo.resolvedShift?.startTime || '--:--'}–${delayInfo.resolvedShift?.endTime || '--:--'} · ${delayInfo.badgeText}`}
+                                      >
+                                        <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                                        <span className="truncate">{delayInfo.badgeText}</span>
+                                      </div>
+                                    )}
+
+                                    {canEditRow && (
+                                      <div className="pt-0.5 flex items-center gap-1">
+                                        <select
+                                          aria-label={`${emp.fullName} hafta içi hızlı vardiya ata`}
+                                          value=""
+                                          disabled={isRowSaving}
+                                          onChange={(e) => {
+                                            if (e.target.value) {
+                                              void handleApplyRowWeekShift(emp, e.target.value);
+                                            }
+                                          }}
+                                          className="w-full min-w-0 px-1 py-0.5 text-[9.5px] font-medium bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-600 dark:text-slate-300 cursor-pointer focus:outline-indigo-500 truncate"
+                                        >
+                                          <option value="">Pzt–Cum hızlı ata...</option>
+                                          {shifts.map((s) => (
+                                            <option key={s.id} value={s.id}>
+                                              {getCompactShiftLabel(s)} ({s.isOffDay ? 'OFF' : `${s.startTime}–${s.endTime}`})
+                                            </option>
+                                          ))}
+                                        </select>
+                                        {isRowSaving && (
+                                          <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-600 shrink-0" />
+                                        )}
+                                      </div>
                                     )}
                                   </div>
-                                )}
+                                </div>
+                              </td>
 
-                                {/* Supervisor Info for HR */}
-                                {isHRManager && (() => {
-                                  const supMatch = supervisorAssignments.find((sa) => sa.assignedEmployeeIds.includes(emp.id));
-                                  return supMatch ? (
-                                    <div className="mt-1">
-                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-medium bg-purple-50 text-purple-700 border border-purple-200">
-                                        <ShieldCheck className="w-2.5 h-2.5 text-purple-600" />
-                                        <span>Amir: {supMatch.supervisorName}</span>
-                                      </span>
-                                    </div>
-                                  ) : (
-                                    <div className="mt-1">
-                                      <span className="inline-block px-1.5 py-0.2 rounded text-[9px] text-slate-400 bg-slate-50 border border-slate-200">
-                                        Birim Amiri Atanmadı
-                                      </span>
-                                    </div>
-                                  );
-                                })()}
-                              </div>
-                            </div>
-                          </td>
+                              {/* 7 Day Cells — Compact No-Scroll Fit */}
+                              {weekDays.map((day) => {
+                                const leave = leaves.find(
+                                  (l) =>
+                                    l.employeeId === emp.id &&
+                                    l.status === 'approved' &&
+                                    l.startDate <= day.dateStr &&
+                                    l.endDate >= day.dateStr
+                                );
 
-                          {/* 7 Week Day Cells */}
-                          {weekDays.map((day) => {
-                            // Check for approved leave
+                                const resolved = getEffectiveShiftForCell(emp, day.dateStr, day.dayName);
+                                const isCellSaving = savingCellKey === resolved.cellKey;
+                                const toneClass = getShiftToneClass(resolved.shift);
+                                const isTodayDelayed = day.isToday && delayInfo?.isDelayed;
+
+                                return (
+                                  <td
+                                    key={day.dateStr}
+                                    className={`py-1.5 px-1 border-r border-slate-100 dark:border-slate-800 last:border-r-0 align-middle ${
+                                      isTodayDelayed
+                                        ? delayInfo?.severity === 'critical'
+                                          ? 'bg-rose-50/40 dark:bg-rose-950/20'
+                                          : 'bg-amber-50/40 dark:bg-amber-950/20'
+                                        : day.isToday
+                                        ? 'bg-indigo-50/25 dark:bg-indigo-950/20'
+                                        : ''
+                                    }`}
+                                  >
+                                    {leave ? (
+                                      <div
+                                        className="px-1 py-1.5 rounded-md bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-900 dark:text-purple-200 text-center"
+                                        title={`Onaylı İzin: ${leave.leaveType}`}
+                                      >
+                                        <div className="text-[10px] font-bold truncate">İzinli</div>
+                                        <div className="text-[8.5px] text-purple-700 dark:text-purple-300 truncate">
+                                          {leave.leaveType.split(' ')[0]}
+                                        </div>
+                                      </div>
+                                    ) : canEditRow ? (
+                                      <div className="space-y-0.5 min-w-0">
+                                        <select
+                                          aria-label={`${emp.fullName} ${day.dayName} vardiyası`}
+                                          value={resolved.shiftId}
+                                          disabled={isCellSaving || isBulkSaving}
+                                          title={
+                                            resolved.shift
+                                              ? `${resolved.shift.name} (${resolved.shift.isOffDay ? 'OFF' : `${resolved.shift.startTime}–${resolved.shift.endTime}`})`
+                                              : 'Vardiya seç'
+                                          }
+                                          onChange={(e) =>
+                                            void handleInlineShiftChange(emp, day.dateStr, e.target.value)
+                                          }
+                                          className={`w-full min-w-0 px-1 py-1 text-[10px] font-semibold rounded-md border transition-colors cursor-pointer focus:outline-none focus:ring-1 focus:ring-indigo-500 truncate ${toneClass} ${
+                                            resolved.isPending
+                                              ? 'ring-1 ring-indigo-500 border-indigo-500'
+                                              : ''
+                                          }`}
+                                        >
+                                          {shifts.map((s) => (
+                                            <option
+                                              key={s.id}
+                                              value={s.id}
+                                              className="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                                            >
+                                              {getCompactShiftLabel(s)}
+                                            </option>
+                                          ))}
+                                        </select>
+                                        <div className="flex items-center justify-between gap-0.5 px-0.5 text-[8.5px] text-slate-500 dark:text-slate-400 font-mono tabular-nums leading-none">
+                                          <span className="truncate">
+                                            {resolved.shift?.isOffDay
+                                              ? 'OFF'
+                                              : `${resolved.shift?.startTime || '--:--'}–${resolved.shift?.endTime || '--:--'}`}
+                                          </span>
+                                          {isCellSaving ? (
+                                            <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-600 shrink-0" />
+                                          ) : resolved.isPending ? (
+                                            <span
+                                              className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0"
+                                              title="Kaydedilmeyi bekliyor"
+                                            />
+                                          ) : resolved.isOverride ? (
+                                            <span
+                                              className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"
+                                              title={`Özel Atama · ${resolved.assignment?.updatedBy || 'Yönetici'}`}
+                                            />
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div
+                                        className={`px-1 py-1.5 rounded-md border text-center min-w-0 ${toneClass}`}
+                                        title={
+                                          resolved.shift
+                                            ? `${resolved.shift.name} (${resolved.shift.isOffDay ? 'OFF' : `${resolved.shift.startTime}–${resolved.shift.endTime}`})`
+                                            : 'Salt okunur vardiya'
+                                        }
+                                      >
+                                        {resolved.shift?.isOffDay ? (
+                                          <div className="text-[10px] font-semibold truncate">OFF</div>
+                                        ) : (
+                                          <>
+                                            <div className="font-mono font-bold text-[9.5px] tabular-nums leading-tight truncate">
+                                              {resolved.shift?.startTime}–{resolved.shift?.endTime}
+                                            </div>
+                                            <div className="text-[9px] truncate opacity-85">
+                                              {getCompactShiftLabel(resolved.shift)}
+                                            </div>
+                                          </>
+                                        )}
+                                      </div>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+
+                    {/* Capacity Summary Footer */}
+                    <tfoot className="bg-slate-50 dark:bg-slate-800/90 font-semibold text-xs border-t border-slate-200 dark:border-slate-700">
+                      <tr>
+                        <td className="py-2 px-2 bg-slate-50 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 text-[11px] text-slate-700 dark:text-slate-200 truncate">
+                          Günlük Kapasite
+                        </td>
+                        {weekDays.map((day) => {
+                          let workingCount = 0;
+                          let offOrLeaveCount = 0;
+                          calendarEmployees.forEach((emp) => {
                             const leave = leaves.find(
                               (l) =>
                                 l.employeeId === emp.id &&
@@ -1597,232 +2366,726 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                                 l.startDate <= day.dateStr &&
                                 l.endDate >= day.dateStr
                             );
+                            if (leave) {
+                              offOrLeaveCount++;
+                            } else {
+                              const resolved = getEffectiveShiftForCell(emp, day.dateStr, day.dayName);
+                              if (resolved.shift && !resolved.shift.isOffDay) {
+                                workingCount++;
+                              } else {
+                                offOrLeaveCount++;
+                              }
+                            }
+                          });
 
-                            const isWorkDay = empShift.workDays.includes(day.dayName);
-
-                            return (
-                              <td
-                                key={day.dateStr}
-                                onClick={() => handleCellClick(emp, day, empShift, isWorkDay, leave)}
-                                className={`py-2 px-2.5 border-r border-slate-100 last:border-r-0 cursor-pointer transition-all hover:ring-2 hover:ring-indigo-400 hover:ring-inset ${
-                                  day.isToday ? 'bg-indigo-50/20' : ''
-                                }`}
-                                title="Vardiya detayını görüntülemek veya değiştirmek için tıklayın"
-                              >
-                                {leave ? (
-                                  <div className="p-2 rounded-xl bg-purple-50 border border-purple-200 text-purple-900 shadow-2xs text-center space-y-0.5">
-                                    <div className="text-[10px] font-bold truncate flex items-center justify-center gap-1">
-                                      <CalendarCheck className="w-3 h-3 text-purple-600 shrink-0" />
-                                      <span>İzinli</span>
-                                    </div>
-                                    <div className="text-[9px] text-purple-700 truncate font-medium">
-                                      {leave.leaveType}
-                                    </div>
-                                  </div>
-                                ) : isWorkDay ? (
-                                  <div className="p-2 rounded-xl bg-emerald-50/70 hover:bg-emerald-100/70 border border-emerald-200 text-emerald-950 shadow-2xs space-y-0.5 text-center transition-colors">
-                                    <div className="font-mono font-bold text-[11px] text-emerald-900 leading-tight">
-                                      {empShift.startTime} - {empShift.endTime}
-                                    </div>
-                                    <div className="text-[9px] text-emerald-700 font-semibold truncate">
-                                      {empShift.name}
-                                    </div>
-                                    <div className="text-[9px] text-emerald-600 font-mono">
-                                      ±{empShift.toleranceMinutes} dk
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="p-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-400 text-center text-[10px] font-medium">
-                                    Hafta Tatili
-                                  </div>
-                                )}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-
-                {/* Capacity Summary Footer */}
-                <tfoot className="bg-slate-100 font-bold text-xs border-t-2 border-slate-200">
-                  <tr>
-                    <td className="py-2.5 px-3.5 sticky left-0 bg-slate-100 border-r border-slate-200 text-slate-700">
-                      Günlük Personel Kapasitesi
-                    </td>
-                    {weekDays.map((day) => {
-                      let workingCount = 0;
-                      let leaveCount = 0;
-                      calendarEmployees.forEach((emp) => {
+                          return (
+                            <td
+                              key={day.dateStr}
+                              className="py-1.5 px-1 text-center border-r border-slate-200 dark:border-slate-700 last:border-r-0 tabular-nums"
+                            >
+                              <div className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 truncate">
+                                {workingCount} Aktif
+                              </div>
+                              {offOrLeaveCount > 0 && (
+                                <div className="text-[9px] text-slate-500 dark:text-slate-400 truncate">
+                                  {offOrLeaveCount} OFF
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </>
+            ) : (
+              /* DAILY QUICK LIST VIEW (No-Scroll Full-Fit + Live Delay Status) */
+              <div className="w-full overflow-x-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+                <table className="w-full table-fixed text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200">
+                      <th className="w-[30%] py-2 px-3 font-semibold">Personel</th>
+                      <th className="w-[20%] py-2 px-3 font-semibold">Birim / Canlı Durum</th>
+                      <th className="w-[32%] py-2 px-3 font-semibold truncate">
+                        Vardiya ({selectedDailyDate} · {selectedDailyDayName})
+                      </th>
+                      <th className="w-[18%] py-2 px-3 font-semibold text-right">Kayıt</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900">
+                    {calendarEmployees.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="py-10 text-center text-slate-500 dark:text-slate-400">
+                          {isUnitManagerOnly && responsibleEmpIds.length === 0
+                            ? 'İK tarafından ekibinize henüz personel atanmamıştır.'
+                            : 'Filtre kriterlerinize uygun personel bulunamadı.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      calendarEmployees.map((emp) => {
+                        const canEditRow = pdksStorage.canUserManageShiftForEmployee(activeUser, emp.id);
+                        const assignedMgr = emp.manager_id ? managerById.get(emp.manager_id) : undefined;
+                        const delayInfo = selectedDailyDate === todayLocalStr ? liveDelayMap.get(emp.id) : undefined;
                         const leave = leaves.find(
                           (l) =>
                             l.employeeId === emp.id &&
                             l.status === 'approved' &&
-                            l.startDate <= day.dateStr &&
-                            l.endDate >= day.dateStr
+                            l.startDate <= selectedDailyDate &&
+                            l.endDate >= selectedDailyDate
                         );
-                        if (leave) {
-                          leaveCount++;
-                        } else {
-                          const empShift = shifts.find((s) => s.id === emp.shiftId) || shifts[0];
-                          if (empShift.workDays.includes(day.dayName)) {
-                            workingCount++;
-                          }
-                        }
-                      });
+                        const resolved = getEffectiveShiftForCell(emp, selectedDailyDate, selectedDailyDayName);
+                        const isCellSaving = savingCellKey === resolved.cellKey;
+                        const toneClass = getShiftToneClass(resolved.shift);
 
-                      return (
-                        <td key={day.dateStr} className="py-2.5 px-2 text-center border-r border-slate-200 last:border-r-0">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] bg-emerald-100 text-emerald-800">
-                            {workingCount} Çalışıyor
-                          </span>
-                          {leaveCount > 0 && (
-                            <div className="text-[9px] text-purple-700 mt-0.5">
-                              {leaveCount} İzinli
-                            </div>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
+                        return (
+                          <tr
+                            key={emp.id}
+                            className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors"
+                          >
+                            <td className="py-2.5 px-3">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <img
+                                  src={emp.avatar}
+                                  alt={emp.fullName}
+                                  className="w-7 h-7 rounded-md object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+                                />
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-slate-900 dark:text-slate-100 truncate">
+                                    {emp.fullName}
+                                  </div>
+                                  <div className="text-[10.5px] text-slate-500 dark:text-slate-400 truncate">
+                                    {emp.title} · <span className="font-mono tabular-nums">{emp.id}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-3">
+                              <div className="text-slate-700 dark:text-slate-300 font-medium truncate">
+                                {emp.department}
+                              </div>
+                              {delayInfo?.isDelayed ? (
+                                <div
+                                  className={`inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold tabular-nums max-w-full truncate ${
+                                    delayInfo.severity === 'critical'
+                                      ? 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                                      : 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
+                                  }`}
+                                >
+                                  <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                                  <span className="truncate">{delayInfo.badgeText}</span>
+                                </div>
+                              ) : isHRManager ? (
+                                <div className="text-[10px] text-indigo-700 dark:text-indigo-300 font-medium mt-0.5 truncate">
+                                  {assignedMgr ? `Amir: ${assignedMgr.name}` : 'Amir Atanmamış'}
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="py-2.5 px-3">
+                              {leave ? (
+                                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-800 dark:text-purple-200 font-semibold text-[11px] truncate max-w-full">
+                                  <CalendarCheck className="w-3 h-3 shrink-0" />
+                                  <span className="truncate">İzinli ({leave.leaveType})</span>
+                                </span>
+                              ) : canEditRow ? (
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <select
+                                    aria-label={`${emp.fullName} günlük vardiya`}
+                                    value={resolved.shiftId}
+                                    disabled={isCellSaving || isBulkSaving}
+                                    onChange={(e) =>
+                                      void handleInlineShiftChange(emp, selectedDailyDate, e.target.value)
+                                    }
+                                    className={`w-full min-w-0 px-2 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-500 truncate ${toneClass} ${
+                                      resolved.isPending ? 'ring-2 ring-indigo-500 border-indigo-500' : ''
+                                    }`}
+                                  >
+                                    {shifts.map((s) => (
+                                      <option
+                                        key={s.id}
+                                        value={s.id}
+                                        className="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                                      >
+                                        {s.isOffDay ? 'İzinli / Hafta Tatili' : s.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {isCellSaving && (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600 shrink-0" />
+                                  )}
+                                </div>
+                              ) : (
+                                <span
+                                  className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] font-semibold truncate max-w-full ${toneClass}`}
+                                >
+                                  {resolved.shift?.isOffDay
+                                    ? 'İzinli / Hafta Tatili'
+                                    : `${resolved.shift?.name || 'Standart'}`}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-right text-[10.5px] text-slate-500 dark:text-slate-400 tabular-nums truncate">
+                              {resolved.isPending ? (
+                                <span className="font-semibold text-indigo-600 dark:text-indigo-400">
+                                  Bekliyor
+                                </span>
+                              ) : resolved.isOverride ? (
+                                <span title={resolved.assignment?.updatedBy || 'Yönetici'}>
+                                  Özel Atama
+                                </span>
+                              ) : (
+                                <span>Varsayılan</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-500 pt-1">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400 pt-1">
               <span className="flex items-center gap-1.5">
-                <Info className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                Vardiya detayını görmek, personeli farklı vardiyaya atamak veya anlık uyarı göndermek için hücreye tıklayın.
+                <Info className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                {canManageShifts
+                  ? saveMode === 'auto'
+                    ? 'Açılır listeden seçtiğiniz vardiya anında sunucuda doğrulanıp kaydedilir ve gecikme takibi canlı güncellenir.'
+                    : 'Değişikliklerinizi yapıp sağ üstteki "Değişiklikleri Kaydet" butonuyla toplu olarak kaydedebilirsiniz.'
+                  : 'Salt okunur moddasınız. Vardiya düzenleme izni için İK veya Süper Admin ile iletişime geçiniz.'}
               </span>
-              <span className="font-mono text-[11px]">
-                Toplam {calendarEmployees.length} Personel / {shifts.length} Tanımlı Vardiya
+              <span className="font-mono text-[11px] tabular-nums">
+                {calendarEmployees.length} Personel · {shifts.length} Vardiya · {employeeShifts.length} Özel Kayıt
               </span>
             </div>
           </div>
         </div>
       )}
 
-      {/* Section 1: Vardiya ve Mesai Planları */}
+      {/* Section 1: Vardiya Tanımları (No-Scroll Compact Full-Fit Grid) */}
       {(activeViewTab === 'shifts' || activeViewTab === 'all') && (
-        <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="w-full overflow-x-hidden space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <div className="flex items-center gap-2">
-              <Clock className="w-5 h-5 text-indigo-600" />
-              <h2 className="text-lg font-bold text-slate-900">Tanımlı Çalışma Vardiyaları</h2>
+              <Clock className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                Vardiya Tanımları
+              </h2>
+              <span className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                ({shifts.length})
+              </span>
             </div>
-          {isHRManager ? (
-            <button
-              onClick={() => {
-                setShiftForm({
-                  name: '',
-                  startTime: '08:30',
-                  endTime: '17:30',
-                  toleranceMinutes: 15,
-                  breakMinutes: 60,
-                  workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
-                });
-                setIsShiftModalOpen(true);
-              }}
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-xs transition-colors cursor-pointer w-full sm:w-auto"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Yeni Vardiya Ekle (İK Yetkisi)</span>
-            </button>
-          ) : (
-            <div
-              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-400 bg-slate-100 rounded-lg cursor-not-allowed border border-slate-200 w-full sm:w-auto"
-              title="Vardiya ekleme yetkisi yalnızca İK Yöneticisine aittir"
-            >
-              <Lock className="w-3 h-3 text-slate-400" />
-              <span>Vardiya Ekle (Yetki Gerekli)</span>
-            </div>
-          )}
+            {isHRManager ? (
+              <button
+                onClick={() => {
+                  setShiftForm({
+                    name: '',
+                    startTime: '08:30',
+                    endTime: '17:30',
+                    toleranceMinutes: 15,
+                    breakMinutes: 60,
+                    workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+                  });
+                  setIsShiftModalOpen(true);
+                }}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors cursor-pointer w-full sm:w-auto"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Yeni Vardiya Ekle</span>
+              </button>
+            ) : (
+              <div
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 rounded-lg cursor-not-allowed border border-slate-200 dark:border-slate-700 w-full sm:w-auto"
+                title="Vardiya ekleme yetkisi yalnızca İK Yöneticisine aittir"
+              >
+                <Lock className="w-3 h-3" />
+                <span>Vardiya Ekle (Yetki Gerekli)</span>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2.5 w-full">
+            {shifts.map((s) => {
+              const accentClass = s.isOffDay
+                ? 'bg-slate-400'
+                : s.startTime >= '22:00' || s.startTime < '06:00'
+                ? 'bg-indigo-500'
+                : s.startTime >= '14:00'
+                ? 'bg-amber-500'
+                : 'bg-emerald-500';
+              const compactDays = s.isOffDay
+                ? 'Tatilde / OFF'
+                : s.workDays.map((d) => SHORT_DAY_LABELS[d] || d.slice(0, 3)).join(' · ');
+
+              return (
+                <div
+                  key={s.id}
+                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 flex flex-col justify-between gap-2 min-w-0 hover:border-slate-300 dark:hover:border-slate-700 transition-colors"
+                >
+                  <div className="space-y-1.5 min-w-0">
+                    <div className="flex items-center justify-between gap-1">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${accentClass}`} />
+                        <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 font-semibold truncate">
+                          {s.id}
+                        </span>
+                      </div>
+                      {isHRManager && (
+                        <button
+                          onClick={() => handleDeleteShift(s.id, s.name)}
+                          className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded transition-colors cursor-pointer shrink-0"
+                          title={`"${s.name}" vardiyasını sil`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+
+                    <h3
+                      className="font-bold text-xs text-slate-900 dark:text-slate-100 leading-snug truncate"
+                      title={s.name}
+                    >
+                      {s.name}
+                    </h3>
+
+                    <div className="font-mono font-bold text-sm text-slate-900 dark:text-slate-100 tabular-nums tracking-tight">
+                      {s.isOffDay ? 'OFF / İzinli' : `${s.startTime} – ${s.endTime}`}
+                    </div>
+
+                    <div className="text-[10.5px] text-slate-500 dark:text-slate-400 tabular-nums truncate">
+                      {s.isOffDay
+                        ? 'Çalışma günü değil'
+                        : `±${s.toleranceMinutes} dk tolerans · ${s.breakMinutes} dk mola`}
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-100 dark:border-slate-800 text-[10px] font-medium text-slate-600 dark:text-slate-400 truncate" title={compactDays}>
+                    {compactDays}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
+      )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {shifts.map((s) => (
-            <div
-              key={s.id}
-              className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex flex-col justify-between group hover:border-slate-300 transition-colors"
-            >
+      {/* Section: Rol Tabanlı Vardiya Yetkilendirme (can_manage_shifts) & Birim Amirleri */}
+      {(activeViewTab === 'supervisors' || activeViewTab === 'all') && (
+        <div className="space-y-5 pt-4 border-t border-slate-200 dark:border-slate-800">
+          {/* DEDICATED PANEL: Rol Tabanlı Vardiya Yetkilendirme (can_manage_shifts: true/false) */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-mono text-slate-400 font-semibold">{s.id}</span>
-                  <div className="flex items-center gap-1">
-                    <span className="text-[10px] bg-indigo-50 text-indigo-700 font-medium px-2 py-0.5 rounded">
-                      ±{s.toleranceMinutes} dk
-                    </span>
-                    {isHRManager && (
-                      <button
-                        onClick={() => handleDeleteShift(s.id, s.name)}
-                        className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors cursor-pointer"
-                        title={`"${s.name}" vardiyasını sil`}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <ShieldCheck className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                  <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                    Rol Tabanlı Vardiya Yetkilendirme (<code className="font-mono text-xs text-indigo-600 dark:text-indigo-400">can_manage_shifts</code>)
+                  </h2>
                 </div>
-                <h3 className="font-bold text-sm text-slate-900 leading-snug">{s.name}</h3>
-
-                <div className="mt-4 space-y-2 text-xs">
-                  <div className="flex justify-between items-center text-slate-600">
-                    <span>Giriş / Çıkış:</span>
-                    <span className="font-mono font-semibold text-slate-900 tabular-nums">
-                      {s.startTime} - {s.endTime}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center text-slate-600">
-                    <span>Mola Süresi:</span>
-                    <span className="font-mono text-slate-800 tabular-nums">{s.breakMinutes} Dakika</span>
-                  </div>
-                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  Sadece <strong>Süper Admin</strong> ve <strong>İK</strong> rolleri kullanıcıların vardiya düzenleme yetkisini açıp kapatabilir. Yetki verilen Birim Yöneticisi / Amir yalnızca kendi birimindeki personellerin vardiyasını yönetebilir.
+                </p>
               </div>
 
-              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                <div className="flex flex-wrap gap-1">
-                  {s.workDays.map((d) => (
-                    <span
-                      key={d}
-                      className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-medium"
-                    >
-                      {d.slice(0, 3)}
-                    </span>
-                  ))}
+              <div className="flex items-center gap-2">
+                <div className="relative w-full sm:w-52">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Kullanıcı veya birim ara..."
+                    value={permSearchQuery}
+                    onChange={(e) => setPermSearchQuery(e.target.value)}
+                    className="w-full pl-8 pr-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-indigo-500"
+                  />
                 </div>
-                {isHRManager && (
-                  <button
-                    onClick={() => handleDeleteShift(s.id, s.name)}
-                    className="text-[10px] text-rose-600 hover:text-rose-700 font-semibold opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    <span>Sil</span>
-                  </button>
+                {!canToggleShiftPermissions && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 whitespace-nowrap">
+                    <Lock className="w-3 h-3" />
+                    <span>Sadece Süper Admin / İK</span>
+                  </span>
                 )}
               </div>
             </div>
-          ))}
-        </div>
-      </div>
-      )}
 
-      {/* Section: Birim Amirleri ve Sorumlu Personel Yetkilendirme (İK ve Yetkili Amirler) */}
-      {(activeViewTab === 'supervisors' || activeViewTab === 'all') && (
-        <div className="space-y-5 pt-4 border-t border-slate-200">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
+                    <th className="py-2.5 px-4 font-semibold">Kullanıcı</th>
+                    <th className="py-2.5 px-4 font-semibold">Rol</th>
+                    <th className="py-2.5 px-4 font-semibold">Yetki Kapsamı</th>
+                    <th className="py-2.5 px-4 font-semibold text-right">Vardiya Düzenleme (can_manage_shifts)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {userAccounts
+                    .filter((acc) => {
+                      if (!permSearchQuery.trim()) return true;
+                      const q = permSearchQuery.toLowerCase();
+                      return (
+                        acc.name.toLowerCase().includes(q) ||
+                        acc.username.toLowerCase().includes(q) ||
+                        (acc.department || '').toLowerCase().includes(q)
+                      );
+                    })
+                    .map((acc) => {
+                      const isHRRole = acc.role === 'ik_yoneticisi';
+                      const linkedEmp = employees.find((e) => e.id === acc.employeeId);
+                      const dept = acc.department || linkedEmp?.department || '—';
+                      const isEnabled = isHRRole
+                        ? true
+                        : typeof acc.can_manage_shifts === 'boolean'
+                          ? acc.can_manage_shifts
+                          : acc.role === 'birim_amiri' || Boolean(acc.isShiftSupervisor);
+                      const isBusy = togglingPermAccountId === acc.id;
+
+                      const roleText =
+                        acc.role === 'ik_yoneticisi'
+                          ? 'İK Yöneticisi'
+                          : acc.role === 'birim_amiri'
+                            ? 'Birim Yöneticisi / Amir'
+                            : acc.role === 'yonetici'
+                              ? 'Bölüm Yöneticisi'
+                              : acc.role === 'guvenlik'
+                                ? 'Turnike Görevlisi'
+                                : 'Personel';
+
+                      return (
+                        <tr
+                          key={acc.id}
+                          className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors"
+                        >
+                          <td className="py-2.5 px-4">
+                            <div className="flex items-center gap-2.5">
+                              <img
+                                src={acc.avatar}
+                                alt={acc.name}
+                                className="w-7 h-7 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+                              />
+                              <div>
+                                <div className="font-semibold text-slate-900 dark:text-slate-100">{acc.name}</div>
+                                <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                                  @{acc.username} · {acc.employeeId}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-700 dark:text-slate-300 font-medium">
+                            {roleText}
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-600 dark:text-slate-400">
+                            {isHRRole ? (
+                              <span className="font-semibold text-indigo-700 dark:text-indigo-300">
+                                Tüm Birimler (Tam Erişim)
+                              </span>
+                            ) : isEnabled ? (
+                              <span className="tabular-nums">
+                                Bağlı Ekip:{' '}
+                                <strong className="text-slate-800 dark:text-slate-200">
+                                  {employees.filter((e) => e.manager_id === acc.id).length} Personel
+                                </strong>{' '}
+                                (İK Atamalı)
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 dark:text-slate-500">Salt Okunur ({dept})</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-4 text-right">
+                            {isHRRole ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-700 dark:text-indigo-300">
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>Varsayılan Aktif</span>
+                              </span>
+                            ) : (
+                              <div className="inline-flex items-center gap-2.5">
+                                <span
+                                  className={`text-[11px] font-semibold ${
+                                    isEnabled
+                                      ? 'text-emerald-700 dark:text-emerald-400'
+                                      : 'text-slate-400 dark:text-slate-500'
+                                  }`}
+                                >
+                                  {isEnabled ? 'Aktif' : 'Kapalı'}
+                                </span>
+                                <button
+                                  type="button"
+                                  role="switch"
+                                  aria-checked={isEnabled}
+                                  aria-label={`${acc.name} vardiya düzenleme yetkisi`}
+                                  disabled={!canToggleShiftPermissions || isBusy}
+                                  onClick={() => void handleToggleUserShiftPermission(acc)}
+                                  className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                                    !canToggleShiftPermissions
+                                      ? 'opacity-50 cursor-not-allowed'
+                                      : 'cursor-pointer'
+                                  } ${
+                                    isEnabled
+                                      ? 'bg-emerald-600'
+                                      : 'bg-slate-300 dark:bg-slate-700'
+                                  }`}
+                                >
+                                  <span
+                                    className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                                      isEnabled ? 'translate-x-4.5' : 'translate-x-1'
+                                    }`}
+                                  />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* DEDICATED HR PANEL: Ekip / Birim Amiri Eşleştirme (manager_id) */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Users className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                  <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                    Ekip / Birim Amiri Eşleştirme (<code className="font-mono text-xs text-indigo-600 dark:text-indigo-400">manager_id</code>)
+                  </h2>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  Hangi personelin hangi <strong>Birim Amirine</strong> bağlı olduğunu yalnızca <strong>Süper Admin</strong> ve <strong>İK Yöneticisi</strong> belirler. Birim Amirleri yalnızca kendilerine atanan personellerin vardiyalarını görebilir ve düzenleyebilir.
+                </p>
+              </div>
+
+              {!canToggleShiftPermissions && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 whitespace-nowrap self-start lg:self-center">
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Salt Okunur — Eşleştirme Yetkisi Sadece Süper Admin / İK</span>
+                </span>
+              )}
+            </div>
+
+            {/* Filter & Bulk Assign Bar */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative w-full sm:w-56">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Personel, sicil veya amir ara..."
+                    value={teamSearchQuery}
+                    onChange={(e) => setTeamSearchQuery(e.target.value)}
+                    className="w-full pl-8 pr-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-indigo-500"
+                  />
+                </div>
+                <select
+                  value={teamManagerFilter}
+                  onChange={(e) => setTeamManagerFilter(e.target.value)}
+                  className="px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-200 cursor-pointer"
+                >
+                  <option value="all">Tüm Personeller ({employees.length})</option>
+                  <option value="unassigned">
+                    Amir Atanmamış ({employees.filter((e) => !e.manager_id).length})
+                  </option>
+                  {managerAccounts.map((mgr) => (
+                    <option key={mgr.id} value={mgr.id}>
+                      {mgr.name} Ekibi ({employees.filter((e) => e.manager_id === mgr.id).length})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {canToggleShiftPermissions && (
+                <div className="flex items-center gap-2 flex-wrap bg-slate-50 dark:bg-slate-800/70 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 tabular-nums">
+                    Seçili: {selectedTeamEmpIds.length}
+                  </span>
+                  <select
+                    value={bulkTargetManagerId}
+                    onChange={(e) => setBulkTargetManagerId(e.target.value)}
+                    aria-label="Toplu atama için hedef Birim Amiri"
+                    className="px-2.5 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg text-slate-800 dark:text-slate-100 cursor-pointer"
+                  >
+                    <option value="">Hedef Birim Amiri Seçin...</option>
+                    <option value="__UNASSIGN__">Amir Bağlantısını Kaldır (Atamasız Yap)</option>
+                    {managerAccounts.map((mgr) => (
+                      <option key={mgr.id} value={mgr.id}>
+                        {mgr.name} (@{mgr.username})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={
+                      selectedTeamEmpIds.length === 0 || !bulkTargetManagerId || isAssigningManager
+                    }
+                    onClick={() => void handleBulkManagerAssign()}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+                      selectedTeamEmpIds.length > 0 && bulkTargetManagerId && !isAssigningManager
+                        ? 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer'
+                        : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+                    }`}
+                  >
+                    {isAssigningManager ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <UserCheck className="w-3.5 h-3.5" />
+                    )}
+                    <span>Seçilenleri Amire Ata</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Employee -> Manager Mapping Table */}
+            <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
+                    {canToggleShiftPermissions && (
+                      <th className="py-2.5 px-3 w-9">
+                        <input
+                          type="checkbox"
+                          aria-label="Görünür tüm personelleri seç"
+                          checked={
+                            filteredTeamEmployees.length > 0 &&
+                            filteredTeamEmployees.every((e) => selectedTeamEmpIds.includes(e.id))
+                          }
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedTeamEmpIds(filteredTeamEmployees.map((emp) => emp.id));
+                            } else {
+                              setSelectedTeamEmpIds([]);
+                            }
+                          }}
+                          className="rounded border-slate-300 text-indigo-600 cursor-pointer"
+                        />
+                      </th>
+                    )}
+                    <th className="py-2.5 px-4 font-semibold">Personel</th>
+                    <th className="py-2.5 px-4 font-semibold">Departman / Ünvan</th>
+                    <th className="py-2.5 px-4 font-semibold text-right">Bağlı Olduğu Birim Amiri</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {filteredTeamEmployees.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={canToggleShiftPermissions ? 4 : 3}
+                        className="py-8 text-center text-slate-400 dark:text-slate-500"
+                      >
+                        Kriterlere uygun personel bulunamadı.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredTeamEmployees.map((emp) => {
+                      const assignedMgr = emp.manager_id ? managerById.get(emp.manager_id) : undefined;
+                      const isRowBusy = assigningSingleEmpId === emp.id;
+                      const isSelected = selectedTeamEmpIds.includes(emp.id);
+
+                      return (
+                        <tr
+                          key={emp.id}
+                          className={`transition-colors ${
+                            isSelected
+                              ? 'bg-indigo-50/50 dark:bg-indigo-950/30'
+                              : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
+                          }`}
+                        >
+                          {canToggleShiftPermissions && (
+                            <td className="py-2.5 px-3">
+                              <input
+                                type="checkbox"
+                                aria-label={`${emp.fullName} seç`}
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedTeamEmpIds((prev) =>
+                                      prev.includes(emp.id) ? prev : [...prev, emp.id]
+                                    );
+                                  } else {
+                                    setSelectedTeamEmpIds((prev) => prev.filter((id) => id !== emp.id));
+                                  }
+                                }}
+                                className="rounded border-slate-300 text-indigo-600 cursor-pointer"
+                              />
+                            </td>
+                          )}
+                          <td className="py-2.5 px-4">
+                            <div className="flex items-center gap-2.5">
+                              <img
+                                src={emp.avatar}
+                                alt={emp.fullName}
+                                className="w-7 h-7 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+                              />
+                              <div>
+                                <div className="font-semibold text-slate-900 dark:text-slate-100">
+                                  {emp.fullName}
+                                </div>
+                                <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
+                                  {emp.id}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-4">
+                            <div className="font-medium text-slate-800 dark:text-slate-200">
+                              {emp.department}
+                            </div>
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400">{emp.title}</div>
+                          </td>
+                          <td className="py-2.5 px-4 text-right">
+                            {canToggleShiftPermissions ? (
+                              <div className="inline-flex items-center gap-2 justify-end">
+                                {isRowBusy && (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600 shrink-0" />
+                                )}
+                                <select
+                                  aria-label={`${emp.fullName} için Birim Amiri seç`}
+                                  value={emp.manager_id || ''}
+                                  disabled={isRowBusy || isAssigningManager}
+                                  onChange={(e) =>
+                                    void handleSingleManagerAssign(emp.id, e.target.value || null)
+                                  }
+                                  className="px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 cursor-pointer focus:outline-indigo-500 max-w-[240px]"
+                                >
+                                  <option value="">Atanmamış (Amir Yok)</option>
+                                  {managerAccounts
+                                    .filter((m) => m.employeeId !== emp.id)
+                                    .map((mgr) => (
+                                      <option key={mgr.id} value={mgr.id}>
+                                        {mgr.name} (@{mgr.username})
+                                      </option>
+                                    ))}
+                                </select>
+                              </div>
+                            ) : assignedMgr ? (
+                              <span className="font-semibold text-indigo-700 dark:text-indigo-300">
+                                {assignedMgr.name}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 dark:text-slate-500">Atanmamış</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
             <div>
               <div className="flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-indigo-600" />
-                <h2 className="text-lg font-bold text-slate-900">
-                  Birim Amirleri & Sorumlu Personel Yetkilendirme
+                <ShieldCheck className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                  Birim Amirleri & Sorumluluk Notları ({supervisorAssignments.length})
                 </h2>
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                  {supervisorAssignments.length} Birim Amiri Tanımlı
-                </span>
               </div>
-              <p className="text-xs text-slate-500 mt-1">
-                İK Yöneticisi tarafından atanan birim amirleri yalnızca kendilerine bağlı personellerin vardiya planlarını oluşturabilir ve güncelleyebilir.
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Birim amirliği sorumluluk kayıtları ve departman bazlı görev tanımları.
               </p>
             </div>
 
@@ -1836,7 +3099,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                 <span>Yeni Birim Amiri Yetkilendir & Personel Ata</span>
               </button>
             ) : (
-              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-500 text-xs rounded-xl font-medium border border-slate-200">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs rounded-xl font-medium border border-slate-200 dark:border-slate-700">
                 <Lock className="w-3.5 h-3.5 text-slate-400" />
                 <span>Yetkilendirme İK Yöneticisine Aittir</span>
               </div>
@@ -1844,23 +3107,23 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
           </div>
 
           {/* Hierarchy Info Box */}
-          <div className="bg-gradient-to-r from-indigo-50/80 via-purple-50/60 to-slate-50 p-4 rounded-2xl border border-indigo-100 text-xs text-slate-700 space-y-2">
-            <div className="flex items-center gap-2 font-bold text-indigo-950">
-              <Shield className="w-4 h-4 text-indigo-600 shrink-0" />
-              <span>Rol & Yetkilendirme Matrisi Nasıl İşler?</span>
+          <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 space-y-2">
+            <div className="flex items-center gap-2 font-bold text-slate-900 dark:text-slate-100">
+              <Shield className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+              <span>Rol & Ekip Hiyerarşisi Matrisi Nasıl İşler?</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] leading-relaxed">
-              <div className="bg-white/90 p-3 rounded-xl border border-indigo-100/60 shadow-2xs">
-                <span className="font-bold text-purple-900 block mb-1">1. İK Yöneticisi (Üst Yönetici)</span>
-                Tüm şirket personellerinin vardiyalarını belirler ve hangi personellerin hangi Birim Amirine bağlı olacağını yetkilendirir.
+              <div className="bg-white dark:bg-slate-800/70 p-3 rounded-lg border border-slate-200 dark:border-slate-700">
+                <span className="font-bold text-purple-900 dark:text-purple-300 block mb-1">1. Süper Admin & İK</span>
+                Tüm personellerin vardiyasını yönetir, <code className="font-mono">can_manage_shifts</code> yetkisini açıp kapatır ve hangi personelin hangi amire (<code className="font-mono">manager_id</code>) bağlı olduğunu belirler.
               </div>
-              <div className="bg-white/90 p-3 rounded-xl border border-amber-100/60 shadow-2xs">
-                <span className="font-bold text-amber-900 block mb-1">2. Birim Amirleri (Atanan Yetkililer)</span>
-                Yalnızca İK'nın kendilerine atadığı personellerin haftalık vardiyalarını oluşturabilir, değiştirebilir ve takvimden izleyebilir.
+              <div className="bg-white dark:bg-slate-800/70 p-3 rounded-lg border border-slate-200 dark:border-slate-700">
+                <span className="font-bold text-amber-900 dark:text-amber-300 block mb-1">2. Birim Yöneticisi / Amir</span>
+                Yalnızca İK tarafından kendi ekibine (<code className="font-mono">manager_id</code>) atanan personelleri görür ve düzenler; diğer personeller için API istekleri sunucu düzeyinde <strong>403 Forbidden</strong> ile reddedilir.
               </div>
-              <div className="bg-white/90 p-3 rounded-xl border border-emerald-100/60 shadow-2xs">
-                <span className="font-bold text-emerald-900 block mb-1">3. Personeller (Çalışanlar)</span>
-                Yalnızca kendi vardiyalarını, giriş/çıkış saatlerini mobil kartta görüntüler; diğer personellerin vardiyasını değiştiremez.
+              <div className="bg-white dark:bg-slate-800/70 p-3 rounded-lg border border-slate-200 dark:border-slate-700">
+                <span className="font-bold text-emerald-900 dark:text-emerald-300 block mb-1">3. Yetkisiz Kullanıcı / Personel</span>
+                Vardiya sayfasını yalnızca salt okunur modda açabilir; düzenleme ve ekip atama kontrolleri gizlenir ve sunucu düzeyinde engellenir.
               </div>
             </div>
           </div>

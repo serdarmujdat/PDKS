@@ -9,6 +9,7 @@ import {
   createInitialDatabase,
   getTodayString,
   DEFAULT_COMPANY_NAME,
+  CANONICAL_SHIFT_TEMPLATES,
 } from './src/db/defaultData.ts';
 import type { PDKSDatabase } from './src/db/defaultData.ts';
 import type {
@@ -17,6 +18,7 @@ import type {
   AttendanceRecord,
   Employee,
   Shift,
+  EmployeeShiftAssignment,
   LeaveRequest,
   OvertimeRequest,
   PDKSNotification,
@@ -53,6 +55,7 @@ const FULL_SUPER_ADMIN_PERMISSIONS: UserCustomPermissions = {
   canClearLogs: true,
   canChangeCompanyName: true,
   canManagePermissions: true,
+  canManageShifts: true,
   isFullAdmin: true,
 };
 
@@ -77,9 +80,14 @@ const BOOLEAN_PERMISSION_KEYS = [
   'canManageSettings',
   'canClearLogs',
   'canManagePermissions',
+  'canManageShifts',
 ] as const;
 
-function getDefaultPermissionsForRoleServer(role: string, isShiftSupervisor?: boolean): UserCustomPermissions {
+function getDefaultPermissionsForRoleServer(
+  role: string,
+  isShiftSupervisor?: boolean,
+  canManageShiftsFlag?: boolean
+): UserCustomPermissions {
   if (role === 'SUPER_ADMIN') {
     return { ...FULL_SUPER_ADMIN_PERMISSIONS, allowedPages: [...FULL_SUPER_ADMIN_PERMISSIONS.allowedPages] };
   }
@@ -96,10 +104,12 @@ function getDefaultPermissionsForRoleServer(role: string, isShiftSupervisor?: bo
       canClearLogs: false,
       canChangeCompanyName: false,
       canManagePermissions: false,
+      canManageShifts: true,
       isFullAdmin: false,
     };
   }
   if (role === 'birim_amiri') {
+    const shiftEditEnabled = typeof canManageShiftsFlag === 'boolean' ? canManageShiftsFlag : true;
     return {
       allowedPages: ['shifts', 'kiosk', 'portal'],
       canCreate: false,
@@ -112,12 +122,15 @@ function getDefaultPermissionsForRoleServer(role: string, isShiftSupervisor?: bo
       canClearLogs: false,
       canChangeCompanyName: false,
       canManagePermissions: false,
+      canManageShifts: shiftEditEnabled,
       isFullAdmin: false,
     };
   }
   if (role === 'yonetici') {
+    const shiftEditEnabled =
+      typeof canManageShiftsFlag === 'boolean' ? canManageShiftsFlag : Boolean(isShiftSupervisor);
     return {
-      allowedPages: isShiftSupervisor ? ['shifts', 'kiosk', 'portal'] : ['kiosk', 'portal'],
+      allowedPages: ['shifts', 'kiosk', 'portal'],
       canCreate: false,
       canEdit: false,
       canDelete: false,
@@ -128,11 +141,13 @@ function getDefaultPermissionsForRoleServer(role: string, isShiftSupervisor?: bo
       canClearLogs: false,
       canChangeCompanyName: false,
       canManagePermissions: false,
+      canManageShifts: shiftEditEnabled,
       isFullAdmin: false,
     };
   }
+  const shiftEditEnabled = typeof canManageShiftsFlag === 'boolean' ? canManageShiftsFlag : false;
   return {
-    allowedPages: isShiftSupervisor ? ['shifts', 'kiosk', 'portal'] : ['kiosk', 'portal'],
+    allowedPages: ['shifts', 'kiosk', 'portal'],
     canCreate: false,
     canEdit: false,
     canDelete: false,
@@ -143,23 +158,46 @@ function getDefaultPermissionsForRoleServer(role: string, isShiftSupervisor?: bo
     canClearLogs: false,
     canChangeCompanyName: false,
     canManagePermissions: false,
+    canManageShifts: shiftEditEnabled,
     isFullAdmin: false,
   };
 }
 
 function getEffectivePermissionsServer(user: Partial<UserAccount> | null | undefined): UserCustomPermissions {
-  if (!user) return getDefaultPermissionsForRoleServer('personel', false);
+  if (!user) return getDefaultPermissionsForRoleServer('personel', false, false);
   if (user.role === 'SUPER_ADMIN' || user.isHiddenSuperAdmin) {
     return { ...FULL_SUPER_ADMIN_PERMISSIONS, allowedPages: [...FULL_SUPER_ADMIN_PERMISSIONS.allowedPages] };
   }
-  const base = getDefaultPermissionsForRoleServer(user.role || 'personel', user.isShiftSupervisor);
+  const base = getDefaultPermissionsForRoleServer(
+    user.role || 'personel',
+    user.isShiftSupervisor,
+    user.can_manage_shifts
+  );
   const custom = user.customPermissions;
-  if (!custom) return base;
+  const resolvedCanManageShifts =
+    user.role === 'ik_yoneticisi'
+      ? true
+      : typeof user.can_manage_shifts === 'boolean'
+        ? user.can_manage_shifts
+        : typeof custom?.canManageShifts === 'boolean'
+          ? custom.canManageShifts
+          : Boolean(base.canManageShifts);
+  if (!custom) {
+    return {
+      ...base,
+      canManageShifts: resolvedCanManageShifts,
+    };
+  }
   const isFullAdmin = Boolean(custom.isFullAdmin);
+  const pages = Array.isArray(custom.allowedPages)
+    ? custom.allowedPages.filter((p) => VALID_APP_PAGE_KEYS.has(p))
+    : [...base.allowedPages];
+  // Ensure read-only access to shifts page is always available for logged-in staff
+  if (!pages.includes('shifts')) {
+    pages.push('shifts');
+  }
   return {
-    allowedPages: Array.isArray(custom.allowedPages)
-      ? custom.allowedPages.filter((p) => VALID_APP_PAGE_KEYS.has(p))
-      : base.allowedPages,
+    allowedPages: pages,
     canCreate: typeof custom.canCreate === 'boolean' ? custom.canCreate : base.canCreate,
     canEdit: typeof custom.canEdit === 'boolean' ? custom.canEdit : base.canEdit,
     canDelete: typeof custom.canDelete === 'boolean' ? custom.canDelete : base.canDelete,
@@ -170,6 +208,7 @@ function getEffectivePermissionsServer(user: Partial<UserAccount> | null | undef
     canClearLogs: typeof custom.canClearLogs === 'boolean' ? custom.canClearLogs : base.canClearLogs,
     canChangeCompanyName: false,
     canManagePermissions: isFullAdmin || Boolean(custom.canManagePermissions),
+    canManageShifts: resolvedCanManageShifts,
     isFullAdmin,
   };
 }
@@ -430,16 +469,99 @@ function canViewArchivedEmployeesServer(actor: ReturnType<typeof resolveActorSer
   );
 }
 
+function canToggleShiftPermissionServer(actor: ReturnType<typeof resolveActorServer>): boolean {
+  if (!actor.isAuthenticated) return false;
+  if (actor.isSuperAdmin) return true;
+  return actor.account?.role === 'ik_yoneticisi';
+}
+
+function canManageShiftForTargetServer(
+  actor: ReturnType<typeof resolveActorServer>,
+  targetEmp: Employee | undefined
+): { allowed: boolean; status?: number; message?: string } {
+  if (!actor.isAuthenticated) {
+    return {
+      allowed: false,
+      status: 401,
+      message: 'Vardiya güncelleme işlemi için oturum doğrulaması gereklidir.',
+    };
+  }
+  if (!targetEmp || isHiddenSuperAdminItem(targetEmp)) {
+    return {
+      allowed: false,
+      status: 404,
+      message: 'Personel kaydı bulunamadı.',
+    };
+  }
+  if (isArchivedEmployeeServer(targetEmp)) {
+    return {
+      allowed: false,
+      status: 400,
+      message: 'Arşivlenmiş (Eski Personel) için vardiya tanımlanamaz.',
+    };
+  }
+  if (actor.isSuperAdmin || actor.account?.role === 'ik_yoneticisi') {
+    return { allowed: true };
+  }
+
+  const acc = actor.account;
+  const hasDirectReports = Boolean(
+    acc?.id &&
+      dbState.employees.some(
+        (e) => !isArchivedEmployeeServer(e) && !isHiddenSuperAdminItem(e) && e.manager_id === acc.id
+      )
+  );
+  const hasShiftPermission =
+    acc?.can_manage_shifts === true ||
+    (acc?.can_manage_shifts !== false &&
+      (Boolean(actor.perms.canManageShifts) || hasDirectReports));
+
+  if (!hasShiftPermission) {
+    return {
+      allowed: false,
+      status: 403,
+      message: 'Bu personel üzerinde vardiya düzenleme yetkiniz bulunmamaktadır',
+    };
+  }
+
+  // Strict Scoping: Birim Amiri can ONLY edit shifts for employees whose manager_id === currentUser.id
+  if (!acc?.id || targetEmp.manager_id !== acc.id) {
+    return {
+      allowed: false,
+      status: 403,
+      message: 'Bu personel üzerinde vardiya düzenleme yetkiniz bulunmamaktadır',
+    };
+  }
+
+  return { allowed: true };
+}
+
 function filterVisibleItems<T>(list: T[]): T[] {
   return Array.isArray(list) ? list.filter((item) => !isHiddenSuperAdminItem(item)) : [];
 }
 
+function getCanonicalCompanyNameServer(db: PDKSDatabase = dbState): string {
+  const fromSettings =
+    typeof db?.systemSettings?.companyName === 'string' ? db.systemSettings.companyName.trim() : '';
+  if (fromSettings && fromSettings !== DEFAULT_COMPANY_NAME) return fromSettings;
+
+  const fromDisk = loadPersistentSystemSettings();
+  if (fromDisk?.companyName && fromDisk.companyName !== DEFAULT_COMPANY_NAME) {
+    return fromDisk.companyName;
+  }
+
+  const fromRoot = typeof db?.companyName === 'string' ? db.companyName.trim() : '';
+  if (fromRoot && fromRoot !== DEFAULT_COMPANY_NAME) return fromRoot;
+
+  const fromWall =
+    typeof db?.companyWallQR?.companyName === 'string' ? db.companyWallQR.companyName.trim() : '';
+  if (fromWall && fromWall !== DEFAULT_COMPANY_NAME) return fromWall;
+
+  return fromSettings || fromRoot || fromWall || DEFAULT_COMPANY_NAME;
+}
+
 function getPublicDatabaseSnapshot(db: PDKSDatabase): PDKSDatabase {
-  const canonicalCompanyName =
-    (typeof db.systemSettings?.companyName === 'string' && db.systemSettings.companyName.trim()) ||
-    (typeof db.companyName === 'string' && db.companyName.trim()) ||
-    (typeof db.companyWallQR?.companyName === 'string' && db.companyWallQR.companyName.trim()) ||
-    DEFAULT_COMPANY_NAME;
+  const canonicalCompanyName = getCanonicalCompanyNameServer(db);
 
   return {
     ...db,
@@ -453,6 +575,7 @@ function getPublicDatabaseSnapshot(db: PDKSDatabase): PDKSDatabase {
       : db.companyWallQR,
     employees: filterVisibleItems(db.employees),
     records: filterVisibleItems(db.records),
+    employee_shifts: Array.isArray(db.employee_shifts) ? db.employee_shifts : [],
     notifications: filterVisibleItems(db.notifications),
     accounts: filterVisibleItems(db.accounts),
     deviceApprovals: filterVisibleItems(db.deviceApprovals),
@@ -466,14 +589,186 @@ app.use(express.json({ limit: '25mb' }));
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'pdks-database.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'system-settings.json');
+const AVATARS_DIR = path.join(DATA_DIR, 'avatars');
+const AVATARS_MANIFEST_FILE = path.join(DATA_DIR, 'avatars-manifest.json');
 const WALL_QR_STATIC_FILE = path.join(__dirname, 'company-wall-qr.json');
+
+function isBlobUrlServer(val?: string | null): boolean {
+  return typeof val === 'string' && val.trim().toLowerCase().startsWith('blob:');
+}
+
+function isCustomUploadedAvatar(val?: string | null): boolean {
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  if (!trimmed || isBlobUrlServer(trimmed)) return false;
+  return trimmed.startsWith('/api/avatars/') || trimmed.startsWith('data:image/');
+}
+
+function loadAvatarsManifest(): Record<string, string> {
+  try {
+    if (fs.existsSync(AVATARS_MANIFEST_FILE)) {
+      const raw = fs.readFileSync(AVATARS_MANIFEST_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, string>;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to read avatars-manifest.json:', err);
+  }
+  return {};
+}
+
+function saveAvatarsManifest(manifest: Record<string, string>): void {
+  const tempFile = `${AVATARS_MANIFEST_FILE}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(tempFile, JSON.stringify(manifest, null, 2), 'utf-8');
+    fs.renameSync(tempFile, AVATARS_MANIFEST_FILE);
+  } catch (err) {
+    console.error('Failed to write avatars-manifest.json:', err);
+    try {
+      if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function persistAvatarToDisk(employeeId: string, rawPhotoData?: string | null): string | null {
+  if (typeof rawPhotoData !== 'string') return null;
+  const trimmed = rawPhotoData.trim();
+  if (!trimmed || isBlobUrlServer(trimmed)) return null;
+
+  // Decode base64 Data URL and persist as an immutable file under data/avatars/
+  const dataUrlMatch = trimmed.match(/^data:image\/(png|jpeg|jpg|webp|gif);base64,(.+)$/i);
+  if (dataUrlMatch) {
+    const rawExt = dataUrlMatch[1].toLowerCase();
+    const ext = rawExt === 'jpeg' ? 'jpg' : rawExt;
+    const base64Body = dataUrlMatch[2];
+    try {
+      const buffer = Buffer.from(base64Body, 'base64');
+      if (!buffer || buffer.length === 0) return null;
+      if (!fs.existsSync(AVATARS_DIR)) {
+        fs.mkdirSync(AVATARS_DIR, { recursive: true });
+      }
+      const safeEmpId = String(employeeId || 'user').replace(/[^a-zA-Z0-9_-]/g, '');
+      const hash = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 12);
+      const filename = `${safeEmpId}-${hash}.${ext}`;
+      const filePath = path.join(AVATARS_DIR, filename);
+      if (!fs.existsSync(filePath)) {
+        const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+        fs.writeFileSync(tmpPath, buffer);
+        fs.renameSync(tmpPath, filePath);
+      }
+      const persistentUrl = `/api/avatars/${filename}`;
+      if (safeEmpId) {
+        const manifest = loadAvatarsManifest();
+        manifest[employeeId] = persistentUrl;
+        saveAvatarsManifest(manifest);
+      }
+      return persistentUrl;
+    } catch (err) {
+      console.error('Failed to persist avatar file:', err);
+      return trimmed;
+    }
+  }
+
+  // Already a persistent server avatar URL or valid external HTTP(S) URL
+  if (trimmed.startsWith('/api/avatars/') || /^https?:\/\//i.test(trimmed)) {
+    if (employeeId && trimmed.startsWith('/api/avatars/')) {
+      const manifest = loadAvatarsManifest();
+      if (manifest[employeeId] !== trimmed) {
+        manifest[employeeId] = trimmed;
+        saveAvatarsManifest(manifest);
+      }
+    }
+    return trimmed;
+  }
+
+  return null;
+}
+
+function resolvePreservedAvatar(
+  existingAvatar: string | undefined,
+  incomingAvatar: string | undefined | null,
+  options: { allowExplicitReplace: boolean; employeeId?: string }
+): string {
+  const safeExisting =
+    typeof existingAvatar === 'string' && existingAvatar.trim() && !isBlobUrlServer(existingAvatar)
+      ? existingAvatar.trim()
+      : '';
+  const safeIncoming =
+    typeof incomingAvatar === 'string' && incomingAvatar.trim() && !isBlobUrlServer(incomingAvatar)
+      ? incomingAvatar.trim()
+      : '';
+
+  // COALESCE: never overwrite an existing valid avatar with empty/null/undefined/blob:
+  if (!safeIncoming) {
+    return safeExisting;
+  }
+
+  // During generic /api/db/sync, NEVER let a stale stock/external URL overwrite an uploaded custom avatar
+  if (!options.allowExplicitReplace && isCustomUploadedAvatar(safeExisting)) {
+    if (!isCustomUploadedAvatar(safeIncoming)) {
+      return safeExisting;
+    }
+    // If incoming is already a persistent /api/avatars/ path, prefer server's existing persistent avatar unless same
+    if (safeExisting.startsWith('/api/avatars/') && !safeIncoming.startsWith('data:image/')) {
+      return safeExisting;
+    }
+  }
+
+  if (safeIncoming.startsWith('data:image/') && options.employeeId) {
+    return persistAvatarToDisk(options.employeeId, safeIncoming) || safeExisting || safeIncoming;
+  }
+
+  return safeIncoming;
+}
+
+function syncEmployeeAvatarToAccountsServer(
+  employeeId: string,
+  avatarUrl: string,
+  avatarStatus?: 'approved' | 'pending' | 'rejected',
+  pendingAvatar?: string | null
+): void {
+  if (!employeeId || !avatarUrl || isBlobUrlServer(avatarUrl)) return;
+  for (const acc of dbState.accounts) {
+    if (acc && acc.employeeId === employeeId) {
+      acc.avatar = avatarUrl;
+      if (avatarStatus !== undefined) acc.avatarStatus = avatarStatus;
+      if (pendingAvatar !== undefined) acc.pendingAvatar = pendingAvatar;
+    }
+  }
+}
+
+// Serve persistent avatar files with immutable browser caching
+app.get('/api/avatars/:filename', (req: Request, res: Response) => {
+  const rawName = path.basename(String(req.params.filename || ''));
+  if (!/^[a-zA-Z0-9_-]+\.(png|jpg|webp|gif)$/i.test(rawName)) {
+    return res.status(400).json({ success: false, message: 'Geçersiz dosya adı.' });
+  }
+  const fullPath = path.join(AVATARS_DIR, rawName);
+  if (!fs.existsSync(fullPath)) {
+    return res.status(404).json({ success: false, message: 'Profil fotoğrafı bulunamadı.' });
+  }
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  return res.sendFile(fullPath);
+});
 
 function loadPersistentSystemSettings(): SystemSettings | null {
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
       const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.companyName === 'string' && parsed.companyName.trim()) {
+      if (
+        parsed &&
+        typeof parsed.companyName === 'string' &&
+        parsed.companyName.trim() &&
+        parsed.companyName.trim() !== DEFAULT_COMPANY_NAME
+      ) {
         return {
           companyName: parsed.companyName.trim().slice(0, 100),
           branchName: typeof parsed.branchName === 'string' ? parsed.branchName.trim().slice(0, 100) : undefined,
@@ -489,12 +784,17 @@ function loadPersistentSystemSettings(): SystemSettings | null {
 }
 
 function savePersistentSystemSettings(settings: SystemSettings): void {
+  const cleanName = typeof settings?.companyName === 'string' ? settings.companyName.trim() : '';
+  // Never overwrite custom persisted settings with empty or default placeholder name
+  if (!cleanName || cleanName === DEFAULT_COMPANY_NAME) {
+    return;
+  }
   const tempFile = `${SETTINGS_FILE}.${process.pid}.${Date.now()}.tmp`;
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    fs.writeFileSync(tempFile, JSON.stringify(settings, null, 2), 'utf-8');
+    fs.writeFileSync(tempFile, JSON.stringify({ ...settings, companyName: cleanName }, null, 2), 'utf-8');
     fs.renameSync(tempFile, SETTINGS_FILE);
   } catch (err) {
     console.error('Failed to write system-settings.json:', err);
@@ -511,7 +811,7 @@ function savePersistentSystemSettings(settings: SystemSettings): void {
       const raw = fs.readFileSync(WALL_QR_STATIC_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
-        parsed.companyName = settings.companyName;
+        parsed.companyName = cleanName;
         if (settings.branchName) parsed.branchName = settings.branchName;
         fs.writeFileSync(WALL_QR_STATIC_FILE, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
       }
@@ -523,6 +823,7 @@ function savePersistentSystemSettings(settings: SystemSettings): void {
 
 function loadDatabase(): PDKSDatabase {
   const persistedSettings = loadPersistentSystemSettings();
+  const avatarManifest = loadAvatarsManifest();
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -531,8 +832,6 @@ function loadDatabase(): PDKSDatabase {
       const raw = fs.readFileSync(DB_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.employees) && Array.isArray(parsed.records)) {
-        // If database still holds only untouched initial demo seed records from a prior date,
-        // keep their dates aligned with today so Canlı Pano accurately reflects demo check-ins.
         const todayStr = getTodayString();
         const isOnlyDemoSeed =
           parsed.records.length > 0 &&
@@ -547,6 +846,102 @@ function loadDatabase(): PDKSDatabase {
         }
         if (!Array.isArray(parsed.deviceApprovals)) {
           parsed.deviceApprovals = [];
+        }
+        if (!Array.isArray(parsed.employee_shifts)) {
+          parsed.employee_shifts = [];
+        }
+        // Ensure canonical shift templates (Sabah, Akşam, Gece, İzinli/OFF) exist in persisted DB
+        if (Array.isArray(parsed.shifts)) {
+          const existingShiftIds = new Set(parsed.shifts.map((s: Shift) => s?.id));
+          const missingCanonical = CANONICAL_SHIFT_TEMPLATES.filter((t) => !existingShiftIds.has(t.id));
+          if (missingCanonical.length > 0) {
+            parsed.shifts = [...missingCanonical, ...parsed.shifts];
+          }
+        }
+        // Normalize can_manage_shifts on persisted user accounts
+        if (Array.isArray(parsed.accounts)) {
+          parsed.accounts = parsed.accounts.map((acc: UserAccount) => {
+            if (!acc || typeof acc !== 'object') return acc;
+            const defaultShiftManage =
+              acc.role === 'ik_yoneticisi' ||
+              acc.role === 'birim_amiri' ||
+              Boolean(acc.isShiftSupervisor) ||
+              Boolean(acc.customPermissions?.canManageShifts);
+            const nextAcc: UserAccount = {
+              ...acc,
+              can_manage_shifts:
+                typeof acc.can_manage_shifts === 'boolean' ? acc.can_manage_shifts : defaultShiftManage,
+            };
+            // Convert any legacy inline data:image/ avatars into persistent disk files
+            if (typeof nextAcc.avatar === 'string' && nextAcc.avatar.startsWith('data:image/')) {
+              const savedUrl = persistAvatarToDisk(nextAcc.employeeId || nextAcc.id, nextAcc.avatar);
+              if (savedUrl) nextAcc.avatar = savedUrl;
+            }
+            return nextAcc;
+          });
+        }
+
+        // Backfill manager_id from legacy supervisorAssignments ONLY when manager_id is undefined
+        const legacyManagerByEmpId = new Map<string, string>();
+        if (Array.isArray(parsed.supervisorAssignments) && Array.isArray(parsed.accounts)) {
+          for (const sup of parsed.supervisorAssignments as SupervisorAssignment[]) {
+            const supAcc = (parsed.accounts as UserAccount[]).find(
+              (a) => a && (a.id === sup.supervisorId || a.employeeId === sup.supervisorId)
+            );
+            if (supAcc && Array.isArray(sup.assignedEmployeeIds)) {
+              for (const empId of sup.assignedEmployeeIds) {
+                if (empId && !legacyManagerByEmpId.has(empId)) {
+                  legacyManagerByEmpId.set(empId, supAcc.id);
+                }
+              }
+            }
+          }
+        }
+
+        // Migrate employees: convert inline base64 avatars to persistent /api/avatars/, restore from manifest if needed, backfill manager_id
+        parsed.employees = (parsed.employees as Employee[]).map((emp) => {
+          if (!emp || typeof emp !== 'object') return emp;
+          const nextEmp: Employee = { ...emp };
+          if (typeof nextEmp.avatar === 'string' && nextEmp.avatar.startsWith('data:image/')) {
+            const savedUrl = persistAvatarToDisk(nextEmp.id, nextEmp.avatar);
+            if (savedUrl) nextEmp.avatar = savedUrl;
+          }
+          const manifestUrl = avatarManifest[nextEmp.id];
+          if (
+            manifestUrl &&
+            manifestUrl.startsWith('/api/avatars/') &&
+            fs.existsSync(path.join(AVATARS_DIR, path.basename(manifestUrl))) &&
+            !isCustomUploadedAvatar(nextEmp.avatar)
+          ) {
+            nextEmp.avatar = manifestUrl;
+          }
+          if (nextEmp.manager_id === undefined) {
+            nextEmp.manager_id = legacyManagerByEmpId.get(nextEmp.id) || null;
+          }
+          return nextEmp;
+        });
+
+        // Synchronize employee avatars & manager_id back to linked user accounts
+        if (Array.isArray(parsed.accounts)) {
+          const empById = new Map<string, Employee>(
+            (parsed.employees as Employee[]).filter((e) => e && e.id).map((e) => [e.id, e])
+          );
+          parsed.accounts = (parsed.accounts as UserAccount[]).map((acc) => {
+            if (!acc || typeof acc !== 'object') return acc;
+            const linked = acc.employeeId ? empById.get(acc.employeeId) : undefined;
+            const nextAcc = { ...acc };
+            if (linked) {
+              if (isCustomUploadedAvatar(linked.avatar) && nextAcc.avatar !== linked.avatar) {
+                nextAcc.avatar = linked.avatar;
+              } else if (!nextAcc.avatar || isBlobUrlServer(nextAcc.avatar)) {
+                nextAcc.avatar = linked.avatar;
+              }
+              if (nextAcc.manager_id === undefined) {
+                nextAcc.manager_id = linked.manager_id ?? null;
+              }
+            }
+            return nextAcc;
+          });
         }
 
         const dbCompanyName =
@@ -572,14 +967,22 @@ function loadDatabase(): PDKSDatabase {
         if (parsed.companyWallQR && typeof parsed.companyWallQR === 'object') {
           parsed.companyWallQR.companyName = resolvedCompanyName;
         }
-        if (!persistedSettings && resolvedCompanyName && resolvedCompanyName !== DEFAULT_COMPANY_NAME) {
+        if (resolvedCompanyName && resolvedCompanyName !== DEFAULT_COMPANY_NAME) {
           savePersistentSystemSettings(parsed.systemSettings);
         }
         return parsed;
       }
     }
   } catch (err) {
-    console.warn('Failed to read pdks-database.json, initializing fresh database:', err);
+    console.error('Failed to read pdks-database.json:', err);
+    // Preserve corrupt file backup instead of silently destroying data
+    try {
+      if (fs.existsSync(DB_FILE)) {
+        fs.copyFileSync(DB_FILE, `${DB_FILE}.corrupt.${Date.now()}.bak`);
+      }
+    } catch {
+      // ignore backup failure
+    }
   }
 
   const initial = createInitialDatabase();
@@ -590,14 +993,23 @@ function loadDatabase(): PDKSDatabase {
     if (persistedSettings.branchName) {
       initial.companyWallQR.branchName = persistedSettings.branchName;
     }
-  } else {
-    savePersistentSystemSettings({
-      companyName: initial.companyName,
-      branchName: initial.companyWallQR.branchName,
-      updatedAt: initial.lastUpdated,
-      updatedBy: 'Sistem Başlatma',
-    });
   }
+  // Restore any persisted custom avatars even if database was freshly initialized
+  initial.employees = initial.employees.map((emp) => {
+    const manifestUrl = avatarManifest[emp.id];
+    if (manifestUrl && manifestUrl.startsWith('/api/avatars/') && fs.existsSync(path.join(AVATARS_DIR, path.basename(manifestUrl)))) {
+      return { ...emp, avatar: manifestUrl };
+    }
+    return emp;
+  });
+  initial.accounts = initial.accounts.map((acc) => {
+    const manifestUrl = avatarManifest[acc.employeeId];
+    if (manifestUrl && manifestUrl.startsWith('/api/avatars/') && fs.existsSync(path.join(AVATARS_DIR, path.basename(manifestUrl)))) {
+      return { ...acc, avatar: manifestUrl };
+    }
+    return acc;
+  });
+
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
   } catch (err) {
@@ -711,8 +1123,37 @@ function mergePreservingServerArchivedEmployees(incoming: Employee[]): Employee[
       if (existing && isArchivedEmployeeServer(existing) && !isArchivedEmployeeServer(e)) {
         // Never allow stale client sync to resurrect an archived former employee
         byId.set(existing.id, existing);
+      } else if (existing) {
+        // COALESCE & non-destructive merge: never allow generic sync to erase/downgrade avatars or tamper with manager_id
+        const preservedAvatar = resolvePreservedAvatar(existing.avatar, e.avatar, {
+          allowExplicitReplace: false,
+          employeeId: e.id,
+        });
+        const preservedPending =
+          e.pendingAvatar === null
+            ? null
+            : e.pendingAvatar && !isBlobUrlServer(e.pendingAvatar)
+              ? persistAvatarToDisk(e.id, e.pendingAvatar) || e.pendingAvatar
+              : existing.pendingAvatar ?? null;
+        byId.set(e.id, {
+          ...existing,
+          ...e,
+          avatar: preservedAvatar || existing.avatar,
+          pendingAvatar: preservedPending,
+          avatarStatus: e.avatarStatus ?? existing.avatarStatus,
+          // Preserve server-authoritative HR-assigned manager_id against generic client sync overwrites
+          manager_id: existing.manager_id !== undefined ? existing.manager_id : (e.manager_id ?? null),
+        });
       } else {
-        byId.set(e.id, e);
+        const cleanAvatar = resolvePreservedAvatar('', e.avatar, {
+          allowExplicitReplace: true,
+          employeeId: e.id,
+        });
+        byId.set(e.id, {
+          ...e,
+          avatar: cleanAvatar || e.avatar,
+          manager_id: e.manager_id ?? null,
+        });
       }
     }
   }
@@ -731,8 +1172,35 @@ function mergePreservingServerArchivedAccounts(incoming: UserAccount[]): UserAcc
       const existing = dbState.accounts.find((cur) => cur.id === a.id);
       if (existing && isArchivedAccountServer(existing) && !isArchivedAccountServer(a)) {
         byId.set(existing.id, existing);
+      } else if (existing) {
+        const linkedEmp = existing.employeeId
+          ? dbState.employees.find((emp) => emp.id === existing.employeeId)
+          : undefined;
+        const authoritativeAvatar = resolvePreservedAvatar(
+          linkedEmp?.avatar && isCustomUploadedAvatar(linkedEmp.avatar) ? linkedEmp.avatar : existing.avatar,
+          a.avatar,
+          { allowExplicitReplace: false, employeeId: existing.employeeId || existing.id }
+        );
+        // Preserve authoritative server-controlled avatar, can_manage_shifts, and manager_id
+        byId.set(a.id, {
+          ...existing,
+          ...a,
+          avatar: authoritativeAvatar || existing.avatar,
+          can_manage_shifts:
+            typeof existing.can_manage_shifts === 'boolean'
+              ? existing.can_manage_shifts
+              : a.can_manage_shifts,
+          manager_id: existing.manager_id !== undefined ? existing.manager_id : (a.manager_id ?? null),
+        });
       } else {
-        byId.set(a.id, a);
+        const cleanAvatar = resolvePreservedAvatar('', a.avatar, {
+          allowExplicitReplace: true,
+          employeeId: a.employeeId || a.id,
+        });
+        byId.set(a.id, {
+          ...a,
+          avatar: cleanAvatar || a.avatar,
+        });
       }
     }
   }
@@ -753,6 +1221,12 @@ app.post('/api/db/sync', (req: Request, res: Response) => {
         return res.status(403).json({
           success: false,
           message: 'Kurum adı ve sistem ayarları yalnızca Süper Yönetici doğrulamasıyla güncellenebilir.',
+        });
+      }
+      if (collection === 'employee_shifts') {
+        return res.status(403).json({
+          success: false,
+          message: 'Vardiya atamaları yalnızca yetkilendirilmiş /api/employee-shifts uç noktaları üzerinden güncellenebilir.',
         });
       }
       if (collection === 'companyLogo' && typeof data === 'string' && data.trim().startsWith('blob:')) {
@@ -1359,15 +1833,47 @@ app.post('/api/employees', (req: Request, res: Response) => {
     return res.status(403).json({ success: false, message: 'Bu işlem desteklenmiyor.' });
   }
 
+  const actor = resolveActorServer(req);
+  const canSetManager = canToggleShiftPermissionServer(actor);
   const idx = dbState.employees.findIndex((e) => e.id === emp.id);
+  let savedEmp: Employee;
+
   if (idx >= 0) {
-    dbState.employees[idx] = { ...dbState.employees[idx], ...emp };
+    const existing = dbState.employees[idx];
+    const preservedAvatar = resolvePreservedAvatar(existing.avatar, emp.avatar, {
+      allowExplicitReplace: true,
+      employeeId: emp.id,
+    });
+    const nextManagerId =
+      canSetManager && emp.manager_id !== undefined ? (emp.manager_id || null) : (existing.manager_id ?? null);
+    savedEmp = {
+      ...existing,
+      ...emp,
+      avatar: preservedAvatar || existing.avatar,
+      pendingAvatar: emp.pendingAvatar !== undefined ? emp.pendingAvatar : existing.pendingAvatar,
+      avatarStatus: emp.avatarStatus !== undefined ? emp.avatarStatus : existing.avatarStatus,
+      manager_id: nextManagerId,
+    };
+    dbState.employees[idx] = savedEmp;
   } else {
-    dbState.employees.unshift(emp);
+    const persistedAvatar = resolvePreservedAvatar('', emp.avatar, {
+      allowExplicitReplace: true,
+      employeeId: emp.id,
+    });
+    savedEmp = {
+      ...emp,
+      avatar: persistedAvatar || emp.avatar,
+      manager_id: canSetManager ? (emp.manager_id || null) : null,
+    };
+    dbState.employees.unshift(savedEmp);
   }
 
-  broadcastUpdate(`Saved employee ${emp.fullName}`, 'employees');
-  return res.json({ success: true, employee: emp, employees: filterVisibleItems(dbState.employees), version: dbState.version });
+  if (savedEmp.avatar) {
+    syncEmployeeAvatarToAccountsServer(savedEmp.id, savedEmp.avatar, savedEmp.avatarStatus, savedEmp.pendingAvatar);
+  }
+
+  broadcastUpdate(`Saved employee ${savedEmp.fullName}`, 'employees');
+  return res.json({ success: true, employee: savedEmp, employees: filterVisibleItems(dbState.employees), version: dbState.version });
 });
 
 function handleArchiveEmployeeRequest(req: Request, res: Response) {
@@ -1421,21 +1927,36 @@ function handleArchiveEmployeeRequest(req: Request, res: Response) {
 app.post('/api/employees/:id/archive', handleArchiveEmployeeRequest);
 app.delete('/api/employees/:id', handleArchiveEmployeeRequest);
 
-// Photo upload requests and approvals
+// Photo upload requests and approvals (Persistent disk storage + Blob URL guard + Account sync)
 app.post('/api/employees/:id/photo-request', (req: Request, res: Response) => {
   const { id } = req.params;
-  const { photoData } = req.body;
-  if (!photoData) {
+  const { photoData } = req.body || {};
+  if (!photoData || typeof photoData !== 'string' || !photoData.trim()) {
     return res.status(400).json({ success: false, message: 'Fotoğraf verisi zorunludur.' });
+  }
+  if (isBlobUrlServer(photoData)) {
+    return res.status(400).json({ success: false, message: 'Geçici blob: bağlantısı profil fotoğrafı olarak kaydedilemez.' });
   }
   const emp = dbState.employees.find((e) => e.id === id);
   if (!emp) {
     return res.status(404).json({ success: false, message: 'Personel bulunamadı.' });
   }
 
-  emp.pendingAvatar = photoData;
+  const persistentUrl = persistAvatarToDisk(`${emp.id}-pending`, photoData);
+  if (!persistentUrl) {
+    return res.status(400).json({ success: false, message: 'Geçersiz fotoğraf formatı.' });
+  }
+
+  emp.pendingAvatar = persistentUrl;
   emp.avatarStatus = 'pending';
   emp.pendingAvatarDate = new Date().toISOString();
+
+  for (const acc of dbState.accounts) {
+    if (acc && acc.employeeId === id) {
+      acc.pendingAvatar = persistentUrl;
+      acc.avatarStatus = 'pending';
+    }
+  }
 
   dbState.notifications.unshift({
     id: `NOTIF-${Date.now().toString().slice(-6)}`,
@@ -1451,7 +1972,7 @@ app.post('/api/employees/:id/photo-request', (req: Request, res: Response) => {
   });
 
   broadcastUpdate(`Photo request for ${emp.fullName}`, 'employees');
-  return res.json({ success: true, message: 'Fotoğraf onay talebi iletildi.', employee: emp });
+  return res.json({ success: true, message: 'Fotoğraf onay talebi iletildi.', employee: emp, avatarUrl: persistentUrl, version: dbState.version });
 });
 
 app.post('/api/employees/:id/photo-approve', (req: Request, res: Response) => {
@@ -1460,19 +1981,17 @@ app.post('/api/employees/:id/photo-approve', (req: Request, res: Response) => {
   if (!emp) {
     return res.status(404).json({ success: false, message: 'Personel bulunamadı.' });
   }
-  if (emp.pendingAvatar) {
-    emp.avatar = emp.pendingAvatar;
+  if (emp.pendingAvatar && !isBlobUrlServer(emp.pendingAvatar)) {
+    const finalUrl = persistAvatarToDisk(emp.id, emp.pendingAvatar) || emp.pendingAvatar;
+    emp.avatar = finalUrl;
     emp.pendingAvatar = null;
     emp.pendingAvatarDate = null;
     emp.avatarStatus = 'approved';
 
-    const account = dbState.accounts.find((a) => a.employeeId === id);
-    if (account) {
-      account.avatar = emp.avatar;
-    }
+    syncEmployeeAvatarToAccountsServer(emp.id, finalUrl, 'approved', null);
   }
   broadcastUpdate(`Photo approved for ${emp.fullName}`, 'employees');
-  return res.json({ success: true, message: 'Fotoğraf onaylandı.', employee: emp });
+  return res.json({ success: true, message: 'Fotoğraf onaylandı.', employee: emp, avatarUrl: emp.avatar, version: dbState.version });
 });
 
 app.post('/api/employees/:id/photo-reject', (req: Request, res: Response) => {
@@ -1484,28 +2003,43 @@ app.post('/api/employees/:id/photo-reject', (req: Request, res: Response) => {
   emp.pendingAvatar = null;
   emp.pendingAvatarDate = null;
   emp.avatarStatus = 'rejected';
+  for (const acc of dbState.accounts) {
+    if (acc && acc.employeeId === id) {
+      acc.pendingAvatar = null;
+      acc.avatarStatus = 'rejected';
+    }
+  }
   broadcastUpdate(`Photo rejected for ${emp.fullName}`, 'employees');
-  return res.json({ success: true, message: 'Fotoğraf reddedildi.', employee: emp });
+  return res.json({ success: true, message: 'Fotoğraf reddedildi.', employee: emp, version: dbState.version });
 });
 
 app.put('/api/employees/:id/photo-direct', (req: Request, res: Response) => {
   const { id } = req.params;
-  const { photoData } = req.body;
+  const { photoData } = req.body || {};
+  if (!photoData || typeof photoData !== 'string' || !photoData.trim()) {
+    return res.status(400).json({ success: false, message: 'Fotoğraf verisi zorunludur.' });
+  }
+  if (isBlobUrlServer(photoData)) {
+    return res.status(400).json({ success: false, message: 'Geçici blob: bağlantısı profil fotoğrafı olarak kaydedilemez.' });
+  }
   const emp = dbState.employees.find((e) => e.id === id);
   if (!emp) {
     return res.status(404).json({ success: false, message: 'Personel bulunamadı.' });
   }
-  emp.avatar = photoData;
-  emp.pendingAvatar = null;
-  emp.avatarStatus = 'approved';
-
-  const account = dbState.accounts.find((a) => a.employeeId === id);
-  if (account) {
-    account.avatar = emp.avatar;
+  const persistentUrl = persistAvatarToDisk(emp.id, photoData);
+  if (!persistentUrl) {
+    return res.status(400).json({ success: false, message: 'Geçersiz fotoğraf formatı.' });
   }
 
+  emp.avatar = persistentUrl;
+  emp.pendingAvatar = null;
+  emp.pendingAvatarDate = null;
+  emp.avatarStatus = 'approved';
+
+  syncEmployeeAvatarToAccountsServer(emp.id, persistentUrl, 'approved', null);
+
   broadcastUpdate(`Photo directly updated for ${emp.fullName}`, 'employees');
-  return res.json({ success: true, message: 'Fotoğraf güncellendi.', employee: emp });
+  return res.json({ success: true, message: 'Fotoğraf kalıcı olarak güncellendi.', employee: emp, avatarUrl: persistentUrl, version: dbState.version });
 });
 
 // 5. Attendance Records
@@ -1544,7 +2078,24 @@ app.get('/api/shifts', (_req: Request, res: Response) => {
 });
 
 app.post('/api/shifts', (req: Request, res: Response) => {
-  const shift: Shift = req.body;
+  const body = req.body || {};
+  // Support direct employee shift assignment payloads sent to POST /api/shifts with strict manager_id 403 validation
+  if (typeof body.employeeId === 'string' && typeof body.date === 'string' && typeof body.shiftId === 'string') {
+    return handleUpsertEmployeeShift(req, res);
+  }
+
+  const actor = resolveActorServer(req);
+  if (!actor.isAuthenticated) {
+    return res.status(401).json({ success: false, message: 'Vardiya tanımı güncelleme için oturum doğrulaması gereklidir.' });
+  }
+  if (!canToggleShiftPermissionServer(actor)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Bu personel üzerinde vardiya düzenleme yetkiniz bulunmamaktadır',
+    });
+  }
+
+  const shift: Shift = body;
   if (!shift || !shift.name) {
     return res.status(400).json({ success: false, message: 'Vardiya adı zorunludur.' });
   }
@@ -1557,7 +2108,11 @@ app.post('/api/shifts', (req: Request, res: Response) => {
     dbState.shifts.push(updatedShift);
   }
   broadcastUpdate(`Shift saved ${updatedShift.name}`, 'shifts');
-  return res.json({ success: true, shift: updatedShift, shifts: dbState.shifts });
+  return res.json({ success: true, shift: updatedShift, shifts: dbState.shifts, version: dbState.version });
+});
+
+app.put('/api/shifts', (req: Request, res: Response) => {
+  return handleUpsertEmployeeShift(req, res);
 });
 
 app.delete('/api/shifts/:id', (req: Request, res: Response) => {
@@ -1695,16 +2250,23 @@ app.delete('/api/notifications', (_req: Request, res: Response) => {
   return res.json({ success: true, notifications: [] });
 });
 
-// 10. Company Wall QR Configuration
+// 10. Company Wall QR Configuration (always serves canonical persistent companyName)
 app.get('/api/company/wall-qr', (_req: Request, res: Response) => {
-  res.json({ success: true, data: dbState.companyWallQR });
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const canonicalCompanyName = getCanonicalCompanyNameServer(dbState);
+  res.json({
+    success: true,
+    data: {
+      ...dbState.companyWallQR,
+      companyName: canonicalCompanyName,
+    },
+  });
 });
 
 app.post('/api/company/wall-qr', (req: Request, res: Response) => {
   try {
     const body = req.body || {};
-    const preservedCompanyName =
-      dbState.companyName || dbState.companyWallQR?.companyName || DEFAULT_COMPANY_NAME;
+    const preservedCompanyName = getCanonicalCompanyNameServer(dbState);
     dbState.companyWallQR = {
       ...dbState.companyWallQR,
       ...body,
@@ -1724,11 +2286,7 @@ app.post('/api/company/wall-qr', (req: Request, res: Response) => {
 // 10B. Central Persistent System Settings & Dynamic Company Name Management (Super Admin Exclusive)
 app.get('/api/system/settings', (_req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  const name =
-    (typeof dbState.systemSettings?.companyName === 'string' && dbState.systemSettings.companyName.trim()) ||
-    (typeof dbState.companyName === 'string' && dbState.companyName.trim()) ||
-    (typeof dbState.companyWallQR?.companyName === 'string' && dbState.companyWallQR.companyName.trim()) ||
-    DEFAULT_COMPANY_NAME;
+  const name = getCanonicalCompanyNameServer(dbState);
   const settings: SystemSettings = {
     companyName: name,
     branchName: dbState.systemSettings?.branchName || dbState.companyWallQR?.branchName,
@@ -1739,17 +2297,14 @@ app.get('/api/system/settings', (_req: Request, res: Response) => {
     success: true,
     companyName: name,
     settings,
+    systemSettings: settings,
     version: dbState.version,
   });
 });
 
 app.get('/api/company/name', (_req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  const name =
-    (typeof dbState.systemSettings?.companyName === 'string' && dbState.systemSettings.companyName.trim()) ||
-    (typeof dbState.companyName === 'string' && dbState.companyName.trim()) ||
-    (typeof dbState.companyWallQR?.companyName === 'string' && dbState.companyWallQR.companyName.trim()) ||
-    DEFAULT_COMPANY_NAME;
+  const name = getCanonicalCompanyNameServer(dbState);
   res.json({ success: true, companyName: name, version: dbState.version });
 });
 
@@ -1898,15 +2453,42 @@ app.post('/api/accounts', (req: Request, res: Response) => {
     return res.status(403).json({ success: false, message: 'Bu rol tanımlanamaz.' });
   }
   const id = acc.id || `ACC-${Date.now().toString().slice(-4)}`;
-  const item = { ...acc, id };
   const idx = dbState.accounts.findIndex((a) => a.id === id || a.username.toLowerCase() === acc.username.toLowerCase());
+  const linkedEmp = acc.employeeId ? dbState.employees.find((e) => e.id === acc.employeeId) : undefined;
+  let savedAcc: UserAccount;
+
   if (idx >= 0) {
-    dbState.accounts[idx] = { ...dbState.accounts[idx], ...item };
+    const existing = dbState.accounts[idx];
+    const preservedAvatar = resolvePreservedAvatar(
+      linkedEmp?.avatar && isCustomUploadedAvatar(linkedEmp.avatar) ? linkedEmp.avatar : existing.avatar,
+      acc.avatar,
+      { allowExplicitReplace: false, employeeId: existing.employeeId || existing.id }
+    );
+    savedAcc = {
+      ...existing,
+      ...acc,
+      id: existing.id,
+      avatar: preservedAvatar || existing.avatar,
+      can_manage_shifts:
+        typeof existing.can_manage_shifts === 'boolean' ? existing.can_manage_shifts : acc.can_manage_shifts,
+      manager_id: existing.manager_id !== undefined ? existing.manager_id : (linkedEmp?.manager_id ?? acc.manager_id ?? null),
+    };
+    dbState.accounts[idx] = savedAcc;
   } else {
-    dbState.accounts.push(item);
+    const cleanAvatar = resolvePreservedAvatar(linkedEmp?.avatar, acc.avatar, {
+      allowExplicitReplace: true,
+      employeeId: acc.employeeId || id,
+    });
+    savedAcc = {
+      ...acc,
+      id,
+      avatar: cleanAvatar || linkedEmp?.avatar || acc.avatar,
+      manager_id: linkedEmp?.manager_id ?? acc.manager_id ?? null,
+    };
+    dbState.accounts.push(savedAcc);
   }
-  broadcastUpdate(`User account saved for @${item.username}`, 'accounts');
-  return res.json({ success: true, account: item, accounts: filterVisibleItems(dbState.accounts), version: dbState.version });
+  broadcastUpdate(`User account saved for @${savedAcc.username}`, 'accounts');
+  return res.json({ success: true, account: savedAcc, accounts: filterVisibleItems(dbState.accounts), version: dbState.version });
 });
 
 function handleArchiveAccountRequest(req: Request, res: Response) {
@@ -2033,6 +2615,7 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
         canTakeBreak: true,
         canRequestLeave: false,
         canViewOwnStats: true,
+        can_manage_shifts: true,
         customPermissions: FULL_SUPER_ADMIN_PERMISSIONS,
         themeId: 'gece_arduvaz',
       },
@@ -2074,6 +2657,18 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   }
 
   const userSessionToken = signUserSessionToken(user);
+  const resolvedShiftPerm =
+    user.role === 'ik_yoneticisi'
+      ? true
+      : typeof user.can_manage_shifts === 'boolean'
+        ? user.can_manage_shifts
+        : user.role === 'birim_amiri' || Boolean(user.isShiftSupervisor);
+
+  const resolvedAvatar =
+    (linkedEmp?.avatar && isCustomUploadedAvatar(linkedEmp.avatar) ? linkedEmp.avatar : '') ||
+    (user.avatar && !isBlobUrlServer(user.avatar) ? user.avatar : '') ||
+    linkedEmp?.avatar ||
+    '';
 
   return res.json({
     success: true,
@@ -2085,8 +2680,8 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
       name: user.name,
       role: user.role,
       title: user.title,
-      department: user.department,
-      avatar: user.avatar,
+      department: user.department || linkedEmp?.department,
+      avatar: resolvedAvatar,
       employeeId: user.employeeId,
       canCheckInOut: user.canCheckInOut ?? true,
       canTakeBreak: user.canTakeBreak ?? true,
@@ -2094,6 +2689,8 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
       canViewOwnStats: user.canViewOwnStats ?? true,
       assignedEmployeeIds: user.assignedEmployeeIds,
       isShiftSupervisor: user.isShiftSupervisor,
+      can_manage_shifts: resolvedShiftPerm,
+      manager_id: linkedEmp?.manager_id ?? user.manager_id ?? null,
       customPermissions: user.customPermissions,
       themeId: user.themeId || 'kurumsal_saf',
       themeUpdatedAt: user.themeUpdatedAt,
@@ -2156,6 +2753,10 @@ function handlePermissionUpdateRequest(req: Request, res: Response, requireSuper
 
   if (isActorSuperAdmin) {
     const isFullAdmin = Boolean(customPermissions.isFullAdmin);
+    const nextCanManageShifts =
+      typeof customPermissions.canManageShifts === 'boolean'
+        ? customPermissions.canManageShifts
+        : targetAccount.can_manage_shifts ?? (role === 'birim_amiri' || role === 'ik_yoneticisi');
     const nextPerms = {
       allowedPages: sanitizedPages,
       canCreate: Boolean(customPermissions.canCreate),
@@ -2168,12 +2769,15 @@ function handlePermissionUpdateRequest(req: Request, res: Response, requireSuper
       canClearLogs: Boolean(customPermissions.canClearLogs),
       canChangeCompanyName: false,
       canManagePermissions: isFullAdmin || Boolean(customPermissions.canManagePermissions),
+      canManageShifts: nextCanManageShifts,
       isFullAdmin,
     };
 
     dbState.accounts[idx] = {
       ...targetAccount,
-      ...(role ? { role, isShiftSupervisor: role === 'birim_amiri' || targetAccount.isShiftSupervisor } : {}),
+      ...(role ? { role } : {}),
+      isShiftSupervisor: nextCanManageShifts || role === 'birim_amiri',
+      can_manage_shifts: nextCanManageShifts,
       customPermissions: nextPerms,
     };
     broadcastUpdate(`Super Admin updated permissions for @${dbState.accounts[idx].username}`, 'accounts');
@@ -2297,12 +2901,17 @@ function handlePermissionUpdateRequest(req: Request, res: Response, requireSuper
     canClearLogs: actorPerms.canClearLogs ? Boolean(customPermissions.canClearLogs) : Boolean(targetEffectivePerms.canClearLogs),
     canChangeCompanyName: false,
     canManagePermissions: actorPerms.canManagePermissions ? Boolean(customPermissions.canManagePermissions) : Boolean(targetEffectivePerms.canManagePermissions),
+    canManageShifts: actorPerms.canManageShifts
+      ? Boolean(customPermissions.canManageShifts)
+      : Boolean(targetEffectivePerms.canManageShifts),
     isFullAdmin: false,
   };
 
   dbState.accounts[idx] = {
     ...targetAccount,
-    ...(role ? { role, isShiftSupervisor: role === 'birim_amiri' || targetAccount.isShiftSupervisor } : {}),
+    ...(role ? { role } : {}),
+    isShiftSupervisor: nextPerms.canManageShifts || role === 'birim_amiri',
+    can_manage_shifts: nextPerms.canManageShifts,
     customPermissions: nextPerms,
   };
   broadcastUpdate(`Delegated admin @${actorAccount.username} updated permissions for @${dbState.accounts[idx].username}`, 'accounts');
@@ -2320,6 +2929,520 @@ app.post('/api/permissions/update', (req: Request, res: Response) => {
 
 app.post('/api/super-admin/permissions', (req: Request, res: Response) => {
   return handlePermissionUpdateRequest(req, res, true);
+});
+
+// =========================================================================
+// 14C. ROLE-BASED SHIFT AUTHORIZATION & EMPLOYEE SHIFTS (employee_shifts)
+// =========================================================================
+
+// GET /api/employee-shifts - Read-only access for authenticated/view clients with optional date/employee/department filters
+app.get('/api/employee-shifts', (req: Request, res: Response) => {
+  const startDate = typeof req.query.startDate === 'string' ? req.query.startDate.trim() : '';
+  const endDate = typeof req.query.endDate === 'string' ? req.query.endDate.trim() : '';
+  const employeeId = typeof req.query.employeeId === 'string' ? req.query.employeeId.trim() : '';
+  const department = typeof req.query.department === 'string' ? req.query.department.trim() : '';
+
+  const allAssignments: EmployeeShiftAssignment[] = Array.isArray(dbState.employee_shifts)
+    ? dbState.employee_shifts
+    : [];
+
+  const filtered = allAssignments.filter((item) => {
+    if (employeeId && item.employeeId !== employeeId) return false;
+    if (startDate && item.date < startDate) return false;
+    if (endDate && item.date > endDate) return false;
+    if (department) {
+      const emp = dbState.employees.find((e) => e.id === item.employeeId);
+      if ((item.department || emp?.department) !== department) return false;
+    }
+    return true;
+  });
+
+  return res.json({
+    success: true,
+    shifts: dbState.shifts,
+    employee_shifts: filtered,
+    version: dbState.version,
+  });
+});
+
+// POST & PUT /api/employee-shifts - Single date-based shift assignment (Auto-save) with strict 403 RBAC + department check
+function handleUpsertEmployeeShift(req: Request, res: Response) {
+  const actor = resolveActorServer(req);
+  if (!actor.isAuthenticated) {
+    return res.status(401).json({
+      success: false,
+      message: 'Vardiya düzenleme için oturum doğrulaması gereklidir. Lütfen tekrar giriş yapın.',
+    });
+  }
+
+  const { employeeId, date, shiftId, note, applyAsDefault } = req.body || {};
+  if (!employeeId || typeof employeeId !== 'string') {
+    return res.status(400).json({ success: false, message: 'Personel kimliği (employeeId) zorunludur.' });
+  }
+  if (!date || typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
+    return res.status(400).json({ success: false, message: 'Geçerli bir tarih (YYYY-MM-DD) zorunludur.' });
+  }
+  if (!shiftId || typeof shiftId !== 'string') {
+    return res.status(400).json({ success: false, message: 'Vardiya seçimi (shiftId) zorunludur.' });
+  }
+
+  const targetEmp = dbState.employees.find((e) => e.id === employeeId && !isHiddenSuperAdminItem(e));
+  const authCheck = canManageShiftForTargetServer(actor, targetEmp);
+  if (!authCheck.allowed) {
+    return res.status(authCheck.status || 403).json({
+      success: false,
+      message: authCheck.message || 'Bu personelin vardiyasını düzenleme yetkiniz yok.',
+    });
+  }
+
+  const targetShift = dbState.shifts.find((s) => s.id === shiftId);
+  if (!targetShift) {
+    return res.status(404).json({ success: false, message: 'Seçilen vardiya şablonu sistemde bulunamadı.' });
+  }
+
+  if (!Array.isArray(dbState.employee_shifts)) {
+    dbState.employee_shifts = [];
+  }
+
+  const cleanDate = date.trim();
+  const assignmentId = `ES-${targetEmp!.id}-${cleanDate}`;
+  const nowIso = new Date().toISOString();
+  const assignment: EmployeeShiftAssignment = {
+    id: assignmentId,
+    employeeId: targetEmp!.id,
+    date: cleanDate,
+    shiftId: targetShift.id,
+    department: targetEmp!.department,
+    updatedAt: nowIso,
+    updatedBy: actor.actorName || 'Yönetici',
+    ...(typeof note === 'string' && note.trim() ? { note: note.trim().slice(0, 200) } : {}),
+  };
+
+  const existingIdx = dbState.employee_shifts.findIndex(
+    (item) => item.employeeId === targetEmp!.id && item.date === cleanDate
+  );
+  if (existingIdx >= 0) {
+    dbState.employee_shifts[existingIdx] = assignment;
+  } else {
+    dbState.employee_shifts.push(assignment);
+  }
+
+  if (applyAsDefault === true && !targetShift.isOffDay) {
+    targetEmp!.shiftId = targetShift.id;
+  }
+
+  broadcastUpdate(
+    `Shift updated for ${targetEmp!.fullName} on ${cleanDate} -> ${targetShift.name} by ${actor.actorName}`,
+    'employee_shifts'
+  );
+
+  return res.json({
+    success: true,
+    message: 'Vardiya güncellendi',
+    assignment,
+    employee: targetEmp,
+    employee_shifts: dbState.employee_shifts,
+    version: dbState.version,
+  });
+}
+
+app.post('/api/employee-shifts', handleUpsertEmployeeShift);
+app.put('/api/employee-shifts', handleUpsertEmployeeShift);
+
+// POST /api/employee-shifts/bulk - Bulk shift save ("Değişiklikleri Kaydet") with atomic all-or-nothing 403 validation
+app.post('/api/employee-shifts/bulk', (req: Request, res: Response) => {
+  const actor = resolveActorServer(req);
+  if (!actor.isAuthenticated) {
+    return res.status(401).json({
+      success: false,
+      message: 'Toplu vardiya güncelleme için oturum doğrulaması gereklidir.',
+    });
+  }
+
+  const { changes } = req.body || {};
+  if (!Array.isArray(changes) || changes.length === 0) {
+    return res.status(400).json({ success: false, message: 'Güncellenecek vardiya değişikliği bulunamadı.' });
+  }
+  if (changes.length > 500) {
+    return res.status(400).json({ success: false, message: 'Tek seferde en fazla 500 vardiya kaydı güncellenebilir.' });
+  }
+
+  const validatedItems: Array<{ emp: Employee; date: string; shift: Shift; note?: string; applyAsDefault?: boolean }> = [];
+
+  for (const item of changes) {
+    const empId = typeof item?.employeeId === 'string' ? item.employeeId.trim() : '';
+    const dateStr = typeof item?.date === 'string' ? item.date.trim() : '';
+    const shiftId = typeof item?.shiftId === 'string' ? item.shiftId.trim() : '';
+
+    if (!empId || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || !shiftId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Geçersiz toplu vardiya verisi: employeeId, date (YYYY-MM-DD) ve shiftId zorunludur.',
+      });
+    }
+
+    const targetEmp = dbState.employees.find((e) => e.id === empId && !isHiddenSuperAdminItem(e));
+    const authCheck = canManageShiftForTargetServer(actor, targetEmp);
+    if (!authCheck.allowed) {
+      return res.status(authCheck.status || 403).json({
+        success: false,
+        message: authCheck.message || 'Yetkisiz vardiya değişikliği tespit edildi.',
+      });
+    }
+
+    const targetShift = dbState.shifts.find((s) => s.id === shiftId);
+    if (!targetShift) {
+      return res.status(404).json({
+        success: false,
+        message: `Geçersiz vardiya kimliği: ${shiftId}`,
+      });
+    }
+
+    validatedItems.push({
+      emp: targetEmp!,
+      date: dateStr,
+      shift: targetShift,
+      note: typeof item?.note === 'string' ? item.note.trim().slice(0, 200) : undefined,
+      applyAsDefault: item?.applyAsDefault === true,
+    });
+  }
+
+  if (!Array.isArray(dbState.employee_shifts)) {
+    dbState.employee_shifts = [];
+  }
+
+  const nowIso = new Date().toISOString();
+  const updatedAssignments: EmployeeShiftAssignment[] = [];
+
+  for (const v of validatedItems) {
+    const assignment: EmployeeShiftAssignment = {
+      id: `ES-${v.emp.id}-${v.date}`,
+      employeeId: v.emp.id,
+      date: v.date,
+      shiftId: v.shift.id,
+      department: v.emp.department,
+      updatedAt: nowIso,
+      updatedBy: actor.actorName || 'Yönetici',
+      ...(v.note ? { note: v.note } : {}),
+    };
+    const idx = dbState.employee_shifts.findIndex(
+      (existing) => existing.employeeId === v.emp.id && existing.date === v.date
+    );
+    if (idx >= 0) {
+      dbState.employee_shifts[idx] = assignment;
+    } else {
+      dbState.employee_shifts.push(assignment);
+    }
+    if (v.applyAsDefault && !v.shift.isOffDay) {
+      v.emp.shiftId = v.shift.id;
+    }
+    updatedAssignments.push(assignment);
+  }
+
+  broadcastUpdate(
+    `Bulk updated ${updatedAssignments.length} shift assignments by ${actor.actorName}`,
+    'employee_shifts'
+  );
+
+  return res.json({
+    success: true,
+    message: 'Vardiya güncellendi',
+    updatedCount: updatedAssignments.length,
+    assignments: updatedAssignments,
+    employee_shifts: dbState.employee_shifts,
+    version: dbState.version,
+  });
+});
+
+// PATCH /api/users/:id/shift-permission & POST /api/shifts/permissions
+// Strictly restricted to SUPER_ADMIN and ik_yoneticisi (İK)
+function handleToggleUserShiftPermission(req: Request, res: Response) {
+  const actor = resolveActorServer(req);
+  if (!actor.isAuthenticated) {
+    return res.status(401).json({
+      success: false,
+      message: 'Yetki değişikliği için oturum doğrulaması gereklidir.',
+    });
+  }
+
+  if (!canToggleShiftPermissionServer(actor)) {
+    return res.status(403).json({
+      success: false,
+      message:
+        'Yetkisiz İşlem (403): Vardiya düzenleme yetkisini (can_manage_shifts) yalnızca Süper Admin veya İnsan Kaynakları (İK) yöneticisi açıp kapatabilir.',
+    });
+  }
+
+  const accountId = String(req.params.id || req.body?.accountId || '').trim();
+  const rawFlag = req.body?.can_manage_shifts;
+  if (!accountId || typeof rawFlag !== 'boolean') {
+    return res.status(400).json({
+      success: false,
+      message: 'Hesap kimliği ve boolean tipinde can_manage_shifts değeri zorunludur.',
+    });
+  }
+
+  const idx = dbState.accounts.findIndex((a) => a.id === accountId && !isHiddenSuperAdminItem(a));
+  if (idx < 0) {
+    return res.status(404).json({ success: false, message: 'Kullanıcı hesabı bulunamadı.' });
+  }
+
+  const targetAcc = dbState.accounts[idx];
+  if (isArchivedAccountServer(targetAcc)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Arşivlenmiş (Eski Personel) hesabının vardiya yetkisi değiştirilemez.',
+    });
+  }
+  if (targetAcc.role === 'ik_yoneticisi') {
+    return res.status(400).json({
+      success: false,
+      message: 'İnsan Kaynakları (İK) rolü varsayılan olarak tüm birimlerde tam vardiya yetkisine sahiptir.',
+    });
+  }
+
+  const nextCustomPerms: UserCustomPermissions | undefined = targetAcc.customPermissions
+    ? {
+        ...targetAcc.customPermissions,
+        allowedPages: targetAcc.customPermissions.allowedPages.includes('shifts')
+          ? targetAcc.customPermissions.allowedPages
+          : [...targetAcc.customPermissions.allowedPages, 'shifts'],
+        canManageShifts: rawFlag,
+      }
+    : undefined;
+
+  dbState.accounts[idx] = {
+    ...targetAcc,
+    can_manage_shifts: rawFlag,
+    isShiftSupervisor: rawFlag,
+    ...(nextCustomPerms ? { customPermissions: nextCustomPerms } : {}),
+  };
+
+  broadcastUpdate(
+    `${actor.actorName} set can_manage_shifts=${rawFlag} for @${targetAcc.username}`,
+    'accounts'
+  );
+
+  return res.json({
+    success: true,
+    message: rawFlag
+      ? `${targetAcc.name} için vardiya düzenleme yetkisi (can_manage_shifts) aktif edildi.`
+      : `${targetAcc.name} kullanıcısının vardiya düzenleme yetkisi kapatıldı (Salt okunur mod).`,
+    account: dbState.accounts[idx],
+    accounts: filterVisibleItems(dbState.accounts),
+    version: dbState.version,
+  });
+}
+
+app.patch('/api/users/:id/shift-permission', handleToggleUserShiftPermission);
+app.post('/api/shifts/permissions', handleToggleUserShiftPermission);
+
+// ==========================================
+// 14D. HR-Controlled Manager–Employee Hierarchy (manager_id) Endpoints
+// ==========================================
+function syncSupervisorAssignmentsFromManagerIdsServer(): void {
+  const activeEmps = filterVisibleItems(dbState.employees).filter((e) => !isArchivedEmployeeServer(e));
+  const activeAccs = filterVisibleItems(dbState.accounts).filter((a) => !isArchivedAccountServer(a) && a.isActive);
+
+  // Group employee IDs by manager_id (UserAccount.id)
+  const teamByManagerAccId = new Map<string, string[]>();
+  for (const emp of activeEmps) {
+    if (emp.manager_id) {
+      const list = teamByManagerAccId.get(emp.manager_id) || [];
+      list.push(emp.id);
+      teamByManagerAccId.set(emp.manager_id, list);
+    }
+  }
+
+  for (const acc of activeAccs) {
+    const teamIds = teamByManagerAccId.get(acc.id) || [];
+    if (teamIds.length > 0 || acc.isShiftSupervisor || acc.role === 'birim_amiri') {
+      acc.assignedEmployeeIds = teamIds;
+    }
+  }
+}
+
+app.get('/api/manager-hierarchy', (_req: Request, res: Response) => {
+  const activeEmps = filterVisibleItems(dbState.employees).filter((e) => !isArchivedEmployeeServer(e));
+  const activeAccs = filterVisibleItems(dbState.accounts).filter((a) => !isArchivedAccountServer(a) && a.isActive);
+  const managers = activeAccs.filter(
+    (a) =>
+      a.role === 'birim_amiri' ||
+      a.role === 'yonetici' ||
+      a.role === 'ik_yoneticisi' ||
+      a.can_manage_shifts === true ||
+      a.isShiftSupervisor === true ||
+      activeEmps.some((e) => e.manager_id === a.id)
+  );
+  return res.json({
+    success: true,
+    managers: managers.map((m) => ({
+      id: m.id,
+      username: m.username,
+      name: m.name,
+      role: m.role,
+      title: m.title,
+      department: m.department,
+      avatar: m.avatar,
+      employeeId: m.employeeId,
+      can_manage_shifts: m.can_manage_shifts,
+      teamEmployeeIds: activeEmps.filter((e) => e.manager_id === m.id).map((e) => e.id),
+    })),
+    employees: activeEmps.map((e) => ({
+      id: e.id,
+      fullName: e.fullName,
+      department: e.department,
+      title: e.title,
+      avatar: e.avatar,
+      manager_id: e.manager_id ?? null,
+    })),
+    version: dbState.version,
+  });
+});
+
+function handleAssignSingleEmployeeManager(req: Request, res: Response) {
+  const actor = resolveActorServer(req);
+  if (!actor.isAuthenticated) {
+    return res.status(401).json({
+      success: false,
+      message: 'Amir eşleştirme işlemi için oturum doğrulaması gereklidir.',
+    });
+  }
+  if (!canToggleShiftPermissionServer(actor)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Yetkisiz İşlem (403): Personel–Birim Amiri eşleştirmesini yalnızca Süper Admin veya İK yöneticisi yapabilir.',
+    });
+  }
+
+  const empId = String(req.params.id || '').trim();
+  const rawManagerId = req.body?.manager_id;
+  const nextManagerId =
+    rawManagerId === null || rawManagerId === '' || rawManagerId === undefined
+      ? null
+      : String(rawManagerId).trim();
+
+  const empIdx = dbState.employees.findIndex((e) => e.id === empId && !isHiddenSuperAdminItem(e));
+  if (empIdx < 0) {
+    return res.status(404).json({ success: false, message: 'Personel kaydı bulunamadı.' });
+  }
+  if (isArchivedEmployeeServer(dbState.employees[empIdx])) {
+    return res.status(400).json({ success: false, message: 'Arşivlenmiş (Eski Personel) için birim amiri atanamaz.' });
+  }
+
+  let managerAcc: UserAccount | undefined;
+  if (nextManagerId) {
+    managerAcc = dbState.accounts.find(
+      (a) => a.id === nextManagerId && !isHiddenSuperAdminItem(a) && !isArchivedAccountServer(a) && a.isActive
+    );
+    if (!managerAcc) {
+      return res.status(404).json({ success: false, message: 'Seçilen Birim Amiri kullanıcı hesabı bulunamadı veya pasif.' });
+    }
+    // Ensure assigned manager has shift management enabled when HR assigns staff under them
+    if (managerAcc.role !== 'ik_yoneticisi') {
+      managerAcc.can_manage_shifts = true;
+      managerAcc.isShiftSupervisor = true;
+      if (managerAcc.role === 'personel' || managerAcc.role === 'guvenlik') {
+        managerAcc.role = 'birim_amiri';
+      }
+    }
+  }
+
+  dbState.employees[empIdx].manager_id = nextManagerId;
+  for (const acc of dbState.accounts) {
+    if (acc && acc.employeeId === empId) {
+      acc.manager_id = nextManagerId;
+    }
+  }
+
+  syncSupervisorAssignmentsFromManagerIdsServer();
+  broadcastUpdate(`Updated manager_id for ${dbState.employees[empIdx].fullName}`, 'employees');
+
+  return res.json({
+    success: true,
+    message: managerAcc
+      ? `${dbState.employees[empIdx].fullName} personeli ${managerAcc.name} ekibine bağlandı.`
+      : `${dbState.employees[empIdx].fullName} için Birim Amiri bağlantısı kaldırıldı.`,
+    employee: dbState.employees[empIdx],
+    employees: filterVisibleItems(dbState.employees),
+    accounts: filterVisibleItems(dbState.accounts),
+    version: dbState.version,
+  });
+}
+
+app.put('/api/employees/:id/manager', handleAssignSingleEmployeeManager);
+app.patch('/api/employees/:id/manager', handleAssignSingleEmployeeManager);
+
+app.post('/api/manager-hierarchy/bulk-assign', (req: Request, res: Response) => {
+  const actor = resolveActorServer(req);
+  if (!actor.isAuthenticated) {
+    return res.status(401).json({
+      success: false,
+      message: 'Toplu ekip ataması için oturum doğrulaması gereklidir.',
+    });
+  }
+  if (!canToggleShiftPermissionServer(actor)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Yetkisiz İşlem (403): Toplu ekip / amir eşleştirmesini yalnızca Süper Admin veya İK yöneticisi yapabilir.',
+    });
+  }
+
+  const { employeeIds, manager_id } = req.body || {};
+  if (!Array.isArray(employeeIds) || employeeIds.length === 0) {
+    return res.status(400).json({ success: false, message: 'Atama için en az bir personel seçiniz.' });
+  }
+
+  const nextManagerId =
+    manager_id === null || manager_id === '' || manager_id === undefined
+      ? null
+      : String(manager_id).trim();
+
+  let managerAcc: UserAccount | undefined;
+  if (nextManagerId) {
+    managerAcc = dbState.accounts.find(
+      (a) => a.id === nextManagerId && !isHiddenSuperAdminItem(a) && !isArchivedAccountServer(a) && a.isActive
+    );
+    if (!managerAcc) {
+      return res.status(404).json({ success: false, message: 'Seçilen Birim Amiri hesabı bulunamadı veya pasif.' });
+    }
+    if (managerAcc.role !== 'ik_yoneticisi') {
+      managerAcc.can_manage_shifts = true;
+      managerAcc.isShiftSupervisor = true;
+      if (managerAcc.role === 'personel' || managerAcc.role === 'guvenlik') {
+        managerAcc.role = 'birim_amiri';
+      }
+    }
+  }
+
+  let updatedCount = 0;
+  const targetSet = new Set(employeeIds.map((id: any) => String(id || '').trim()).filter(Boolean));
+  for (const emp of dbState.employees) {
+    if (!emp || isHiddenSuperAdminItem(emp) || isArchivedEmployeeServer(emp)) continue;
+    if (targetSet.has(emp.id)) {
+      emp.manager_id = nextManagerId;
+      updatedCount++;
+      for (const acc of dbState.accounts) {
+        if (acc && acc.employeeId === emp.id) {
+          acc.manager_id = nextManagerId;
+        }
+      }
+    }
+  }
+
+  syncSupervisorAssignmentsFromManagerIdsServer();
+  broadcastUpdate(`Bulk updated manager_id for ${updatedCount} employees`, 'employees');
+
+  return res.json({
+    success: true,
+    updatedCount,
+    message: managerAcc
+      ? `${updatedCount} personel ${managerAcc.name} ekibine atandı.`
+      : `${updatedCount} personelin Birim Amiri bağlantısı kaldırıldı.`,
+    employees: filterVisibleItems(dbState.employees),
+    accounts: filterVisibleItems(dbState.accounts),
+    version: dbState.version,
+  });
 });
 
 function normalizeUsernameServer(raw: string): string {

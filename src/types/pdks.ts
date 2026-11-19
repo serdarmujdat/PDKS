@@ -11,11 +11,24 @@ export type PresenceStatus = 'inside' | 'outside' | 'break';
 export interface Shift {
   id: string;
   name: string;
-  startTime: string; // "08:30"
-  endTime: string;   // "17:30"
+  startTime: string; // "08:00"
+  endTime: string;   // "17:00"
   toleranceMinutes: number; // e.g. 15
   breakMinutes: number;     // e.g. 60
   workDays: string[];
+  isOffDay?: boolean;       // true for "İzinli / Hafta Tatili"
+  colorKey?: 'morning' | 'evening' | 'night' | 'off' | 'custom';
+}
+
+export interface EmployeeShiftAssignment {
+  id: string;         // e.g. "ES-EMP-1001-2026-10-12"
+  employeeId: string; // Employee ID
+  date: string;       // "YYYY-MM-DD"
+  shiftId: string;    // Shift ID (e.g. "SHIFT-SABAH", "SHIFT-OFF")
+  department?: Department;
+  updatedAt: string;
+  updatedBy: string;
+  note?: string;
 }
 
 export interface Employee {
@@ -52,6 +65,8 @@ export interface Employee {
   isArchived?: boolean;
   archivedAt?: string;
   archivedBy?: string;
+  // HR-Controlled Unit Manager Foreign Key (UserAccount.id of assigned Birim Amiri)
+  manager_id?: string | null;
 }
 
 export type ActionType = 'check_in' | 'check_out' | 'break_start' | 'break_end';
@@ -82,6 +97,7 @@ export interface UserCustomPermissions {
   canClearLogs: boolean;
   canChangeCompanyName?: boolean;
   canManagePermissions?: boolean;
+  canManageShifts?: boolean;
   isFullAdmin?: boolean;
 }
 
@@ -127,6 +143,8 @@ export interface UserAccount {
   // Supervisor / Birim Amiri Vardiya Yetkilendirme
   assignedEmployeeIds?: string[]; // Sorumlu olduğu personellerin sicil no listesi
   isShiftSupervisor?: boolean;     // Vardiya ayarlama yetkisi verildi mi
+  can_manage_shifts?: boolean;     // Rol tabanlı vardiya düzenleme yetki anahtarı (Süper Admin / İK tarafından açılıp kapatılır)
+  manager_id?: string | null;      // Bağlı olduğu Birim Amiri hesap kimliği (foreign key -> UserAccount.id)
   // Per-user visual theme preference
   themeId?: ThemeId;
   themeUpdatedAt?: string;
@@ -210,6 +228,8 @@ export interface CurrentUser {
   // Supervisor / Birim Amiri Vardiya Yetkilendirme
   assignedEmployeeIds?: string[];
   isShiftSupervisor?: boolean;
+  can_manage_shifts?: boolean;
+  manager_id?: string | null;
   // Per-user visual theme preference
   themeId?: ThemeId;
   themeUpdatedAt?: string;

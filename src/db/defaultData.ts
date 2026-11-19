@@ -2,6 +2,7 @@ import type {
   Employee,
   AttendanceRecord,
   Shift,
+  EmployeeShiftAssignment,
   LeaveRequest,
   OvertimeRequest,
   PDKSNotification,
@@ -116,6 +117,7 @@ export const DEFAULT_ACCOUNTS: UserAccount[] = [
     canTakeBreak: true,
     canRequestLeave: true,
     canViewOwnStats: true,
+    can_manage_shifts: true,
   },
   {
     id: 'ACC-1002',
@@ -133,6 +135,7 @@ export const DEFAULT_ACCOUNTS: UserAccount[] = [
     canTakeBreak: true,
     canRequestLeave: true,
     canViewOwnStats: true,
+    can_manage_shifts: false,
   },
   {
     id: 'ACC-1003',
@@ -151,6 +154,7 @@ export const DEFAULT_ACCOUNTS: UserAccount[] = [
     canRequestLeave: true,
     canViewOwnStats: true,
     isShiftSupervisor: true,
+    can_manage_shifts: true,
     assignedEmployeeIds: ['EMP-1005', 'EMP-1007'],
   },
   {
@@ -169,6 +173,8 @@ export const DEFAULT_ACCOUNTS: UserAccount[] = [
     canTakeBreak: true,
     canRequestLeave: false,
     canViewOwnStats: true,
+    can_manage_shifts: false,
+    manager_id: 'ACC-1003',
   },
   {
     id: 'ACC-1005',
@@ -186,6 +192,7 @@ export const DEFAULT_ACCOUNTS: UserAccount[] = [
     canTakeBreak: true,
     canRequestLeave: true,
     canViewOwnStats: true,
+    can_manage_shifts: false,
   },
   {
     id: 'ACC-1009',
@@ -203,6 +210,7 @@ export const DEFAULT_ACCOUNTS: UserAccount[] = [
     canTakeBreak: true,
     canRequestLeave: true,
     canViewOwnStats: true,
+    can_manage_shifts: false,
   },
 ];
 
@@ -256,7 +264,55 @@ export const DEFAULT_NOTIFICATIONS: PDKSNotification[] = [
   },
 ];
 
+export const CANONICAL_SHIFT_TEMPLATES: Shift[] = [
+  {
+    id: 'SHIFT-SABAH',
+    name: 'Sabah Vardiyası (08:00 - 17:00)',
+    startTime: '08:00',
+    endTime: '17:00',
+    toleranceMinutes: 15,
+    breakMinutes: 60,
+    workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+    isOffDay: false,
+    colorKey: 'morning',
+  },
+  {
+    id: 'SHIFT-AKSAM',
+    name: 'Akşam Vardiyası (16:00 - 00:00)',
+    startTime: '16:00',
+    endTime: '00:00',
+    toleranceMinutes: 15,
+    breakMinutes: 45,
+    workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+    isOffDay: false,
+    colorKey: 'evening',
+  },
+  {
+    id: 'SHIFT-GECE',
+    name: 'Gece Vardiyası (00:00 - 08:00)',
+    startTime: '00:00',
+    endTime: '08:00',
+    toleranceMinutes: 15,
+    breakMinutes: 45,
+    workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+    isOffDay: false,
+    colorKey: 'night',
+  },
+  {
+    id: 'SHIFT-OFF',
+    name: 'İzinli / Hafta Tatili',
+    startTime: '00:00',
+    endTime: '00:00',
+    toleranceMinutes: 0,
+    breakMinutes: 0,
+    workDays: [],
+    isOffDay: true,
+    colorKey: 'off',
+  },
+];
+
 export const DEFAULT_SHIFTS: Shift[] = [
+  ...CANONICAL_SHIFT_TEMPLATES,
   {
     id: 'SHIFT-1',
     name: 'Standart Mesai (08:30 - 17:30)',
@@ -265,6 +321,7 @@ export const DEFAULT_SHIFTS: Shift[] = [
     toleranceMinutes: 15,
     breakMinutes: 60,
     workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+    colorKey: 'morning',
   },
   {
     id: 'SHIFT-2',
@@ -274,6 +331,7 @@ export const DEFAULT_SHIFTS: Shift[] = [
     toleranceMinutes: 20,
     breakMinutes: 60,
     workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+    colorKey: 'custom',
   },
   {
     id: 'SHIFT-3',
@@ -283,6 +341,7 @@ export const DEFAULT_SHIFTS: Shift[] = [
     toleranceMinutes: 10,
     breakMinutes: 45,
     workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi'],
+    colorKey: 'morning',
   },
   {
     id: 'SHIFT-4',
@@ -292,6 +351,7 @@ export const DEFAULT_SHIFTS: Shift[] = [
     toleranceMinutes: 15,
     breakMinutes: 45,
     workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+    colorKey: 'evening',
   },
 ];
 
@@ -375,6 +435,7 @@ export const DEFAULT_EMPLOYEES: Employee[] = [
     status: 'active',
     currentPresence: 'inside',
     lastActionTime: '07:22:15',
+    manager_id: 'ACC-1003',
   },
   {
     id: 'EMP-1006',
@@ -390,6 +451,7 @@ export const DEFAULT_EMPLOYEES: Employee[] = [
     qrToken: 'PDKS:EMP-1006:AUTH_DEMO6',
     status: 'active',
     currentPresence: 'outside',
+    manager_id: null,
   },
   {
     id: 'EMP-1007',
@@ -406,6 +468,7 @@ export const DEFAULT_EMPLOYEES: Employee[] = [
     status: 'active',
     currentPresence: 'inside',
     lastActionTime: '07:28:40',
+    manager_id: 'ACC-1003',
   },
   {
     id: 'EMP-1008',
@@ -606,6 +669,7 @@ export interface PDKSDatabase {
   employees: Employee[];
   records: AttendanceRecord[];
   shifts: Shift[];
+  employee_shifts: EmployeeShiftAssignment[];
   leaves: LeaveRequest[];
   overtime: OvertimeRequest[];
   notifications: PDKSNotification[];
@@ -627,6 +691,7 @@ export function createInitialDatabase(): PDKSDatabase {
     employees: JSON.parse(JSON.stringify(DEFAULT_EMPLOYEES)),
     records: JSON.parse(JSON.stringify(DEFAULT_RECORDS)),
     shifts: JSON.parse(JSON.stringify(DEFAULT_SHIFTS)),
+    employee_shifts: [],
     leaves: JSON.parse(JSON.stringify(DEFAULT_LEAVES)),
     overtime: JSON.parse(JSON.stringify(DEFAULT_OVERTIME)),
     notifications: JSON.parse(JSON.stringify(DEFAULT_NOTIFICATIONS)),

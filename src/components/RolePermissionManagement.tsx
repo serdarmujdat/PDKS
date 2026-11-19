@@ -72,6 +72,7 @@ const ACTION_PERMISSION_ITEMS: {
   { key: 'canExportReports', label: 'Rapor Alma (Excel/PDF)', desc: 'CSV / Excel & yazdırılabilir rapor dışa aktarma' },
   { key: 'canManageDevices', label: 'Cihaz Sıfırlama', desc: 'Personel kayıtlı cihaz / MAC eşleşmesini sıfırlama' },
   { key: 'canManageSettings', label: 'Duvar QR Yönetimi & Logo', desc: 'Şirket logosu ve sabit duvar QR yönetimi' },
+  { key: 'canManageShifts', label: 'Vardiya Düzenleme Yetkisi (can_manage_shifts)', desc: 'Kendi birimine bağlı personellerin haftalık vardiyalarını düzenleme' },
   { key: 'canClearLogs', label: 'Log Temizleme', desc: 'Giriş-çıkış geçiş hareket loglarını temizleme' },
   { key: 'canManagePermissions', label: 'Alt Yetki Tanımlama', desc: 'Kullanıcı Yetkilendirme panelinden kendi havuzu içinde yetki atama' },
 ];

@@ -1,24 +1,57 @@
-import React, { useState, useEffect } from 'react';
-import { Download, Printer, TrendingUp, Clock, AlertTriangle, UserX, Award } from 'lucide-react';
-import { Department, Employee, ReportFilter, EmployeeReportSummary } from '../types/pdks';
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  Download,
+  Printer,
+  TrendingUp,
+  Clock,
+  AlertTriangle,
+  UserX,
+  Award,
+  FileSpreadsheet,
+  Search,
+} from 'lucide-react';
+import {
+  AttendanceRecord,
+  Department,
+  Employee,
+  EmployeeReportSummary,
+  EmployeeShiftAssignment,
+  LeaveRequest,
+  ReportFilter,
+  Shift,
+} from '../types/pdks';
 import { pdksStorage } from '../services/storage';
+import {
+  exportDailyReportToXlsx,
+  formatMinutesHHMM,
+  formatMinutesTurkish,
+  generateDailyAttendanceRows,
+  getLocalDateString,
+} from '../utils/shiftTimeAnalytics';
 
 export const AnalyticsReports: React.FC = () => {
   const canExport = pdksStorage.canExportReports(pdksStorage.getActiveUser());
   const [companyName, setCompanyName] = useState<string>(() => pdksStorage.getCompanyName());
-  // Preset calculations
-  const today = new Date();
-  const formatYMD = (d: Date) => d.toISOString().split('T')[0];
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
 
+  const today = new Date();
   const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
-  const [datePreset, setDatePreset] = useState<'this_month' | 'last_7_days' | 'today' | 'custom'>('this_month');
+  const [datePreset, setDatePreset] = useState<'this_month' | 'last_7_days' | 'today' | 'custom'>('last_7_days');
   const [filter, setFilter] = useState<ReportFilter>({
-    startDate: formatYMD(firstDayOfMonth),
-    endDate: formatYMD(today),
+    startDate: getLocalDateString(new Date(Date.now() - 6 * 24 * 3600 * 1000)),
+    endDate: getLocalDateString(today),
     department: 'all',
     employeeId: '',
   });
+  const [dailyStatusFilter, setDailyStatusFilter] = useState<'all' | 'delayed' | 'worked' | 'absent'>('all');
+  const [tableSearch, setTableSearch] = useState<string>('');
+
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [shifts, setShifts] = useState<Shift[]>([]);
+  const [employeeShifts, setEmployeeShifts] = useState<EmployeeShiftAssignment[]>([]);
+  const [records, setRecords] = useState<AttendanceRecord[]>([]);
+  const [leaves, setLeaves] = useState<LeaveRequest[]>([]);
 
   const [reportData, setReportData] = useState<{
     summaries: EmployeeReportSummary[];
@@ -36,38 +69,93 @@ export const AnalyticsReports: React.FC = () => {
     lateRankings: [],
   });
 
-  const [departments] = useState<Department[]>([
+  const departments: Department[] = [
     'Yazılım & Ar-Ge',
     'İnsan Kaynakları',
     'Muhasebe & Finans',
     'Pazarlama & Satış',
     'Üretim & Operasyon',
     'Lojistik & Depo',
-  ]);
+  ];
 
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  const loadSourceData = () => {
+    setEmployees(pdksStorage.getEmployees());
+    setShifts(pdksStorage.getShifts());
+    setEmployeeShifts(pdksStorage.getEmployeeShifts());
+    setRecords(pdksStorage.getAttendanceRecords());
+    setLeaves(pdksStorage.getLeaveRequests());
+    setNowTick(Date.now());
+  };
 
   useEffect(() => {
-    setEmployees(pdksStorage.getEmployees());
+    loadSourceData();
+    const tickTimer = setInterval(() => {
+      setNowTick(Date.now());
+    }, 15000);
+
+    const handleDataSync = () => {
+      loadSourceData();
+      setCompanyName(pdksStorage.getCompanyName());
+    };
     const syncName = (e?: any) => {
       if (e?.detail && typeof e.detail === 'string') setCompanyName(e.detail);
       else setCompanyName(pdksStorage.getCompanyName());
     };
+
     window.addEventListener('pdks-company-name-updated', syncName);
     window.addEventListener('pdks-wall-qr-updated', syncName);
-    window.addEventListener('pdks-data-synced', syncName);
+    window.addEventListener('pdks-data-synced', handleDataSync);
     return () => {
+      clearInterval(tickTimer);
       window.removeEventListener('pdks-company-name-updated', syncName);
       window.removeEventListener('pdks-wall-qr-updated', syncName);
-      window.removeEventListener('pdks-data-synced', syncName);
+      window.removeEventListener('pdks-data-synced', handleDataSync);
     };
   }, []);
 
-  // Recalculate on filter change
+  // Recalculate summary report on filter or source data change
   useEffect(() => {
     const data = pdksStorage.generateReport(filter);
     setReportData(data);
-  }, [filter]);
+  }, [filter, employees, records, leaves]);
+
+  // Daily net work & delay computation (real-time for today + exact historical rows)
+  const dailyReport = useMemo(() => {
+    return generateDailyAttendanceRows({
+      startDate: filter.startDate,
+      endDate: filter.endDate,
+      department: filter.department,
+      employeeId: filter.employeeId,
+      employees,
+      shifts,
+      employeeShifts,
+      records,
+      leaves,
+      now: new Date(nowTick),
+    });
+  }, [filter, employees, shifts, employeeShifts, records, leaves, nowTick]);
+
+  // Filtered daily rows for on-screen table and Excel export
+  const visibleDailyRows = useMemo(() => {
+    return dailyReport.rows.filter((row) => {
+      if (dailyStatusFilter === 'delayed' && row.delayMinutes <= 0) return false;
+      if (dailyStatusFilter === 'worked' && row.netWorkMinutes <= 0) return false;
+      if (dailyStatusFilter === 'absent' && row.statusLabel !== 'Devamsız' && row.statusLabel !== 'Gecikti (Giriş Yok)') {
+        return false;
+      }
+      if (tableSearch.trim()) {
+        const q = tableSearch.toLowerCase();
+        return (
+          row.employeeName.toLowerCase().includes(q) ||
+          row.employeeId.toLowerCase().includes(q) ||
+          row.department.toLowerCase().includes(q) ||
+          row.shiftName.toLowerCase().includes(q) ||
+          row.date.includes(q)
+        );
+      }
+      return true;
+    });
+  }, [dailyReport.rows, dailyStatusFilter, tableSearch]);
 
   const handlePresetChange = (preset: 'this_month' | 'last_7_days' | 'today' | 'custom') => {
     setDatePreset(preset);
@@ -75,56 +163,69 @@ export const AnalyticsReports: React.FC = () => {
     if (preset === 'today') {
       setFilter((prev) => ({
         ...prev,
-        startDate: formatYMD(now),
-        endDate: formatYMD(now),
+        startDate: getLocalDateString(now),
+        endDate: getLocalDateString(now),
       }));
     } else if (preset === 'last_7_days') {
       setFilter((prev) => ({
         ...prev,
-        startDate: formatYMD(new Date(Date.now() - 6 * 24 * 3600 * 1000)),
-        endDate: formatYMD(now),
+        startDate: getLocalDateString(new Date(Date.now() - 6 * 24 * 3600 * 1000)),
+        endDate: getLocalDateString(now),
       }));
     } else if (preset === 'this_month') {
       setFilter((prev) => ({
         ...prev,
-        startDate: formatYMD(new Date(now.getFullYear(), now.getMonth(), 1)),
-        endDate: formatYMD(now),
+        startDate: getLocalDateString(new Date(now.getFullYear(), now.getMonth(), 1)),
+        endDate: getLocalDateString(now),
       }));
     }
   };
 
-  // Export Detailed CSV
+  // Real formatted .xlsx Excel Export
+  const handleExportXlsx = () => {
+    exportDailyReportToXlsx({
+      rows: visibleDailyRows,
+      summaries: reportData.summaries,
+      companyName,
+      startDate: filter.startDate,
+      endDate: filter.endDate,
+    });
+  };
+
+  // Detailed Daily CSV Export (secondary lightweight fallback)
   const handleExportCSV = () => {
     const headers = [
+      'Tarih',
+      'Gün',
       'Sicil No',
-      'Ad Soyad',
-      'Departman',
-      'Ünvan',
-      'Hedef İş Günü',
-      'Fiili Gelinen Gün',
-      'Devam Oranı (%)',
-      'Gecikme Adedi',
-      'Toplam Gecikme (Dk)',
-      'Devamsızlık (Gün)',
-      'İzinli (Gün)',
-      'Toplam Çalışma (Saat)',
-      'Fazla Mesai (Saat)',
+      'Personel Adı',
+      'Birim',
+      'Atanan Vardiya',
+      'Vardiya Saatleri',
+      'Giriş Saati',
+      'Çıkış Saati',
+      'Net Çalışma (SS:DD)',
+      'Net Çalışma (Saat)',
+      'Gecikme (SS:DD)',
+      'Gecikme (Dk)',
+      'Durum',
     ];
 
-    const rows = reportData.summaries.map((s) => [
-      s.employeeId,
-      s.fullName,
-      s.department,
-      s.title,
-      s.totalDays,
-      s.presentDays,
-      `%${s.attendanceRate}`,
-      s.lateCount,
-      s.totalLateMinutes,
-      s.absenceCount,
-      s.leaveDays,
-      s.totalWorkHours,
-      s.overtimeHours,
+    const rows = visibleDailyRows.map((r) => [
+      r.date,
+      r.dayName,
+      r.employeeId,
+      r.employeeName,
+      r.department,
+      r.shiftName,
+      r.shiftWindow,
+      r.checkInTime,
+      r.checkOutTime,
+      r.netWorkFormattedHHMM,
+      r.netWorkDecimalHours,
+      r.delayFormattedHHMM,
+      r.delayMinutes,
+      r.statusLabel,
     ]);
 
     const csvContent =
@@ -138,7 +239,7 @@ export const AnalyticsReports: React.FC = () => {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `PDKS_Detayli_Rapor_${filter.startDate}_${filter.endDate}.csv`);
+    link.setAttribute('download', `PDKS_Gunluk_Rapor_${filter.startDate}_${filter.endDate}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -148,96 +249,111 @@ export const AnalyticsReports: React.FC = () => {
     window.print();
   };
 
+  const totalNetHoursStr = (dailyReport.totalNetWorkMinutes / 60).toFixed(1);
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-      {/* Header and Actions */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
+      {/* Header and Primary Actions */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-            {companyName} · Devamlılık, Gecikme ve Mesai Analizi
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
+            {companyName} · Çalışma, Gecikme ve Devam Raporları
           </h1>
-          <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Belirli tarih aralıkları için ayrıntılı personel devam kontrol, devamsızlık ve fazla mesai raporları.
+          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
+            Günlük net çalışma süreleri, vardiya başlangıcına göre gecikme hesabı ve biçimlendirilmiş Excel (.xlsx) çıktısı.
           </p>
         </div>
 
         {canExport && (
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
+              type="button"
               onClick={handlePrint}
-              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
             >
-              <Printer className="w-4 h-4 text-slate-500" />
+              <Printer className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
               <span>Yazdır / PDF</span>
             </button>
 
             <button
+              type="button"
               onClick={handleExportCSV}
-              className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xl shadow-xs transition-colors cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
             >
-              <Download className="w-4 h-4" />
-              <span>Excel / CSV İndir</span>
+              <Download className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+              <span>CSV İndir</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportXlsx}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              <span>Excel Olarak İndir (.xlsx)</span>
             </button>
           </div>
         )}
       </div>
 
-      {/* Date Range & Filter Bar */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
+      {/* Date Range & Unit / Employee Filter Bar */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          {/* Preset Buttons */}
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg">
             <button
+              type="button"
               onClick={() => handlePresetChange('today')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
                 datePreset === 'today'
-                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-xs font-semibold'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-2xs font-semibold'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               Bugün
             </button>
             <button
+              type="button"
               onClick={() => handlePresetChange('last_7_days')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
                 datePreset === 'last_7_days'
-                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-xs font-semibold'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-2xs font-semibold'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               Son 7 Gün
             </button>
             <button
+              type="button"
               onClick={() => handlePresetChange('this_month')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
                 datePreset === 'this_month'
-                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-xs font-semibold'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-2xs font-semibold'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               Bu Ay
             </button>
             <button
+              type="button"
               onClick={() => setDatePreset('custom')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
                 datePreset === 'custom'
-                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-xs font-semibold'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white dark:bg-indigo-600 text-indigo-700 dark:text-white shadow-2xs font-semibold'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               Özel Aralık
             </button>
           </div>
 
-          <span className="text-xs font-mono text-slate-500">
-            Aralık: {filter.startDate} - {filter.endDate}
+          <span className="text-xs font-mono text-slate-500 dark:text-slate-400 tabular-nums">
+            Dönem: {filter.startDate} → {filter.endDate} · {visibleDailyRows.length} günlük kayıt
           </span>
         </div>
 
-        {/* Inputs */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-slate-100">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
               Başlangıç Tarihi
             </label>
             <input
@@ -247,12 +363,12 @@ export const AnalyticsReports: React.FC = () => {
                 setDatePreset('custom');
                 setFilter({ ...filter, startDate: e.target.value });
               }}
-              className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50/50"
+              className="w-full px-3 py-1.5 text-xs font-mono border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 tabular-nums"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
               Bitiş Tarihi
             </label>
             <input
@@ -262,20 +378,20 @@ export const AnalyticsReports: React.FC = () => {
                 setDatePreset('custom');
                 setFilter({ ...filter, endDate: e.target.value });
               }}
-              className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50/50"
+              className="w-full px-3 py-1.5 text-xs font-mono border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 tabular-nums"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Departman Filtresi
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              Birim / Departman
             </label>
             <select
               value={filter.department}
               onChange={(e) => setFilter({ ...filter, department: e.target.value })}
-              className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white"
+              className="w-full px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 cursor-pointer"
             >
-              <option value="all">Tüm Departmanlar</option>
+              <option value="all">Tüm Birimler</option>
               {departments.map((d) => (
                 <option key={d} value={d}>
                   {d}
@@ -285,267 +401,365 @@ export const AnalyticsReports: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Personel Seçimi
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+              Personel
             </label>
             <select
               value={filter.employeeId}
               onChange={(e) => setFilter({ ...filter, employeeId: e.target.value })}
-              className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white"
+              className="w-full px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 cursor-pointer"
             >
               <option value="">Tüm Personeller ({employees.length})</option>
-              {employees.map((emp) => (
-                <option key={emp.id} value={emp.id}>
-                  {emp.fullName} ({emp.id})
-                </option>
-              ))}
+              {employees
+                .filter((e) => filter.department === 'all' || e.department === filter.department)
+                .map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.fullName} ({emp.id})
+                  </option>
+                ))}
             </select>
           </div>
         </div>
       </div>
 
-      {/* Aggregate KPI Summary Cards (Tabular figures) */}
-      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Attendance Rate */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-          <div className="flex items-center justify-between text-indigo-600 mb-2">
-            <span className="text-xs font-medium text-slate-500">Genel Devamlılık Oranı</span>
-            <TrendingUp className="w-4 h-4 text-indigo-500" />
-          </div>
-          <div className="font-mono text-3xl font-bold text-slate-900 tabular-nums">
-            %{reportData.averageAttendanceRate}
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1">
-            Fiili mesai ve onaylı izinler toplamı
-          </p>
-        </div>
-
-        {/* Total Late Duration */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-          <div className="flex items-center justify-between text-amber-600 mb-2">
-            <span className="text-xs font-medium text-slate-500">Toplam Gecikme Süresi</span>
-            <AlertTriangle className="w-4 h-4 text-amber-500" />
-          </div>
-          <div className="font-mono text-3xl font-bold text-amber-700 tabular-nums">
-            {reportData.totalLateMinutes} <span className="text-sm font-normal text-slate-500">Dk</span>
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1">
-            {(reportData.totalLateMinutes / 60).toFixed(1)} iş saati kayıp
-          </p>
-        </div>
-
-        {/* Total Overtime */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-          <div className="flex items-center justify-between text-emerald-600 mb-2">
-            <span className="text-xs font-medium text-slate-500">Hak Edilen Fazla Mesai</span>
+      {/* Aggregate KPI Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Toplam Net Çalışma</span>
             <Clock className="w-4 h-4 text-emerald-500" />
           </div>
-          <div className="font-mono text-3xl font-bold text-emerald-700 tabular-nums">
-            {reportData.totalOvertimeHours.toFixed(1)} <span className="text-sm font-normal text-slate-500">Saat</span>
+          <div className="font-mono text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">
+            {formatMinutesHHMM(dailyReport.totalNetWorkMinutes)}
           </div>
-          <p className="text-[11px] text-slate-500 mt-1">
-            Standart vardiyayı aşan çalışma
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 tabular-nums">
+            {totalNetHoursStr} saat fiili çalışma
           </p>
         </div>
 
-        {/* Total Absence */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-          <div className="flex items-center justify-between text-rose-600 mb-2">
-            <span className="text-xs font-medium text-slate-500">Toplam Devamsızlık</span>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Toplam Gecikme</span>
+            <AlertTriangle className="w-4 h-4 text-amber-500" />
+          </div>
+          <div className="font-mono text-2xl font-bold text-amber-700 dark:text-amber-300 tabular-nums">
+            {formatMinutesHHMM(dailyReport.totalDelayMinutes)}
+          </div>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 tabular-nums">
+            {formatMinutesTurkish(dailyReport.totalDelayMinutes)} · {dailyReport.lateRowCount} kayıt
+          </p>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Genel Devam Oranı</span>
+            <TrendingUp className="w-4 h-4 text-indigo-500" />
+          </div>
+          <div className="font-mono text-2xl font-bold text-indigo-700 dark:text-indigo-300 tabular-nums">
+            %{reportData.averageAttendanceRate}
+          </div>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+            Fiili mesai ve onaylı izinler dahil
+          </p>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Devamsız Gün</span>
             <UserX className="w-4 h-4 text-rose-500" />
           </div>
-          <div className="font-mono text-3xl font-bold text-rose-700 tabular-nums">
-            {reportData.summaries.reduce((acc, s) => acc + s.absenceCount, 0)}{' '}
-            <span className="text-sm font-normal text-slate-500">Gün</span>
+          <div className="font-mono text-2xl font-bold text-rose-700 dark:text-rose-300 tabular-nums">
+            {dailyReport.absentRowCount}
           </div>
-          <p className="text-[11px] text-slate-500 mt-1">
-            İzinsiz veya kart basılmayan günler
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+            İzinsiz giriş yapılmayan iş günü
           </p>
         </div>
       </div>
 
-      {/* Middle Section: Late Arrivals Rankings & Department Health */}
+      {/* PRIMARY TABLE: Günlük Çalışma & Gecikme Süresi Detay Tablosu */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+          <div>
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+              Günlük Çalışma ve Gecikme Süresi Dökümü
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Her personel için günlük atanan vardiya, fiili giriş/çıkış saatleri, net çalışma ve gecikme süreleri.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Tabloda ara..."
+                value={tableSearch}
+                onChange={(e) => setTableSearch(e.target.value)}
+                className="pl-8 pr-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 w-44 focus:outline-indigo-500"
+              />
+            </div>
+
+            <div className="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg text-xs">
+              {(
+                [
+                  ['all', 'Tümü'],
+                  ['delayed', 'Gecikenler'],
+                  ['worked', 'Çalışanlar'],
+                  ['absent', 'Gelmeyenler'],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setDailyStatusFilter(key)}
+                  className={`px-2.5 py-1 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                    dailyStatusFilter === key
+                      ? 'bg-white dark:bg-indigo-600 text-slate-900 dark:text-white shadow-2xs font-semibold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+          <table className="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr className="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-semibold">
+                <th className="py-2.5 px-3">Personel & Birim</th>
+                <th className="py-2.5 px-3">Tarih</th>
+                <th className="py-2.5 px-3">Atanan Vardiya</th>
+                <th className="py-2.5 px-3 text-center">Giriş Saati</th>
+                <th className="py-2.5 px-3 text-center">Çıkış Saati</th>
+                <th className="py-2.5 px-3 text-right">Net Çalışma Süresi</th>
+                <th className="py-2.5 px-3 text-right">Gecikme Süresi</th>
+                <th className="py-2.5 px-3 text-right">Durum</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {visibleDailyRows.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-10 text-center text-slate-400 dark:text-slate-500">
+                    Seçili tarih aralığı ve filtrelere uygun günlük kayıt bulunamadı.
+                  </td>
+                </tr>
+              ) : (
+                visibleDailyRows.slice(0, 250).map((row) => (
+                  <tr
+                    key={row.rowKey}
+                    className={`transition-colors ${
+                      row.statusLabel === 'Gecikti (Giriş Yok)'
+                        ? 'bg-rose-50/40 dark:bg-rose-950/15 hover:bg-rose-50/70 dark:hover:bg-rose-950/25'
+                        : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
+                    }`}
+                  >
+                    <td className="py-2.5 px-3">
+                      <div className="font-semibold text-slate-900 dark:text-slate-100">{row.employeeName}</div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {row.department} · <span className="font-mono tabular-nums">{row.employeeId}</span>
+                      </div>
+                    </td>
+                    <td className="py-2.5 px-3 whitespace-nowrap">
+                      <div className="font-mono font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
+                        {row.date}
+                      </div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400">{row.dayName}</div>
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <div className="font-medium text-slate-800 dark:text-slate-200 truncate max-w-[165px]">
+                        {row.shiftName.split('(')[0].trim()}
+                      </div>
+                      <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
+                        {row.shiftWindow}
+                      </div>
+                    </td>
+                    <td className="py-2.5 px-3 text-center font-mono font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
+                      {row.checkInTime}
+                    </td>
+                    <td className="py-2.5 px-3 text-center font-mono text-slate-700 dark:text-slate-300 tabular-nums">
+                      {row.checkOutTime}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono tabular-nums whitespace-nowrap">
+                      {row.netWorkMinutes > 0 ? (
+                        <div>
+                          <span className="font-bold text-slate-900 dark:text-slate-100">
+                            {row.netWorkFormattedHHMM}
+                          </span>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                            {row.netWorkDecimalHours}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">-</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono tabular-nums whitespace-nowrap">
+                      {row.delayMinutes > 0 ? (
+                        <div
+                          className={
+                            row.statusTone === 'rose'
+                              ? 'text-rose-700 dark:text-rose-300 font-bold'
+                              : 'text-amber-700 dark:text-amber-300 font-bold'
+                          }
+                        >
+                          <span>{row.delayFormattedHHMM}</span>
+                          <div className="text-[10px] font-sans font-semibold">
+                            {row.delayFormattedText}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">00:00 (0 dk)</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                      <span
+                        className={`text-[11px] font-semibold ${
+                          row.statusTone === 'emerald'
+                            ? 'text-emerald-700 dark:text-emerald-400'
+                            : row.statusTone === 'amber'
+                            ? 'text-amber-700 dark:text-amber-300'
+                            : row.statusTone === 'rose'
+                            ? 'text-rose-700 dark:text-rose-300'
+                            : row.statusTone === 'indigo'
+                            ? 'text-indigo-700 dark:text-indigo-300'
+                            : 'text-slate-500 dark:text-slate-400'
+                        }`}
+                      >
+                        {row.statusLabel}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {visibleDailyRows.length > 250 && (
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            Ekranda ilk 250 satır gösteriliyor. Tüm {visibleDailyRows.length} kayıt Excel (.xlsx) çıktısına eksiksiz aktarılır.
+          </p>
+        )}
+      </div>
+
+      {/* Bottom Section: Late Arrivals Leaderboard & Per-Employee Period Matrix */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Late Arrival Leaderboard (Col 1) */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 mb-3">
             <div className="flex items-center gap-2">
               <Award className="w-4 h-4 text-amber-500" />
-              <h3 className="font-bold text-sm text-slate-900">En Çok Geciken Personeller</h3>
+              <h3 className="font-bold text-sm text-slate-900 dark:text-slate-100">En Çok Geciken Personeller</h3>
             </div>
             <span className="text-[11px] font-mono text-slate-400">Sıralama</span>
           </div>
 
           {reportData.lateRankings.length === 0 ? (
-            <div className="text-center py-8 text-xs text-slate-400">
-              Bu dönemde gecikme kaydı bulunmuyor. Tebrikler!
+            <div className="text-center py-8 text-xs text-slate-400 dark:text-slate-500">
+              Bu dönemde gecikme kaydı bulunmuyor.
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {reportData.lateRankings.slice(0, 5).map((rank, i) => (
                 <div
                   key={rank.name}
-                  className="flex items-center justify-between text-xs p-2.5 rounded-lg bg-slate-50 border border-slate-100"
+                  className="flex items-center justify-between text-xs p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/70 border border-slate-100 dark:border-slate-800"
                 >
                   <div className="flex items-center gap-2.5">
-                    <span className="w-5 h-5 rounded-full bg-slate-200 text-slate-700 font-bold text-[10px] flex items-center justify-center font-mono">
+                    <span className="w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-[10px] flex items-center justify-center font-mono tabular-nums">
                       {i + 1}
                     </span>
                     <div>
-                      <div className="font-semibold text-slate-900">{rank.name}</div>
-                      <div className="text-[11px] text-slate-500 font-mono">
+                      <div className="font-semibold text-slate-900 dark:text-slate-100">{rank.name}</div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
                         {rank.count} kez gecikti
                       </div>
                     </div>
                   </div>
-
-                  <div className="text-right">
-                    <span className="font-mono font-bold text-amber-700 tabular-nums">
-                      {rank.totalMinutes} Dk
-                    </span>
-                  </div>
+                  <span className="font-mono font-bold text-amber-700 dark:text-amber-300 tabular-nums">
+                    {formatMinutesTurkish(rank.totalMinutes)}
+                  </span>
                 </div>
               ))}
             </div>
           )}
         </div>
 
-        {/* Detailed Matrix Table (Col 2) */}
-        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-              <div>
-                <h3 className="font-bold text-sm text-slate-900">Personel Bazlı Devamlılık Matrisi</h3>
-                <p className="text-xs text-slate-500">
-                  Dönem bazında iş günü, fiili katılım ve mesai süreleri dökümü
-                </p>
-              </div>
-              <span className="text-xs font-mono text-slate-500">
-                {reportData.summaries.length} Personel
-              </span>
+        <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 mb-3">
+            <div>
+              <h3 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                Personel Bazlı Dönem Özeti
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Excel çalışma kitabının 2. sayfasına otomatik eklenir
+              </p>
             </div>
+            <span className="text-xs font-mono text-slate-500 dark:text-slate-400 tabular-nums">
+              {reportData.summaries.length} Personel
+            </span>
+          </div>
 
-            {/* Mobile Cards View (md:hidden) */}
-            <div className="md:hidden divide-y divide-slate-100">
-              {reportData.summaries.map((s) => (
-                <div key={s.employeeId} className="p-3.5 space-y-2.5">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="font-bold text-slate-900 text-sm">{s.fullName}</div>
-                      <div className="text-xs text-slate-500 font-mono">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 font-semibold">
+                  <th className="py-2 px-3">Personel</th>
+                  <th className="py-2 px-3 text-center">Gelinen / İş Günü</th>
+                  <th className="py-2 px-3 text-center">Devam (%)</th>
+                  <th className="py-2 px-3 text-center">Gecikme</th>
+                  <th className="py-2 px-3 text-center">İzinli</th>
+                  <th className="py-2 px-3 text-right">Toplam Saat</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {reportData.summaries.map((s) => (
+                  <tr key={s.employeeId} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors">
+                    <td className="py-2 px-3">
+                      <div className="font-semibold text-slate-900 dark:text-slate-100">{s.fullName}</div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
                         {s.employeeId} · {s.department}
                       </div>
-                    </div>
-                    <span
-                      className={`font-mono font-bold text-xs px-2 py-0.5 rounded-md ${
-                        s.attendanceRate >= 90
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                          : s.attendanceRate >= 70
-                          ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                          : 'bg-rose-50 text-rose-700 border border-rose-200'
-                      }`}
-                    >
-                      %{s.attendanceRate} Devam
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 p-2.5 rounded-lg border border-slate-100 font-mono">
-                    <div>
-                      <span className="text-slate-400 block text-[10px]">İş Günü / Gelinen:</span>
-                      <span className="font-semibold text-slate-800">{s.presentDays} / {s.totalDays} Gün</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-400 block text-[10px]">Toplam Çalışma:</span>
-                      <span className="font-semibold text-slate-900">{s.totalWorkHours} Saat</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-400 block text-[10px]">Gecikme:</span>
-                      {s.totalLateMinutes > 0 ? (
-                        <span className="font-semibold text-amber-700">{s.totalLateMinutes} Dk ({s.lateCount} kez)</span>
-                      ) : (
-                        <span className="text-slate-400">0 Dk</span>
-                      )}
-                    </div>
-                    <div>
-                      <span className="text-slate-400 block text-[10px]">Fazla Mesai / İzin:</span>
-                      <span className="font-semibold text-emerald-700">
-                        {s.overtimeHours > 0 ? `+${s.overtimeHours}s` : '0s'}
-                        {s.leaveDays > 0 ? ` · ${s.leaveDays}g izin` : ''}
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                      {s.presentDays} / {s.totalDays}
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono font-semibold tabular-nums">
+                      <span
+                        className={
+                          s.attendanceRate >= 90
+                            ? 'text-emerald-700 dark:text-emerald-400'
+                            : s.attendanceRate >= 70
+                            ? 'text-indigo-700 dark:text-indigo-300'
+                            : 'text-rose-700 dark:text-rose-300'
+                        }
+                      >
+                        %{s.attendanceRate}
                       </span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Desktop Table View (hidden md:block) */}
-            <div className="hidden md:block overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50/70 text-slate-500 font-semibold uppercase tracking-wider">
-                    <th className="py-2.5 px-3">Personel</th>
-                    <th className="py-2.5 px-3 text-center">İş Günü / Gelinen</th>
-                    <th className="py-2.5 px-3 text-center">Devam (%)</th>
-                    <th className="py-2.5 px-3 text-center">Gecikme</th>
-                    <th className="py-2.5 px-3 text-center">İzinli</th>
-                    <th className="py-2.5 px-3 text-right">Toplam Çalışma</th>
-                    <th className="py-2.5 px-3 text-right">Fazla Mesai</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {reportData.summaries.map((s) => (
-                    <tr key={s.employeeId} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="py-2.5 px-3">
-                        <div className="font-semibold text-slate-900">{s.fullName}</div>
-                        <div className="text-[11px] text-slate-500 font-mono">
-                          {s.employeeId} · {s.department}
-                        </div>
-                      </td>
-
-                      <td className="py-2.5 px-3 text-center font-mono tabular-nums text-slate-700">
-                        {s.presentDays} / {s.totalDays}
-                      </td>
-
-                      <td className="py-2.5 px-3 text-center font-mono font-semibold tabular-nums">
-                        <span
-                          className={
-                            s.attendanceRate >= 90
-                              ? 'text-emerald-700'
-                              : s.attendanceRate >= 70
-                              ? 'text-indigo-700'
-                              : 'text-rose-700'
-                          }
-                        >
-                          %{s.attendanceRate}
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono tabular-nums">
+                      {s.totalLateMinutes > 0 ? (
+                        <span className="text-amber-700 dark:text-amber-300 font-medium">
+                          {s.totalLateMinutes} dk ({s.lateCount})
                         </span>
-                      </td>
-
-                      <td className="py-2.5 px-3 text-center font-mono tabular-nums">
-                        {s.totalLateMinutes > 0 ? (
-                          <span className="text-amber-700 font-medium">
-                            {s.totalLateMinutes} Dk ({s.lateCount} kez)
-                          </span>
-                        ) : (
-                          <span className="text-slate-400">0</span>
-                        )}
-                      </td>
-
-                      <td className="py-2.5 px-3 text-center font-mono tabular-nums text-slate-600">
-                        {s.leaveDays > 0 ? `${s.leaveDays} Gün` : '-'}
-                      </td>
-
-                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900 tabular-nums">
-                        {s.totalWorkHours} Saat
-                      </td>
-
-                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-emerald-700 tabular-nums">
-                        {s.overtimeHours > 0 ? `+${s.overtimeHours} Saat` : '-'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      ) : (
+                        <span className="text-slate-400 dark:text-slate-500">0</span>
+                      )}
+                    </td>
+                    <td className="py-2 px-3 text-center font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                      {s.leaveDays > 0 ? `${s.leaveDays} gün` : '-'}
+                    </td>
+                    <td className="py-2 px-3 text-right font-mono font-semibold text-slate-900 dark:text-slate-100 tabular-nums">
+                      {s.totalWorkHours} sa
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>

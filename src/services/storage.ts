@@ -1,4 +1,4 @@
-import { Employee, Shift, AttendanceRecord, LeaveRequest, OvertimeRequest, ActionType, AttendanceStatus, PresenceStatus, UserRole, CurrentUser, UserAccount, LoginResult, PDKSNotification, NotificationSettings, ReportFilter, EmployeeReportSummary, EmployeePerformanceMetric, DailyArrivalPoint, CompanyWallQRConfig, MobileScanMode, MobileScanResult, SupervisorAssignment, ThemeId, DeviceIdentity, DeviceEntryApproval, AppPageKey, UserCustomPermissions } from '../types/pdks';
+import { Employee, Shift, EmployeeShiftAssignment, Department, AttendanceRecord, LeaveRequest, OvertimeRequest, ActionType, AttendanceStatus, PresenceStatus, UserRole, CurrentUser, UserAccount, LoginResult, PDKSNotification, NotificationSettings, ReportFilter, EmployeeReportSummary, EmployeePerformanceMetric, DailyArrivalPoint, CompanyWallQRConfig, MobileScanMode, MobileScanResult, SupervisorAssignment, ThemeId, DeviceIdentity, DeviceEntryApproval, AppPageKey, UserCustomPermissions } from '../types/pdks';
 import {
   sanitizeString,
   checkLoginRateLimit,
@@ -29,6 +29,7 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_NOTIFICATIONS,
   DEFAULT_SHIFTS,
+  CANONICAL_SHIFT_TEMPLATES,
   DEFAULT_EMPLOYEES,
   DEFAULT_RECORDS,
   DEFAULT_LEAVES,
@@ -47,6 +48,7 @@ export {
   DEFAULT_COMPANY_WALL_QR,
   DEFAULT_ACCOUNTS,
   DEFAULT_SUPERVISOR_ASSIGNMENTS,
+  CANONICAL_SHIFT_TEMPLATES,
   getTodayString,
   normalizeUsername,
   slugifyNameToUsername,
@@ -55,6 +57,7 @@ export {
 const STORAGE_KEYS = {
   EMPLOYEES: 'pdks_employees_v1',
   SHIFTS: 'pdks_shifts_v1',
+  EMPLOYEE_SHIFTS: 'pdks_employee_shifts_v1',
   RECORDS: 'pdks_records_v1',
   LEAVES: 'pdks_leaves_v1',
   OVERTIME: 'pdks_overtime_v1',
@@ -97,6 +100,7 @@ export const FULL_SUPER_ADMIN_PERMISSIONS: UserCustomPermissions = {
   canClearLogs: true,
   canChangeCompanyName: true,
   canManagePermissions: true,
+  canManageShifts: true,
   isFullAdmin: true,
 };
 
@@ -112,6 +116,7 @@ export const DELEGATED_FULL_ADMIN_PERMISSIONS: UserCustomPermissions = {
   canClearLogs: true,
   canChangeCompanyName: false,
   canManagePermissions: true,
+  canManageShifts: true,
   isFullAdmin: true,
 };
 
@@ -245,7 +250,8 @@ function setUserSessionToken(token?: string | null): void {
 
 export function getDefaultPermissionsForRole(
   role: UserRole,
-  isShiftSupervisor?: boolean
+  isShiftSupervisor?: boolean,
+  canManageShiftsFlag?: boolean
 ): UserCustomPermissions {
   if (role === 'SUPER_ADMIN') {
     return { ...FULL_SUPER_ADMIN_PERMISSIONS, allowedPages: [...FULL_SUPER_ADMIN_PERMISSIONS.allowedPages] };
@@ -263,10 +269,12 @@ export function getDefaultPermissionsForRole(
       canClearLogs: false,
       canChangeCompanyName: false,
       canManagePermissions: false,
+      canManageShifts: true,
       isFullAdmin: false,
     };
   }
   if (role === 'birim_amiri') {
+    const shiftEditEnabled = typeof canManageShiftsFlag === 'boolean' ? canManageShiftsFlag : true;
     return {
       allowedPages: ['shifts', 'kiosk', 'portal'],
       canCreate: false,
@@ -279,12 +287,15 @@ export function getDefaultPermissionsForRole(
       canClearLogs: false,
       canChangeCompanyName: false,
       canManagePermissions: false,
+      canManageShifts: shiftEditEnabled,
       isFullAdmin: false,
     };
   }
   if (role === 'yonetici') {
+    const shiftEditEnabled =
+      typeof canManageShiftsFlag === 'boolean' ? canManageShiftsFlag : Boolean(isShiftSupervisor);
     return {
-      allowedPages: isShiftSupervisor ? ['shifts', 'kiosk', 'portal'] : ['kiosk', 'portal'],
+      allowedPages: ['shifts', 'kiosk', 'portal'],
       canCreate: false,
       canEdit: false,
       canDelete: false,
@@ -295,11 +306,13 @@ export function getDefaultPermissionsForRole(
       canClearLogs: false,
       canChangeCompanyName: false,
       canManagePermissions: false,
+      canManageShifts: shiftEditEnabled,
       isFullAdmin: false,
     };
   }
+  const shiftEditEnabled = typeof canManageShiftsFlag === 'boolean' ? canManageShiftsFlag : false;
   return {
-    allowedPages: isShiftSupervisor ? ['shifts', 'kiosk', 'portal'] : ['kiosk', 'portal'],
+    allowedPages: ['shifts', 'kiosk', 'portal'],
     canCreate: false,
     canEdit: false,
     canDelete: false,
@@ -310,6 +323,7 @@ export function getDefaultPermissionsForRole(
     canClearLogs: false,
     canChangeCompanyName: false,
     canManagePermissions: false,
+    canManageShifts: shiftEditEnabled,
     isFullAdmin: false,
   };
 }
@@ -624,8 +638,35 @@ export const DEMO_USERS: CurrentUser[] = [
 // ==========================================
 let localDbVersion = 0;
 let isSyncing = false;
+let isServerHydrated = false;
+let authoritativeCompanyName: string | null = null;
 let sseConnection: EventSource | null = null;
 let pollTimer: any = null;
+
+function safeSetLocalStorage(key: string, value: string): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (err) {
+    console.warn(`localStorage quota/write warning for ${key}:`, err);
+    return false;
+  }
+}
+
+function isCustomAvatarSrc(val?: string | null): boolean {
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  if (!trimmed || trimmed.toLowerCase().startsWith('blob:')) return false;
+  return trimmed.startsWith('/api/avatars/') || trimmed.startsWith('data:image/');
+}
+
+function sanitizeAvatarClient(val?: string | null): string {
+  if (typeof val !== 'string') return '';
+  const trimmed = val.trim();
+  if (!trimmed || trimmed.toLowerCase().startsWith('blob:')) return '';
+  return trimmed;
+}
 
 let lastSyncTimestamp = 0;
 let lastFocusSyncTimestamp = 0;
@@ -636,6 +677,10 @@ let lastLocalThemeUserKey = '';
 function getThemeUserKey(user?: Partial<Pick<CurrentUser, 'id' | 'username' | 'employeeId'>> | null): string {
   if (!user) return '';
   return normalizeUsername(user.username || '') || user.id || user.employeeId || '';
+}
+
+export function isInitialServerSyncComplete(): boolean {
+  return isServerHydrated;
 }
 
 export async function syncWithServer(force = false): Promise<boolean> {
@@ -652,11 +697,12 @@ export async function syncWithServer(force = false): Promise<boolean> {
 
   try {
     const url = `/api/db/sync?version=${force ? 0 : localDbVersion}`;
-    const res = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } });
+    const res = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
     if (!res.ok) return false;
     const json = await res.json();
 
     if (json && json.success) {
+      isServerHydrated = true;
       if (json.upToDate) {
         return true;
       }
@@ -721,17 +767,10 @@ export async function syncWithServer(force = false): Promise<boolean> {
                   empMap.set(emp.id, mergedEmp);
                 }
               }
-              let hasMissing = false;
-              for (const le of filterVisibleList(localEmps)) {
-                if (le && le.id && !empMap.has(le.id)) {
-                  empMap.set(le.id, le);
-                  hasMissing = true;
-                }
-              }
+              // Server is Single Source of Truth: never push seeded/stale local-only rows back onto the server
               const mergedEmps = filterVisibleList(Array.from(empMap.values()));
               mergedEmpsForActiveCheck = mergedEmps;
-              localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(mergedEmps));
-              if (hasMissing) pushToServer('employees', mergedEmps);
+              safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(mergedEmps));
             } catch {}
           }
 
@@ -749,40 +788,51 @@ export async function syncWithServer(force = false): Promise<boolean> {
                   timestamp: `${clientToday}T${r.timeStr || '08:30:00'}`,
                 }))
               : visibleRecords;
-            try { localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(normalizedRecords)); } catch {}
+            safeSetLocalStorage(STORAGE_KEYS.RECORDS, JSON.stringify(normalizedRecords));
           }
           if (Array.isArray(d.shifts)) {
-            try { localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(d.shifts)); } catch {}
+            safeSetLocalStorage(STORAGE_KEYS.SHIFTS, JSON.stringify(d.shifts));
+          }
+          if (Array.isArray(d.employee_shifts)) {
+            safeSetLocalStorage(STORAGE_KEYS.EMPLOYEE_SHIFTS, JSON.stringify(d.employee_shifts));
           }
           if (Array.isArray(d.leaves)) {
-            try { localStorage.setItem(STORAGE_KEYS.LEAVES, JSON.stringify(d.leaves)); } catch {}
+            safeSetLocalStorage(STORAGE_KEYS.LEAVES, JSON.stringify(d.leaves));
           }
           if (Array.isArray(d.overtime)) {
-            try { localStorage.setItem(STORAGE_KEYS.OVERTIME, JSON.stringify(d.overtime)); } catch {}
+            safeSetLocalStorage(STORAGE_KEYS.OVERTIME, JSON.stringify(d.overtime));
           }
           if (Array.isArray(d.notifications)) {
-            try { localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(filterVisibleList(d.notifications))); } catch {}
+            safeSetLocalStorage(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(filterVisibleList(d.notifications)));
           }
 
-          // Wall QR & Authoritative System Company Name update with immediate event dispatch
+          // Wall QR & Authoritative System Company Name (Server Single Source of Truth)
           const serverSystemCompanyName =
             (typeof d.systemSettings?.companyName === 'string' && d.systemSettings.companyName.trim()) ||
             (typeof d.companyName === 'string' && d.companyName.trim()) ||
+            (typeof d.companyWallQR?.companyName === 'string' && d.companyWallQR.companyName.trim()) ||
             '';
           if (d.companyWallQR || serverSystemCompanyName) {
             try {
               const currentLocal = pdksStorage.getInternalCompanyWallQR();
-              const resolvedName =
-                serverSystemCompanyName ||
-                (typeof d.companyWallQR?.companyName === 'string' && d.companyWallQR.companyName.trim()) ||
-                currentLocal.companyName ||
-                DEFAULT_COMPANY_NAME;
+              const isCustomServerName = Boolean(
+                serverSystemCompanyName && serverSystemCompanyName !== DEFAULT_COMPANY_NAME
+              );
+              const resolvedName = isCustomServerName
+                ? serverSystemCompanyName
+                : authoritativeCompanyName && authoritativeCompanyName !== DEFAULT_COMPANY_NAME
+                  ? authoritativeCompanyName
+                  : serverSystemCompanyName || currentLocal.companyName || DEFAULT_COMPANY_NAME;
+
+              if (resolvedName && resolvedName !== DEFAULT_COMPANY_NAME) {
+                authoritativeCompanyName = resolvedName;
+              }
               const mergedWallQR = {
                 ...currentLocal,
                 ...(d.companyWallQR || {}),
                 companyName: resolvedName,
               };
-              localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(mergedWallQR));
+              safeSetLocalStorage(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(mergedWallQR));
               window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: mergedWallQR }));
               window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: resolvedName }));
             } catch {}
@@ -916,17 +966,11 @@ export async function syncWithServer(force = false): Promise<boolean> {
                   accountMap.set(acc.id, mergedAcc);
                 }
               }
-              let hasMissing = false;
-              for (const la of filterVisibleList(localAccounts)) {
-                if (la && la.id && !accountMap.has(la.id)) {
-                  accountMap.set(la.id, la);
-                  hasMissing = true;
-                }
-              }
+              // Server is Single Source of Truth for accounts
               const mergedAccounts = filterVisibleList(Array.from(accountMap.values()));
-              localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergedAccounts));
+              safeSetLocalStorage(STORAGE_KEYS.ACCOUNTS, JSON.stringify(mergedAccounts));
 
-              // Keep active user's theme, permissions & device state aligned; force logout if archived/deactivated
+              // Keep active user's avatar, theme, permissions, manager_id & device state aligned; force logout if archived/deactivated
               if (localStorage.getItem(STORAGE_KEYS.IS_LOGGED_OUT) !== 'true') {
                 const activeRaw = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER);
                 if (activeRaw) {
@@ -956,9 +1000,19 @@ export async function syncWithServer(force = false): Promise<boolean> {
                         pdksStorage.logout();
                         window.dispatchEvent(new CustomEvent('pdks-force-logout'));
                       } else {
+                        const resolvedAvatar =
+                          (linkedEmp?.avatar && isCustomAvatarSrc(linkedEmp.avatar) ? linkedEmp.avatar : '') ||
+                          sanitizeAvatarClient(matchedAcc.avatar) ||
+                          sanitizeAvatarClient(linkedEmp?.avatar) ||
+                          sanitizeAvatarClient(activeParsed.avatar);
+                        const resolvedManagerId = linkedEmp?.manager_id ?? matchedAcc.manager_id ?? null;
+
                         let activeChanged = false;
                         if (
                           matchedAcc.username !== activeParsed.username ||
+                          resolvedAvatar !== activeParsed.avatar ||
+                          matchedAcc.can_manage_shifts !== activeParsed.can_manage_shifts ||
+                          resolvedManagerId !== (activeParsed.manager_id ?? null) ||
                           matchedAcc.registeredDeviceId !== activeParsed.registeredDeviceId ||
                           matchedAcc.registeredMacAddress !== activeParsed.registeredMacAddress ||
                           matchedAcc.lastLoginDeviceId !== activeParsed.lastLoginDeviceId ||
@@ -968,6 +1022,11 @@ export async function syncWithServer(force = false): Promise<boolean> {
                             JSON.stringify(activeParsed.customPermissions || null)
                         ) {
                           activeParsed.username = matchedAcc.username;
+                          if (resolvedAvatar) activeParsed.avatar = resolvedAvatar;
+                          activeParsed.pendingAvatar = linkedEmp?.pendingAvatar ?? matchedAcc.pendingAvatar ?? null;
+                          activeParsed.avatarStatus = linkedEmp?.avatarStatus ?? matchedAcc.avatarStatus;
+                          activeParsed.can_manage_shifts = matchedAcc.can_manage_shifts;
+                          activeParsed.manager_id = resolvedManagerId;
                           activeParsed.registeredDeviceId = matchedAcc.registeredDeviceId;
                           activeParsed.registeredMacAddress = matchedAcc.registeredMacAddress;
                           activeParsed.registeredDeviceFingerprint = matchedAcc.registeredDeviceFingerprint;
@@ -996,15 +1055,13 @@ export async function syncWithServer(force = false): Promise<boolean> {
                           activeChanged = true;
                         }
                         if (activeChanged) {
-                          localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(activeParsed));
+                          safeSetLocalStorage(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(activeParsed));
                         }
                       }
                     }
                   } catch {}
                 }
               }
-
-              if (hasMissing) pushToServer('accounts', mergedAccounts);
             } catch {}
           }
 
@@ -1023,6 +1080,12 @@ export async function syncWithServer(force = false): Promise<boolean> {
 
 export async function pushToServer(collection: string, data: any): Promise<void> {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return;
+  // Never allow pre-hydration default state to overwrite the central server database
+  if (!isServerHydrated) {
+    console.warn(`Skipped premature pushToServer(${collection}) before initial server hydration.`);
+    return;
+  }
+  if (collection === 'companyName' || collection === 'systemSettings') return;
   try {
     const res = await fetch('/api/db/sync', {
       method: 'POST',
@@ -1033,7 +1096,7 @@ export async function pushToServer(collection: string, data: any): Promise<void>
       const json = await res.json();
       if (json && typeof json.version === 'number') {
         localDbVersion = json.version;
-        try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
       }
     }
   } catch (err) {
@@ -1043,6 +1106,10 @@ export async function pushToServer(collection: string, data: any): Promise<void>
 
 export async function pushBatchToServer(updates: Record<string, any>): Promise<void> {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return;
+  if (!isServerHydrated) {
+    console.warn('Skipped premature pushBatchToServer before initial server hydration.');
+    return;
+  }
   try {
     const res = await fetch('/api/db/sync', {
       method: 'POST',
@@ -1053,7 +1120,7 @@ export async function pushBatchToServer(updates: Record<string, any>): Promise<v
       const json = await res.json();
       if (json && typeof json.version === 'number') {
         localDbVersion = json.version;
-        try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
       }
     }
   } catch (err) {
@@ -1157,16 +1224,66 @@ export const pdksStorage = {
     const allCurrent = this.getAllEmployeesIncludingArchived();
     const activeList = allCurrent.filter((e) => !isArchivedEmployee(e));
     const index = activeList.findIndex(e => e.id === employee.id);
+    const existing = index >= 0 ? activeList[index] : undefined;
+
+    // COALESCE partial-update protection: never wipe avatar, pendingAvatar, or manager_id with empty/blob values
+    const incomingAvatar = sanitizeAvatarClient(employee.avatar);
+    const safeAvatar = incomingAvatar || sanitizeAvatarClient(existing?.avatar) || employee.avatar;
+    const safeEmp: Employee = existing
+      ? {
+          ...existing,
+          ...employee,
+          avatar: safeAvatar,
+          pendingAvatar: employee.pendingAvatar !== undefined ? employee.pendingAvatar : existing.pendingAvatar,
+          avatarStatus: employee.avatarStatus !== undefined ? employee.avatarStatus : existing.avatarStatus,
+          manager_id: employee.manager_id !== undefined ? employee.manager_id : (existing.manager_id ?? null),
+        }
+      : {
+          ...employee,
+          avatar: safeAvatar,
+          manager_id: employee.manager_id ?? null,
+        };
+
     if (index >= 0) {
-      activeList[index] = employee;
+      activeList[index] = safeEmp;
     } else {
-      activeList.unshift(employee);
+      activeList.unshift(safeEmp);
     }
     const combined = mergeEmployeesPreservingArchived(allCurrent, activeList);
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
-    pushToServer('employees', combined);
+    safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
+
+    // Persist directly via dedicated POST /api/employees so server saves avatar to persistent disk & preserves fields
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const saToken = getSuperAdminToken();
+      const userToken = getUserSessionToken();
+      if (saToken) headers['X-Super-Admin-Token'] = saToken;
+      if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+      void fetch('/api/employees', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(safeEmp),
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => {
+          if (json?.success && Array.isArray(json.employees)) {
+            if (typeof json.version === 'number') {
+              localDbVersion = json.version;
+              safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+            }
+            safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(filterVisibleList(json.employees)));
+            window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+          }
+        })
+        .catch(() => {
+          pushToServer('employees', combined);
+        });
+    } else {
+      pushToServer('employees', combined);
+    }
+
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
-    return employee;
+    return safeEmp;
   },
 
   updateEmployeePresenceManual(
@@ -1558,50 +1675,68 @@ export const pdksStorage = {
     };
   },
 
-  // Profile Photo Approval Workflow
+  // Profile Photo Approval Workflow (Dedicated Persistent Server API + Blob Guard + Quota-Safe Local Sync)
   requestProfilePhoto(employeeId: string, photoDataUrl: string): Employee | null {
+    const cleanPhoto = sanitizeAvatarClient(photoDataUrl);
+    if (!cleanPhoto) return null;
+
     const allCurrent = this.getAllEmployeesIncludingArchived();
     const list = allCurrent.filter((e) => !isArchivedEmployee(e));
     const idx = list.findIndex(e => e.id === employeeId);
     if (idx < 0) return null;
 
-    const emp = list[idx];
-    emp.pendingAvatar = photoDataUrl;
-    emp.pendingAvatarDate = new Date().toISOString();
-    emp.avatarStatus = 'pending';
+    const emp: Employee = {
+      ...list[idx],
+      pendingAvatar: cleanPhoto,
+      pendingAvatarDate: new Date().toISOString(),
+      avatarStatus: 'pending',
+    };
     list[idx] = emp;
     const combined = mergeEmployeesPreservingArchived(allCurrent, list);
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
-    pushToServer('employees', combined);
-    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
 
-    // Also update current active user session if it's the same employee
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      void fetch(`/api/employees/${encodeURIComponent(employeeId)}/photo-request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoData: cleanPhoto }),
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => {
+          if (json?.success && json.employee) {
+            if (typeof json.version === 'number') {
+              localDbVersion = json.version;
+              safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+            }
+            const persistedUrl = json.avatarUrl || json.employee.pendingAvatar;
+            const latestAll = this.getAllEmployeesIncludingArchived();
+            const nextAll = latestAll.map((e) =>
+              e.id === employeeId
+                ? { ...e, pendingAvatar: persistedUrl, avatarStatus: 'pending' as const, pendingAvatarDate: json.employee.pendingAvatarDate }
+                : e
+            );
+            safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(nextAll));
+            const active = this.getActiveUser();
+            if (active.employeeId === employeeId) {
+              this.setActiveUser({ ...active, pendingAvatar: persistedUrl, avatarStatus: 'pending' });
+            }
+            window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+          }
+        })
+        .catch(() => {
+          pushToServer('employees', combined);
+        });
+    }
+
+    // Update active user session immediately for responsive UI
     try {
       const active = this.getActiveUser();
       if (active.employeeId === employeeId) {
-        active.pendingAvatar = photoDataUrl;
-        active.avatarStatus = 'pending';
-        this.setActiveUser(active);
+        this.setActiveUser({ ...active, pendingAvatar: cleanPhoto, avatarStatus: 'pending' });
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
 
-    // Notify HR
-    try {
-      this.addNotification({
-        type: 'check_in',
-        title: '📸 Yeni Profil Fotoğrafı Onayı Bekliyor',
-        message: `${emp.fullName} (${emp.title}) yeni bir profil fotoğrafı yükledi. Aktifleşmesi için İK onayı bekleniyor.`,
-        employeeId: emp.id,
-        employeeName: emp.fullName,
-        department: emp.department,
-        severity: 'info',
-      });
-    } catch {
-      // ignore
-    }
-
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return emp;
   },
 
@@ -1611,146 +1746,186 @@ export const pdksStorage = {
     const idx = list.findIndex(e => e.id === employeeId);
     if (idx < 0) return null;
 
-    const emp = list[idx];
-    if (emp.pendingAvatar) {
-      emp.avatar = emp.pendingAvatar;
-      emp.pendingAvatar = null;
-      emp.pendingAvatarDate = null;
-      emp.avatarStatus = 'approved';
-      list[idx] = emp;
-      const combined = mergeEmployeesPreservingArchived(allCurrent, list);
-      localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
-      pushToServer('employees', combined);
-      window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    const currentEmp = list[idx];
+    const cleanPending = sanitizeAvatarClient(currentEmp.pendingAvatar);
+    if (!cleanPending) return currentEmp;
 
-      // Update linked UserAccount avatar
-      const accounts = this.getUserAccounts();
-      const accIdx = accounts.findIndex(a => a.employeeId === employeeId);
-      if (accIdx >= 0) {
-        accounts[accIdx].avatar = emp.avatar;
-        accounts[accIdx].pendingAvatar = null;
-        accounts[accIdx].avatarStatus = 'approved';
-        this.saveUserAccount(accounts[accIdx]);
-      }
+    const emp: Employee = {
+      ...currentEmp,
+      avatar: cleanPending,
+      pendingAvatar: null,
+      pendingAvatarDate: null,
+      avatarStatus: 'approved',
+    };
+    list[idx] = emp;
+    const combined = mergeEmployeesPreservingArchived(allCurrent, list);
+    safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
 
-      // Update active user session
-      try {
-        const active = this.getActiveUser();
-        if (active.employeeId === employeeId) {
-          active.avatar = emp.avatar;
-          active.pendingAvatar = null;
-          active.avatarStatus = 'approved';
-          this.setActiveUser(active);
-        }
-      } catch {
-        // ignore
-      }
+    // Sync linked accounts locally
+    const allAccs = this.getAllUserAccountsIncludingArchived();
+    const nextAccs = allAccs.map((a) =>
+      a.employeeId === employeeId ? { ...a, avatar: cleanPending, pendingAvatar: null, avatarStatus: 'approved' as const } : a
+    );
+    safeSetLocalStorage(STORAGE_KEYS.ACCOUNTS, JSON.stringify(nextAccs));
 
-      // Notification
-      try {
-        this.addNotification({
-          type: 'check_in',
-          title: '✅ Profil Fotoğrafı Onaylandı',
-          message: `${emp.fullName} için yüklenen profil fotoğrafı İK yöneticisi tarafından onaylandı.`,
-          employeeId: emp.id,
-          employeeName: emp.fullName,
-          department: emp.department,
-          severity: 'info',
+    // Persist on dedicated server endpoint (writes persistent /api/avatars/ file + syncs all accounts)
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      void fetch(`/api/employees/${encodeURIComponent(employeeId)}/photo-approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => {
+          if (json?.success && json.employee) {
+            if (typeof json.version === 'number') {
+              localDbVersion = json.version;
+              safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+            }
+            const persistedUrl = json.avatarUrl || json.employee.avatar;
+            const latestEmps = this.getAllEmployeesIncludingArchived().map((e) =>
+              e.id === employeeId ? { ...e, avatar: persistedUrl, pendingAvatar: null, pendingAvatarDate: null, avatarStatus: 'approved' as const } : e
+            );
+            safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(latestEmps));
+            const latestAccs = this.getAllUserAccountsIncludingArchived().map((a) =>
+              a.employeeId === employeeId ? { ...a, avatar: persistedUrl, pendingAvatar: null, avatarStatus: 'approved' as const } : a
+            );
+            safeSetLocalStorage(STORAGE_KEYS.ACCOUNTS, JSON.stringify(latestAccs));
+            const active = this.getActiveUser();
+            if (active.employeeId === employeeId) {
+              this.setActiveUser({ ...active, avatar: persistedUrl, pendingAvatar: null, avatarStatus: 'approved' });
+            }
+            window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+          }
+        })
+        .catch(() => {
+          pushBatchToServer({ employees: combined, accounts: nextAccs });
         });
-      } catch {
-        // ignore
-      }
     }
 
+    try {
+      const active = this.getActiveUser();
+      if (active.employeeId === employeeId) {
+        this.setActiveUser({ ...active, avatar: cleanPending, pendingAvatar: null, avatarStatus: 'approved' });
+      }
+    } catch {}
+
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return emp;
   },
 
-  rejectProfilePhoto(employeeId: string, reason?: string): Employee | null {
+  rejectProfilePhoto(employeeId: string, _reason?: string): Employee | null {
     const allCurrent = this.getAllEmployeesIncludingArchived();
     const list = allCurrent.filter((e) => !isArchivedEmployee(e));
     const idx = list.findIndex(e => e.id === employeeId);
     if (idx < 0) return null;
 
-    const emp = list[idx];
-    emp.pendingAvatar = null;
-    emp.pendingAvatarDate = null;
-    emp.avatarStatus = 'rejected';
+    const emp: Employee = {
+      ...list[idx],
+      pendingAvatar: null,
+      pendingAvatarDate: null,
+      avatarStatus: 'rejected',
+    };
     list[idx] = emp;
     const combined = mergeEmployeesPreservingArchived(allCurrent, list);
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
-    pushToServer('employees', combined);
-    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
 
-    // Update active user session if applicable
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      void fetch(`/api/employees/${encodeURIComponent(employeeId)}/photo-reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => {
+          if (json?.success && typeof json.version === 'number') {
+            localDbVersion = json.version;
+            safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+          }
+        })
+        .catch(() => {
+          pushToServer('employees', combined);
+        });
+    }
+
     try {
       const active = this.getActiveUser();
       if (active.employeeId === employeeId) {
-        active.pendingAvatar = null;
-        active.avatarStatus = 'rejected';
-        this.setActiveUser(active);
+        this.setActiveUser({ ...active, pendingAvatar: null, avatarStatus: 'rejected' });
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
 
-    // Notification
-    try {
-      this.addNotification({
-        type: 'absence_alert',
-        title: '❌ Profil Fotoğrafı Reddedildi',
-        message: `${emp.fullName} için yeni profil fotoğrafı talebi İK yöneticisi tarafından reddedildi.${reason ? ` Açıklama: ${reason}` : ''}`,
-        employeeId: emp.id,
-        employeeName: emp.fullName,
-        department: emp.department,
-        severity: 'warning',
-      });
-    } catch {
-      // ignore
-    }
-
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return emp;
   },
 
   updateEmployeeAvatarDirect(employeeId: string, newAvatarUrl: string): Employee | null {
+    const cleanUrl = sanitizeAvatarClient(newAvatarUrl);
+    if (!cleanUrl) return null;
+
     const allCurrent = this.getAllEmployeesIncludingArchived();
     const list = allCurrent.filter((e) => !isArchivedEmployee(e));
     const idx = list.findIndex(e => e.id === employeeId);
     if (idx < 0) return null;
 
-    const emp = list[idx];
-    emp.avatar = newAvatarUrl;
-    emp.pendingAvatar = null;
-    emp.pendingAvatarDate = null;
-    emp.avatarStatus = 'approved';
+    const emp: Employee = {
+      ...list[idx],
+      avatar: cleanUrl,
+      pendingAvatar: null,
+      pendingAvatarDate: null,
+      avatarStatus: 'approved',
+    };
     list[idx] = emp;
     const combined = mergeEmployeesPreservingArchived(allCurrent, list);
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
-    pushToServer('employees', combined);
-    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
 
-    // Update linked UserAccount avatar
-    const accounts = this.getUserAccounts();
-    const accIdx = accounts.findIndex(a => a.employeeId === employeeId);
-    if (accIdx >= 0) {
-      accounts[accIdx].avatar = newAvatarUrl;
-      accounts[accIdx].pendingAvatar = null;
-      accounts[accIdx].avatarStatus = 'approved';
-      this.saveUserAccount(accounts[accIdx]);
+    const allAccs = this.getAllUserAccountsIncludingArchived();
+    const nextAccs = allAccs.map((a) =>
+      a.employeeId === employeeId ? { ...a, avatar: cleanUrl, pendingAvatar: null, avatarStatus: 'approved' as const } : a
+    );
+    safeSetLocalStorage(STORAGE_KEYS.ACCOUNTS, JSON.stringify(nextAccs));
+
+    // Persist directly via PUT /api/employees/:id/photo-direct (saves permanent /api/avatars/<file> on server!)
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      void fetch(`/api/employees/${encodeURIComponent(employeeId)}/photo-direct`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoData: cleanUrl }),
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => {
+          if (json?.success && json.employee) {
+            if (typeof json.version === 'number') {
+              localDbVersion = json.version;
+              safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+            }
+            const persistedUrl = json.avatarUrl || json.employee.avatar;
+            const latestEmps = this.getAllEmployeesIncludingArchived().map((e) =>
+              e.id === employeeId ? { ...e, avatar: persistedUrl, pendingAvatar: null, pendingAvatarDate: null, avatarStatus: 'approved' as const } : e
+            );
+            safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(latestEmps));
+            const latestAccs = this.getAllUserAccountsIncludingArchived().map((a) =>
+              a.employeeId === employeeId ? { ...a, avatar: persistedUrl, pendingAvatar: null, avatarStatus: 'approved' as const } : a
+            );
+            safeSetLocalStorage(STORAGE_KEYS.ACCOUNTS, JSON.stringify(latestAccs));
+            const active = this.getActiveUser();
+            if (active.employeeId === employeeId) {
+              this.setActiveUser({ ...active, avatar: persistedUrl, pendingAvatar: null, avatarStatus: 'approved' });
+            }
+            window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+          }
+        })
+        .catch(() => {
+          pushBatchToServer({ employees: combined, accounts: nextAccs });
+        });
     }
 
-    // Update active user session
     try {
       const active = this.getActiveUser();
       if (active.employeeId === employeeId) {
-        active.avatar = newAvatarUrl;
-        active.pendingAvatar = null;
-        active.avatarStatus = 'approved';
-        this.setActiveUser(active);
+        this.setActiveUser({ ...active, avatar: cleanUrl, pendingAvatar: null, avatarStatus: 'approved' });
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
 
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return emp;
   },
 
@@ -1765,7 +1940,16 @@ export const pdksStorage = {
       return DEFAULT_SHIFTS;
     }
     try {
-      return JSON.parse(raw);
+      const parsed: Shift[] = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_SHIFTS;
+      const existingIds = new Set(parsed.map((s) => s?.id));
+      const missingCanonical = CANONICAL_SHIFT_TEMPLATES.filter((t) => !existingIds.has(t.id));
+      if (missingCanonical.length > 0) {
+        const merged = [...missingCanonical, ...parsed];
+        try { localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(merged)); } catch {}
+        return merged;
+      }
+      return parsed;
     } catch {
       return DEFAULT_SHIFTS;
     }
@@ -1790,6 +1974,244 @@ export const pdksStorage = {
     localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(list));
     pushToServer('shifts', list);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+  },
+
+  // Relational Employee Shifts (employee_shifts: employeeId + date -> shiftId)
+  getEmployeeShifts(): EmployeeShiftAssignment[] {
+    const raw = localStorage.getItem(STORAGE_KEYS.EMPLOYEE_SHIFTS);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  getEmployeeShiftForDate(
+    employeeId: string,
+    date: string,
+    fallbackShiftId?: string
+  ): { shift: Shift | undefined; shiftId: string; isOverride: boolean; assignment?: EmployeeShiftAssignment } {
+    const shifts = this.getShifts();
+    const assignments = this.getEmployeeShifts();
+    const assignment = assignments.find((a) => a.employeeId === employeeId && a.date === date);
+    const resolvedShiftId = assignment?.shiftId || fallbackShiftId || shifts[0]?.id || 'SHIFT-SABAH';
+    const shift = shifts.find((s) => s.id === resolvedShiftId) || shifts[0];
+    return {
+      shift,
+      shiftId: shift?.id || resolvedShiftId,
+      isOverride: Boolean(assignment),
+      assignment,
+    };
+  },
+
+  async saveEmployeeShiftAsync(payload: {
+    employeeId: string;
+    date: string;
+    shiftId: string;
+    note?: string;
+    applyAsDefault?: boolean;
+  }): Promise<{ success: boolean; message: string; assignment?: EmployeeShiftAssignment; status?: number }> {
+    const active = this.getActiveUser();
+    if (!active) {
+      return { success: false, status: 401, message: 'Oturum doğrulanamadı. Lütfen tekrar giriş yapın.' };
+    }
+    if (!this.canUserManageShiftForEmployee(active, payload.employeeId)) {
+      return {
+        success: false,
+        status: 403,
+        message: 'Yetkisiz İşlem (403): Bu personelin vardiyasını düzenleme yetkiniz bulunmamaktadır.',
+      };
+    }
+
+    const isSA = this.isSuperAdmin(active);
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (isSA && saToken) headers['X-Super-Admin-Token'] = saToken;
+    else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch('/api/employee-shifts', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.success) {
+          return {
+            success: false,
+            status: res.status,
+            message: json?.message || `Vardiya güncellenemedi (HTTP ${res.status}).`,
+          };
+        }
+        if (typeof json.version === 'number') {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+        if (Array.isArray(json.employee_shifts)) {
+          localStorage.setItem(STORAGE_KEYS.EMPLOYEE_SHIFTS, JSON.stringify(json.employee_shifts));
+        }
+        if (json.employee && payload.applyAsDefault) {
+          const allEmps = this.getAllEmployeesIncludingArchived();
+          const updatedEmps = allEmps.map((e) => (e.id === json.employee.id ? json.employee : e));
+          localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(updatedEmps));
+        }
+        window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+        return {
+          success: true,
+          status: 200,
+          message: json.message || 'Vardiya güncellendi',
+          assignment: json.assignment,
+        };
+      } catch {
+        return {
+          success: false,
+          status: 503,
+          message: 'Sunucuya erişilemediği için vardiya kaydı doğrulanamadı.',
+        };
+      }
+    }
+    return { success: false, status: 500, message: 'İstemci API ortamı kullanılamıyor.' };
+  },
+
+  async saveEmployeeShiftsBulkAsync(
+    changes: Array<{
+      employeeId: string;
+      date: string;
+      shiftId: string;
+      note?: string;
+      applyAsDefault?: boolean;
+    }>
+  ): Promise<{ success: boolean; message: string; updatedCount?: number; status?: number }> {
+    const active = this.getActiveUser();
+    if (!active) {
+      return { success: false, status: 401, message: 'Oturum doğrulanamadı. Lütfen tekrar giriş yapın.' };
+    }
+    if (!changes || changes.length === 0) {
+      return { success: false, status: 400, message: 'Kaydedilecek değişiklik bulunmuyor.' };
+    }
+    for (const c of changes) {
+      if (!this.canUserManageShiftForEmployee(active, c.employeeId)) {
+        return {
+          success: false,
+          status: 403,
+          message: 'Yetkisiz İşlem (403): Kendi biriminiz dışındaki veya yetkiniz olmayan bir personelin vardiyası değiştirilemez.',
+        };
+      }
+    }
+
+    const isSA = this.isSuperAdmin(active);
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (isSA && saToken) headers['X-Super-Admin-Token'] = saToken;
+    else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch('/api/employee-shifts/bulk', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ changes }),
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.success) {
+          return {
+            success: false,
+            status: res.status,
+            message: json?.message || `Toplu vardiya güncellemesi başarısız (HTTP ${res.status}).`,
+          };
+        }
+        if (typeof json.version === 'number') {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+        if (Array.isArray(json.employee_shifts)) {
+          localStorage.setItem(STORAGE_KEYS.EMPLOYEE_SHIFTS, JSON.stringify(json.employee_shifts));
+        }
+        window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+        return {
+          success: true,
+          status: 200,
+          message: json.message || 'Vardiya güncellendi',
+          updatedCount: json.updatedCount || changes.length,
+        };
+      } catch {
+        return {
+          success: false,
+          status: 503,
+          message: 'Sunucuya erişilemediği için toplu vardiya kaydı doğrulanamadı.',
+        };
+      }
+    }
+    return { success: false, status: 500, message: 'İstemci API ortamı kullanılamıyor.' };
+  },
+
+  async updateUserShiftPermissionAsync(
+    accountId: string,
+    canManageShifts: boolean
+  ): Promise<{ success: boolean; message: string; account?: UserAccount; status?: number }> {
+    const active = this.getActiveUser();
+    if (!active) {
+      return { success: false, status: 401, message: 'Oturum doğrulanamadı.' };
+    }
+    if (!this.canToggleShiftPermission(active)) {
+      return {
+        success: false,
+        status: 403,
+        message:
+          'Yetkisiz İşlem (403): Vardiya düzenleme yetkisini yalnızca Süper Admin veya İnsan Kaynakları (İK) yöneticisi değiştirebilir.',
+      };
+    }
+
+    const isSA = this.isSuperAdmin(active);
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (isSA && saToken) headers['X-Super-Admin-Token'] = saToken;
+    else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch(`/api/users/${encodeURIComponent(accountId)}/shift-permission`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ can_manage_shifts: canManageShifts }),
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.success) {
+          return {
+            success: false,
+            status: res.status,
+            message: json?.message || `Yetki güncellenemedi (HTTP ${res.status}).`,
+          };
+        }
+        if (typeof json.version === 'number') {
+          localDbVersion = json.version;
+          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+        }
+        if (Array.isArray(json.accounts)) {
+          localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(filterVisibleList(json.accounts)));
+        }
+        window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+        return {
+          success: true,
+          status: 200,
+          message: json.message || 'Vardiya yetkisi güncellendi.',
+          account: json.account,
+        };
+      } catch {
+        return {
+          success: false,
+          status: 503,
+          message: 'Sunucuya erişilemediği için yetki değişikliği kaydedilemedi.',
+        };
+      }
+    }
+    return { success: false, status: 500, message: 'İstemci API ortamı kullanılamıyor.' };
   },
 
   getAttendanceRecords(): AttendanceRecord[] {
@@ -2190,21 +2612,37 @@ export const pdksStorage = {
   async fetchCompanyWallQRFromServer(): Promise<CompanyWallQRConfig | null> {
     if (typeof window === 'undefined' || typeof fetch !== 'function') return null;
     try {
-      const res = await fetch('/api/company/wall-qr');
+      const res = await fetch('/api/company/wall-qr', { cache: 'no-store' });
       if (!res.ok) return null;
       const json = await res.json();
       if (json && json.success && json.data) {
         const current = this.getInternalCompanyWallQR();
+        const incomingName = sanitizeString(json.data.companyName || '', 100);
+        const resolvedCompanyName =
+          (incomingName && incomingName !== DEFAULT_COMPANY_NAME ? incomingName : '') ||
+          (authoritativeCompanyName && authoritativeCompanyName !== DEFAULT_COMPANY_NAME
+            ? authoritativeCompanyName
+            : '') ||
+          (current.companyName && current.companyName !== DEFAULT_COMPANY_NAME ? current.companyName : '') ||
+          incomingName ||
+          DEFAULT_COMPANY_NAME;
+
+        if (resolvedCompanyName && resolvedCompanyName !== DEFAULT_COMPANY_NAME) {
+          authoritativeCompanyName = resolvedCompanyName;
+        }
+
         const merged: CompanyWallQRConfig = {
           ...current,
           ...json.data,
+          companyName: resolvedCompanyName,
           latitude: Number.isFinite(Number(json.data.latitude)) ? Number(json.data.latitude) : current.latitude,
           longitude: Number.isFinite(Number(json.data.longitude)) ? Number(json.data.longitude) : current.longitude,
           radiusMeters: Number(json.data.radiusMeters) || current.radiusMeters,
           enableGeofence: typeof json.data.enableGeofence === 'boolean' ? json.data.enableGeofence : current.enableGeofence,
         };
-        localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(merged));
+        safeSetLocalStorage(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(merged));
         window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: merged }));
+        window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: resolvedCompanyName }));
         return merged;
       }
     } catch {
@@ -2884,13 +3322,25 @@ export const pdksStorage = {
     const allCurrent = this.getAllUserAccountsIncludingArchived();
     const accounts = allCurrent.filter((a) => !isArchivedAccount(a));
     const idx = accounts.findIndex((a) => a.id === acc.id);
+    const existing = idx >= 0 ? accounts[idx] : undefined;
+    const safeAcc: UserAccount = existing
+      ? {
+          ...existing,
+          ...acc,
+          avatar: sanitizeAvatarClient(acc.avatar) || sanitizeAvatarClient(existing.avatar) || existing.avatar,
+          manager_id: acc.manager_id !== undefined ? acc.manager_id : (existing.manager_id ?? null),
+        }
+      : {
+          ...acc,
+          avatar: sanitizeAvatarClient(acc.avatar) || acc.avatar,
+        };
     if (idx >= 0) {
-      accounts[idx] = acc;
+      accounts[idx] = safeAcc;
     } else {
-      accounts.push(acc);
+      accounts.push(safeAcc);
     }
     const clean = mergeAccountsPreservingArchived(allCurrent, accounts);
-    localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
+    safeSetLocalStorage(STORAGE_KEYS.ACCOUNTS, JSON.stringify(clean));
     pushToServer('accounts', clean);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
@@ -4371,25 +4821,36 @@ export const pdksStorage = {
       : isValidThemeId(current.themeId)
       ? current.themeId
       : this.getUserTheme(matched);
+    const resolvedAvatar =
+      (linkedEmp?.avatar && isCustomAvatarSrc(linkedEmp.avatar) ? linkedEmp.avatar : '') ||
+      sanitizeAvatarClient(matched.avatar) ||
+      sanitizeAvatarClient(linkedEmp?.avatar) ||
+      sanitizeAvatarClient(current.avatar) ||
+      matched.avatar;
+
     const updated: CurrentUser = {
       ...current,
       username: matched.username,
       role: matched.role,
       name: matched.name,
       title: matched.title,
-      department: matched.department,
-      avatar: matched.avatar,
+      department: matched.department || linkedEmp?.department,
+      avatar: resolvedAvatar,
+      pendingAvatar: linkedEmp?.pendingAvatar ?? matched.pendingAvatar ?? null,
+      avatarStatus: linkedEmp?.avatarStatus ?? matched.avatarStatus,
       canCheckInOut: matched.canCheckInOut,
       canTakeBreak: matched.canTakeBreak,
       canRequestLeave: matched.canRequestLeave,
       canViewOwnStats: matched.canViewOwnStats,
       isShiftSupervisor: matched.isShiftSupervisor,
+      can_manage_shifts: matched.can_manage_shifts,
+      manager_id: linkedEmp?.manager_id ?? matched.manager_id ?? null,
       assignedEmployeeIds: matched.assignedEmployeeIds,
       customPermissions: matched.customPermissions,
       themeId: resolvedThemeId,
       themeUpdatedAt: matched.themeUpdatedAt || current.themeUpdatedAt,
     };
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(updated));
+    safeSetLocalStorage(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(updated));
     return updated;
   },
 
@@ -4918,15 +5379,17 @@ export const pdksStorage = {
         canClearLogs: false,
         canChangeCompanyName: false,
         canManagePermissions: false,
+        canManageShifts: false,
         isFullAdmin: false,
       };
     }
     if (user.role === 'SUPER_ADMIN' || user.isHiddenSuperAdmin) {
       return { ...FULL_SUPER_ADMIN_PERMISSIONS, allowedPages: [...FULL_SUPER_ADMIN_PERMISSIONS.allowedPages] };
     }
-    // Always resolve latest customPermissions from stored ACCOUNTS for instant enforcement
+    // Always resolve latest customPermissions & can_manage_shifts from stored ACCOUNTS for instant enforcement
     let latestRole: UserRole = user.role;
     let latestSupervisor: boolean | undefined = user.isShiftSupervisor;
+    let latestCanManageShifts: boolean | undefined = user.can_manage_shifts;
     let latestCustom: UserCustomPermissions | undefined = user.customPermissions;
     try {
       const accounts = this.getUserAccounts();
@@ -4939,17 +5402,37 @@ export const pdksStorage = {
       if (matched) {
         latestRole = matched.role;
         latestSupervisor = matched.isShiftSupervisor;
+        if (typeof matched.can_manage_shifts === 'boolean') {
+          latestCanManageShifts = matched.can_manage_shifts;
+        }
         if (matched.customPermissions) {
           latestCustom = matched.customPermissions;
         }
       }
     } catch {}
 
-    const base = getDefaultPermissionsForRole(latestRole, latestSupervisor);
-    if (!latestCustom) return base;
+    const base = getDefaultPermissionsForRole(latestRole, latestSupervisor, latestCanManageShifts);
+    const resolvedCanManageShifts =
+      latestRole === 'ik_yoneticisi'
+        ? true
+        : typeof latestCanManageShifts === 'boolean'
+          ? latestCanManageShifts
+          : typeof latestCustom?.canManageShifts === 'boolean'
+            ? latestCustom.canManageShifts
+            : Boolean(base.canManageShifts);
+    if (!latestCustom) {
+      return {
+        ...base,
+        canManageShifts: resolvedCanManageShifts,
+      };
+    }
     const isFullAdmin = Boolean(latestCustom.isFullAdmin);
+    const pages = Array.isArray(latestCustom.allowedPages) ? [...latestCustom.allowedPages] : [...base.allowedPages];
+    if (!pages.includes('shifts')) {
+      pages.push('shifts');
+    }
     return {
-      allowedPages: Array.isArray(latestCustom.allowedPages) ? latestCustom.allowedPages : base.allowedPages,
+      allowedPages: pages,
       canCreate: typeof latestCustom.canCreate === 'boolean' ? latestCustom.canCreate : base.canCreate,
       canEdit: typeof latestCustom.canEdit === 'boolean' ? latestCustom.canEdit : base.canEdit,
       canDelete: typeof latestCustom.canDelete === 'boolean' ? latestCustom.canDelete : base.canDelete,
@@ -4960,6 +5443,7 @@ export const pdksStorage = {
       canClearLogs: typeof latestCustom.canClearLogs === 'boolean' ? latestCustom.canClearLogs : base.canClearLogs,
       canChangeCompanyName: false,
       canManagePermissions: isFullAdmin || Boolean(latestCustom.canManagePermissions),
+      canManageShifts: resolvedCanManageShifts,
       isFullAdmin,
     };
   },
@@ -4971,9 +5455,10 @@ export const pdksStorage = {
   canAccessPage(user: CurrentUser | null | undefined, page: AppPageKey): boolean {
     if (!user) return false;
     if (this.isSuperAdmin(user)) return true;
+    // All authenticated users may open the Shifts page (in read-only mode if they lack can_manage_shifts)
+    if (page === 'shifts') return true;
     const perms = this.getEffectivePermissions(user);
     if (perms.allowedPages.includes(page)) return true;
-    if (page === 'shifts' && this.isUserSupervisor(user) && !user.customPermissions) return true;
     return false;
   },
 
@@ -5083,30 +5568,166 @@ export const pdksStorage = {
     );
   },
 
-  getResponsibleEmployeeIdsForUser(user?: CurrentUser | null): string[] {
-    if (!user) return [];
-    if (this.isSuperAdmin(user) || user.role === 'ik_yoneticisi') {
-      return this.getEmployees().map((e) => e.id);
-    }
-    const assignments = this.getSupervisorAssignments();
-    const match = assignments.find(
-      (a) =>
-        a.supervisorId === user.employeeId ||
-        a.supervisorId === user.id ||
-        (user.employeeId && a.supervisorId === user.employeeId) ||
-        a.supervisorName.toLowerCase() === user.name.toLowerCase()
-    );
-    const fromAssignment = match ? match.assignedEmployeeIds : [];
-    const fromUser = user.assignedEmployeeIds || [];
-    return Array.from(new Set([...fromAssignment, ...fromUser]));
+  canToggleShiftPermission(user?: CurrentUser | null): boolean {
+    if (!user) return false;
+    return this.isSuperAdmin(user) || user.role === 'ik_yoneticisi';
   },
 
-  canUserManageShiftForEmployee(user: CurrentUser, employeeId: string): boolean {
+  hasShiftManagePermission(user?: CurrentUser | null): boolean {
     if (!user) return false;
     if (this.isSuperAdmin(user) || user.role === 'ik_yoneticisi') return true;
-    if (this.getEffectivePermissions(user).canEdit && this.canAccessPage(user, 'shifts')) return true;
-    const responsibleIds = this.getResponsibleEmployeeIdsForUser(user);
-    return responsibleIds.includes(employeeId);
+    const perms = this.getEffectivePermissions(user);
+    if (perms.canManageShifts) return true;
+    // A user with HR-assigned direct reports (manager_id === user.id) is also a team manager unless explicitly disabled
+    if (user.can_manage_shifts === false) return false;
+    const hasDirectReports = this.getEmployees().some((e) => e.manager_id === user.id);
+    return hasDirectReports;
+  },
+
+  getManagedShiftDepartment(user?: CurrentUser | null): Department | undefined {
+    if (!user) return undefined;
+    if (user.department) return user.department;
+    if (user.employeeId) {
+      const emp = this.getEmployees().find((e) => e.id === user.employeeId);
+      if (emp?.department) return emp.department;
+    }
+    return undefined;
+  },
+
+  // Strict Scoping: Birim Amiri ONLY sees and edits employees where manager_id === currentUser.id
+  getResponsibleEmployeeIdsForUser(user?: CurrentUser | null): string[] {
+    if (!user) return [];
+    const employees = this.getEmployees();
+    if (this.isSuperAdmin(user) || user.role === 'ik_yoneticisi') {
+      return employees.map((e) => e.id);
+    }
+    if (!this.hasShiftManagePermission(user)) {
+      return [];
+    }
+    return employees.filter((e) => e.manager_id === user.id).map((e) => e.id);
+  },
+
+  canUserManageShiftForEmployee(user: CurrentUser | null | undefined, employeeId: string): boolean {
+    if (!user) return false;
+    if (this.isSuperAdmin(user) || user.role === 'ik_yoneticisi') return true;
+    if (!this.hasShiftManagePermission(user)) return false;
+    const targetEmp = this.getEmployees().find((e) => e.id === employeeId);
+    if (!targetEmp) return false;
+    return targetEmp.manager_id === user.id;
+  },
+
+  // HR-Controlled Manager–Employee Assignment APIs (Super Admin & İK only)
+  async assignEmployeeManagerAsync(
+    employeeId: string,
+    managerId: string | null
+  ): Promise<{ success: boolean; message: string; employee?: Employee }> {
+    const active = this.getActiveUser();
+    if (!this.canToggleShiftPermission(active)) {
+      return {
+        success: false,
+        message: 'Yetkisiz İşlem (403): Personel–Birim Amiri eşleştirmesini yalnızca Süper Admin veya İK yöneticisi yapabilir.',
+      };
+    }
+
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.isSuperAdmin(active) && saToken) headers['X-Super-Admin-Token'] = saToken;
+    else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+    try {
+      const res = await fetch(`/api/employees/${encodeURIComponent(employeeId)}/manager`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ manager_id: managerId }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        return {
+          success: false,
+          message: json?.message || `Birim Amiri ataması reddedildi (HTTP ${res.status}).`,
+        };
+      }
+      if (typeof json.version === 'number') {
+        localDbVersion = json.version;
+        safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+      }
+      if (Array.isArray(json.employees)) {
+        safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(filterVisibleList(json.employees)));
+      }
+      if (Array.isArray(json.accounts)) {
+        safeSetLocalStorage(STORAGE_KEYS.ACCOUNTS, JSON.stringify(filterVisibleList(json.accounts)));
+      }
+      window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+      return {
+        success: true,
+        message: json.message || 'Birim Amiri eşleştirmesi güncellendi.',
+        employee: json.employee,
+      };
+    } catch {
+      return {
+        success: false,
+        message: 'Sunucu bağlantısı doğrulanamadığı için ekip eşleştirmesi kaydedilemedi.',
+      };
+    }
+  },
+
+  async bulkAssignManagerAsync(
+    employeeIds: string[],
+    managerId: string | null
+  ): Promise<{ success: boolean; message: string; updatedCount?: number }> {
+    const active = this.getActiveUser();
+    if (!this.canToggleShiftPermission(active)) {
+      return {
+        success: false,
+        message: 'Yetkisiz İşlem (403): Toplu ekip eşleştirmesini yalnızca Süper Admin veya İK yöneticisi yapabilir.',
+      };
+    }
+    if (!employeeIds || employeeIds.length === 0) {
+      return { success: false, message: 'Atama yapmak için en az bir personel seçiniz.' };
+    }
+
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.isSuperAdmin(active) && saToken) headers['X-Super-Admin-Token'] = saToken;
+    else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+    try {
+      const res = await fetch('/api/manager-hierarchy/bulk-assign', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ employeeIds, manager_id: managerId }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        return {
+          success: false,
+          message: json?.message || `Toplu ekip ataması reddedildi (HTTP ${res.status}).`,
+        };
+      }
+      if (typeof json.version === 'number') {
+        localDbVersion = json.version;
+        safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+      }
+      if (Array.isArray(json.employees)) {
+        safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(filterVisibleList(json.employees)));
+      }
+      if (Array.isArray(json.accounts)) {
+        safeSetLocalStorage(STORAGE_KEYS.ACCOUNTS, JSON.stringify(filterVisibleList(json.accounts)));
+      }
+      window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+      return {
+        success: true,
+        message: json.message || `${json.updatedCount || employeeIds.length} personel amire atandı.`,
+        updatedCount: json.updatedCount,
+      };
+    } catch {
+      return {
+        success: false,
+        message: 'Sunucu bağlantısı doğrulanamadığı için toplu ekip ataması kaydedilemedi.',
+      };
+    }
   },
 
   canUserAccessShiftManagement(user?: CurrentUser | null): boolean {
@@ -5129,7 +5750,8 @@ export const pdksStorage = {
       user.role === 'ik_yoneticisi' ||
       user.role === 'birim_amiri' ||
       user.role === 'yonetici' ||
-      perms.allowedPages.some((p) => p !== 'portal' && p !== 'kiosk')
+      Boolean(perms.canManageShifts) ||
+      perms.allowedPages.some((p) => p !== 'portal' && p !== 'kiosk' && p !== 'shifts')
     );
   },
 
@@ -5433,6 +6055,7 @@ export const pdksStorage = {
       canClearLogs: actorPerms.canClearLogs ? Boolean(requestedPerms.canClearLogs) : Boolean(targetPerms.canClearLogs),
       canChangeCompanyName: false,
       canManagePermissions: actorPerms.canManagePermissions ? Boolean(requestedPerms.canManagePermissions) : Boolean(targetPerms.canManagePermissions),
+      canManageShifts: actorPerms.canManageShifts ? Boolean(requestedPerms.canManageShifts) : Boolean(targetPerms.canManageShifts),
       isFullAdmin: false,
     };
   },
@@ -5718,8 +6341,11 @@ export const pdksStorage = {
   },
 
   getCompanyName(): string {
+    if (authoritativeCompanyName && authoritativeCompanyName !== DEFAULT_COMPANY_NAME) {
+      return authoritativeCompanyName;
+    }
     const wallQR = this.getInternalCompanyWallQR();
-    return sanitizeString(wallQR.companyName, 100) || DEFAULT_COMPANY_NAME;
+    return sanitizeString(wallQR.companyName, 100) || authoritativeCompanyName || DEFAULT_COMPANY_NAME;
   },
 
   async fetchCompanyNameFromServer(): Promise<string | null> {
@@ -5732,13 +6358,16 @@ export const pdksStorage = {
       if (!res.ok) return null;
       const json = await res.json().catch(() => null);
       const srvName = sanitizeString(
-        json?.systemSettings?.companyName || json?.companyName || '',
+        json?.systemSettings?.companyName || json?.settings?.companyName || json?.companyName || '',
         100
       );
       if (srvName) {
+        if (srvName !== DEFAULT_COMPANY_NAME) {
+          authoritativeCompanyName = srvName;
+        }
         const current = this.getInternalCompanyWallQR();
-        const srvBranch = json?.systemSettings?.branchName
-          ? sanitizeString(json.systemSettings.branchName, 100)
+        const srvBranch = json?.systemSettings?.branchName || json?.settings?.branchName
+          ? sanitizeString(json.systemSettings?.branchName || json.settings?.branchName, 100)
           : current.branchName;
         if (current.companyName !== srvName || (srvBranch && current.branchName !== srvBranch)) {
           const updated: CompanyWallQRConfig = {
@@ -5746,7 +6375,7 @@ export const pdksStorage = {
             companyName: srvName,
             ...(srvBranch ? { branchName: srvBranch } : {}),
           };
-          localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
+          safeSetLocalStorage(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
           window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: updated }));
         }
         window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: srvName }));
@@ -5809,7 +6438,7 @@ export const pdksStorage = {
         }
         if (typeof json.version === 'number') {
           localDbVersion = json.version;
-          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
+          safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
         }
       } catch {
         return {
@@ -5824,13 +6453,14 @@ export const pdksStorage = {
       };
     }
 
+    authoritativeCompanyName = cleanCompany;
     const current = this.getInternalCompanyWallQR();
     const updated: CompanyWallQRConfig = {
       ...current,
       companyName: cleanCompany,
       ...(cleanBranch ? { branchName: cleanBranch } : {}),
     };
-    localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
+    safeSetLocalStorage(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
 
     window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: cleanCompany }));
     window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: updated }));
@@ -5838,7 +6468,7 @@ export const pdksStorage = {
     return {
       success: true,
       companyName: cleanCompany,
-      message: 'Şirket adı başarıyla güncellendi',
+      message: 'Şirket adı merkezi veritabanına kalıcı olarak kaydedildi',
     };
   },
 
@@ -5855,43 +6485,56 @@ export const pdksStorage = {
       return { success: false, message: 'Şirket adı boş bırakılamaz.' };
     }
     const cleanBranch = branchName ? sanitizeString(branchName, 100) : undefined;
+    const saToken = getSuperAdminToken();
+    if (!saToken || typeof fetch !== 'function') {
+      return {
+        success: false,
+        message: 'Süper Yönetici oturum doğrulaması bulunamadı. Lütfen Admin.Admin ile tekrar giriş yapınız.',
+      };
+    }
+
+    try {
+      const res = await fetch('/api/super-admin/company-name', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Super-Admin-Token': saToken,
+        },
+        body: JSON.stringify({ companyName: cleanCompany, branchName: cleanBranch }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        return {
+          success: false,
+          message: json?.message || 'Şirket adı merkezi veritabanına kaydedilemedi.',
+        };
+      }
+      if (typeof json.version === 'number') {
+        localDbVersion = json.version;
+        safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+      }
+    } catch {
+      return {
+        success: false,
+        message: 'Sunucuya ulaşılamadığı için şirket adı güncellenemedi.',
+      };
+    }
+
+    authoritativeCompanyName = cleanCompany;
     const current = this.getInternalCompanyWallQR();
     const updated: CompanyWallQRConfig = {
       ...current,
       companyName: cleanCompany,
       ...(cleanBranch ? { branchName: cleanBranch } : {}),
     };
-    localStorage.setItem(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
-
-    const saToken = getSuperAdminToken();
-    if (this.isSuperAdmin(active) && saToken && typeof fetch === 'function') {
-      try {
-        const res = await fetch('/api/super-admin/company-name', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Super-Admin-Token': saToken,
-          },
-          body: JSON.stringify({ companyName: cleanCompany, branchName: cleanBranch }),
-        });
-        const json = await res.json().catch(() => null);
-        if (res.ok && json?.version) {
-          localDbVersion = json.version;
-          try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
-        }
-      } catch {
-        pushToServer('companyWallQR', updated);
-      }
-    } else {
-      pushToServer('companyWallQR', updated);
-    }
+    safeSetLocalStorage(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
 
     window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: cleanCompany }));
     window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: updated }));
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     return {
       success: true,
-      message: 'Şirket adı başarıyla güncellendi',
+      message: 'Şirket adı merkezi veritabanına kalıcı olarak kaydedildi',
     };
   },
 
