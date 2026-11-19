@@ -9,13 +9,13 @@ import {
   createInitialDatabase,
   getTodayString,
   DEFAULT_COMPANY_NAME,
-  CANONICAL_SHIFT_TEMPLATES,
 } from './src/db/defaultData.ts';
 import type { PDKSDatabase } from './src/db/defaultData.ts';
 import type {
   ActionType,
   AppPageKey,
   AttendanceRecord,
+  DeviceEntryApproval,
   Employee,
   Shift,
   EmployeeShiftAssignment,
@@ -850,13 +850,24 @@ function loadDatabase(): PDKSDatabase {
         if (!Array.isArray(parsed.employee_shifts)) {
           parsed.employee_shifts = [];
         }
-        // Ensure canonical shift templates (Sabah, Akşam, Gece, İzinli/OFF) exist in persisted DB
+        // Normalize existing shifts without resurrecting user-deleted shifts
         if (Array.isArray(parsed.shifts)) {
-          const existingShiftIds = new Set(parsed.shifts.map((s: Shift) => s?.id));
-          const missingCanonical = CANONICAL_SHIFT_TEMPLATES.filter((t) => !existingShiftIds.has(t.id));
-          if (missingCanonical.length > 0) {
-            parsed.shifts = [...missingCanonical, ...parsed.shifts];
-          }
+          parsed.shifts = parsed.shifts
+            .filter((s: Shift) => Boolean(s && s.id))
+            .map((s: Shift) => ({
+              ...s,
+              is_active: s.is_active !== false,
+            }));
+        }
+        // Only treat a database as seed-default when explicitly flagged and still at version 1 with default companyName
+        if (
+          parsed.isSeedDefault === true &&
+          ((parsed.version && parsed.version > 1) ||
+            (typeof parsed.companyName === 'string' &&
+              parsed.companyName.trim() !== '' &&
+              parsed.companyName.trim() !== DEFAULT_COMPANY_NAME))
+        ) {
+          parsed.isSeedDefault = false;
         }
         // Normalize can_manage_shifts on persisted user accounts
         if (Array.isArray(parsed.accounts)) {
@@ -1044,6 +1055,7 @@ const sseClients = new Set<Response>();
 function broadcastUpdate(reason: string, collection?: string) {
   dbState.version = (dbState.version || 0) + 1;
   dbState.lastUpdated = new Date().toISOString();
+  dbState.isSeedDefault = false;
   saveDatabase(dbState);
 
   const payload = JSON.stringify({
@@ -1307,6 +1319,276 @@ app.post('/api/db/sync', (req: Request, res: Response) => {
     return res.status(400).json({ success: false, message: 'Geçersiz sync gövdesi.' });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message || 'Sync hatası' });
+  }
+});
+
+// 2b. Create or Update Shift Definition (NO time-overlap blocking, supports overnight shifts like 22:00-06:00)
+app.post('/api/shifts', (req: Request, res: Response) => {
+  try {
+    const actor = resolveActorServer(req);
+    if (!actor.isAuthenticated) {
+      return res.status(401).json({ success: false, message: 'Oturum doğrulanamadı.' });
+    }
+    const canEditShifts =
+      actor.isSuperAdmin ||
+      actor.account?.role === 'ik_yoneticisi' ||
+      actor.account?.can_manage_shifts === true ||
+      Boolean(actor.perms.canManageShifts);
+    if (!canEditShifts) {
+      return res.status(403).json({
+        success: false,
+        message: 'Yetkisiz İşlem: Vardiya tanımlama yetkisi yalnızca İK ve yetkili yöneticilere aittir.',
+      });
+    }
+
+    const body = req.body || {};
+    const name = String(body.name || '').trim();
+    const startTime = String(body.startTime || '08:30').trim();
+    const endTime = String(body.endTime || '17:30').trim();
+    const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+    if (!name) {
+      return res.status(400).json({ success: false, message: 'Vardiya adı boş bırakılamaz.' });
+    }
+    if (!body.isOffDay && (!timeRegex.test(startTime) || !timeRegex.test(endTime))) {
+      return res.status(400).json({
+        success: false,
+        message: 'Geçerli başlangıç ve bitiş saatleri (SS:DD) giriniz.',
+      });
+    }
+
+    const shiftId =
+      typeof body.id === 'string' && body.id.trim()
+        ? body.id.trim()
+        : `SHIFT-${Date.now().toString().slice(-6)}`;
+    const workDays = Array.isArray(body.workDays) && body.workDays.length > 0
+      ? body.workDays.map((d: unknown) => String(d))
+      : body.isOffDay
+        ? []
+        : ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'];
+
+    const isOffDay = Boolean(body.isOffDay) || shiftId === 'SHIFT-OFF' || body.colorKey === 'off';
+    const nextShift: Shift = {
+      id: shiftId,
+      name,
+      startTime: isOffDay ? '00:00' : startTime,
+      endTime: isOffDay ? '00:00' : endTime,
+      toleranceMinutes: isOffDay ? 0 : Math.max(0, Number(body.toleranceMinutes ?? 15) || 0),
+      breakMinutes: isOffDay ? 0 : Math.max(0, Number(body.breakMinutes ?? 60) || 0),
+      workDays: isOffDay ? [] : workDays,
+      isOffDay,
+      colorKey: body.colorKey || (isOffDay ? 'off' : 'custom'),
+      is_active: true,
+    };
+
+    const idx = dbState.shifts.findIndex((s) => s.id === shiftId);
+    if (idx >= 0) {
+      dbState.shifts[idx] = nextShift;
+    } else {
+      dbState.shifts.push(nextShift);
+    }
+
+    broadcastUpdate(`Saved shift ${shiftId}`, 'shifts');
+    return res.json({
+      success: true,
+      shift: nextShift,
+      shifts: dbState.shifts,
+      version: dbState.version,
+      message: 'Vardiya planı başarıyla kaydedildi.',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message || 'Vardiya kaydedilemedi.' });
+  }
+});
+
+// 2c. Delete Shift Definition: Soft-Delete (is_active = false) if referenced by employees/assignments, Hard-Delete if unused
+app.delete('/api/shifts/:id', (req: Request, res: Response) => {
+  try {
+    const actor = resolveActorServer(req);
+    if (!actor.isAuthenticated) {
+      return res.status(401).json({ success: false, message: 'Oturum doğrulanamadı.' });
+    }
+    const canDeleteShift =
+      actor.isSuperAdmin ||
+      actor.account?.role === 'ik_yoneticisi' ||
+      Boolean(actor.perms.canDelete) ||
+      Boolean(actor.perms.canManageShifts) ||
+      actor.account?.can_manage_shifts === true;
+    if (!canDeleteShift) {
+      return res.status(403).json({
+        success: false,
+        message: 'Yetkisiz İşlem: Vardiya silme yetkiniz bulunmamaktadır.',
+      });
+    }
+
+    const shiftId = String(req.params.id || '').trim();
+    const idx = dbState.shifts.findIndex((s) => s.id === shiftId);
+    if (idx < 0) {
+      return res.status(404).json({ success: false, message: 'Silinecek vardiya tanımı bulunamadı.' });
+    }
+
+    const targetShift = dbState.shifts[idx];
+    const isReferencedByEmployee = dbState.employees.some((e) => e && e.shiftId === shiftId);
+    const isReferencedBySchedule = (dbState.employee_shifts || []).some((es) => es && es.shiftId === shiftId);
+
+    let mode: 'soft_delete' | 'hard_delete' = 'hard_delete';
+    if (isReferencedByEmployee || isReferencedBySchedule) {
+      mode = 'soft_delete';
+      dbState.shifts[idx] = {
+        ...targetShift,
+        is_active: false,
+      };
+    } else {
+      dbState.shifts = dbState.shifts.filter((s) => s.id !== shiftId);
+    }
+
+    broadcastUpdate(`Deleted shift ${shiftId} (${mode})`, 'shifts');
+    return res.json({
+      success: true,
+      mode,
+      shiftId,
+      shifts: dbState.shifts,
+      version: dbState.version,
+      message:
+        mode === 'soft_delete'
+          ? `"${targetShift.name}" geçmiş/aktif kayıtlarda kullanıldığı için pasife alındı ve aktif listeden kaldırıldı.`
+          : `"${targetShift.name}" vardiya tanımı kalıcı olarak silindi.`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message || 'Vardiya silinemedi.' });
+  }
+});
+
+// 2d. Full Snapshot Restore (Auto-heals freshly deployed containers from client vault OR restores JSON backup)
+app.post('/api/db/restore-snapshot', (req: Request, res: Response) => {
+  try {
+    const body = req.body || {};
+    const snapshot = body.snapshot && typeof body.snapshot === 'object' ? body.snapshot : body;
+    const isAutoHydrate = body.mode === 'auto_hydrate_fresh_server';
+
+    if (isAutoHydrate) {
+      // Only allow automatic hydration when the running server is still on fresh seed defaults
+      if (!dbState.isSeedDefault) {
+        return res.json({
+          success: true,
+          skipped: true,
+          reason: 'server_already_customized',
+          version: dbState.version,
+          data: getPublicDatabaseSnapshot(dbState),
+        });
+      }
+    } else {
+      const actor = resolveActorServer(req);
+      if (!actor.isAuthenticated) {
+        return res.status(401).json({ success: false, message: 'Geri yükleme için yönetici oturumu gereklidir.' });
+      }
+      if (!actor.isSuperAdmin && actor.account?.role !== 'ik_yoneticisi' && !actor.perms.canManageSettings) {
+        return res.status(403).json({
+          success: false,
+          message: 'Yetkisiz İşlem: Yedek geri yükleme yetkisi yalnızca Süper Yönetici ve İK Yöneticisine aittir.',
+        });
+      }
+    }
+
+    if (!snapshot || typeof snapshot !== 'object') {
+      return res.status(400).json({ success: false, message: 'Geçersiz yedek dosyası formatı.' });
+    }
+
+    const incomingCompanyName =
+      (typeof snapshot.systemSettings?.companyName === 'string' && snapshot.systemSettings.companyName.trim()) ||
+      (typeof snapshot.companyName === 'string' && snapshot.companyName.trim()) ||
+      (typeof snapshot.companyWallQR?.companyName === 'string' && snapshot.companyWallQR.companyName.trim()) ||
+      '';
+
+    if (incomingCompanyName) {
+      dbState.companyName = incomingCompanyName;
+      const nextSystemSettings: SystemSettings = {
+        ...(dbState.systemSettings || { companyName: incomingCompanyName }),
+        ...(snapshot.systemSettings && typeof snapshot.systemSettings === 'object' ? snapshot.systemSettings : {}),
+        companyName: incomingCompanyName,
+        updatedAt: snapshot.systemSettings?.updatedAt || new Date().toISOString(),
+      };
+      dbState.systemSettings = nextSystemSettings;
+      if (incomingCompanyName !== DEFAULT_COMPANY_NAME) {
+        savePersistentSystemSettings(nextSystemSettings);
+      }
+    }
+
+    if (snapshot.companyWallQR && typeof snapshot.companyWallQR === 'object') {
+      dbState.companyWallQR = {
+        ...dbState.companyWallQR,
+        ...snapshot.companyWallQR,
+        companyName: incomingCompanyName || dbState.companyName,
+      };
+    } else if (incomingCompanyName && dbState.companyWallQR) {
+      dbState.companyWallQR.companyName = incomingCompanyName;
+    }
+
+    if (typeof snapshot.companyLogo === 'string' && snapshot.companyLogo.trim() && !snapshot.companyLogo.trim().startsWith('blob:')) {
+      dbState.companyLogo = snapshot.companyLogo.trim();
+    }
+    if (typeof snapshot.kioskLockPassword === 'string' && snapshot.kioskLockPassword.trim()) {
+      dbState.kioskLockPassword = snapshot.kioskLockPassword.trim();
+    }
+    if (Array.isArray(snapshot.employees) && snapshot.employees.length > 0) {
+      dbState.employees = filterVisibleItems(snapshot.employees as Employee[]).map((emp) => {
+        if (typeof emp.avatar === 'string' && emp.avatar.startsWith('data:image/')) {
+          const savedUrl = persistAvatarToDisk(emp.id, emp.avatar);
+          if (savedUrl) return { ...emp, avatar: savedUrl };
+        }
+        return emp;
+      });
+    }
+    if (Array.isArray(snapshot.accounts) && snapshot.accounts.length > 0) {
+      dbState.accounts = filterVisibleItems(snapshot.accounts as UserAccount[]).map((acc) => {
+        if (typeof acc.avatar === 'string' && acc.avatar.startsWith('data:image/')) {
+          const savedUrl = persistAvatarToDisk(acc.employeeId || acc.id, acc.avatar);
+          if (savedUrl) return { ...acc, avatar: savedUrl };
+        }
+        return acc;
+      });
+    }
+    if (Array.isArray(snapshot.shifts)) {
+      dbState.shifts = (snapshot.shifts as Shift[])
+        .filter((s) => Boolean(s && s.id))
+        .map((s) => ({ ...s, is_active: s.is_active !== false }));
+    }
+    if (Array.isArray(snapshot.employee_shifts)) {
+      dbState.employee_shifts = snapshot.employee_shifts as EmployeeShiftAssignment[];
+    }
+    if (Array.isArray(snapshot.records)) {
+      dbState.records = filterVisibleItems(snapshot.records as AttendanceRecord[]);
+    }
+    if (Array.isArray(snapshot.leaves)) {
+      dbState.leaves = snapshot.leaves as LeaveRequest[];
+    }
+    if (Array.isArray(snapshot.overtime)) {
+      dbState.overtime = snapshot.overtime as OvertimeRequest[];
+    }
+    if (Array.isArray(snapshot.notifications)) {
+      dbState.notifications = filterVisibleItems(snapshot.notifications as PDKSNotification[]);
+    }
+    if (Array.isArray(snapshot.supervisorAssignments)) {
+      dbState.supervisorAssignments = filterVisibleItems(snapshot.supervisorAssignments as SupervisorAssignment[]);
+    }
+    if (Array.isArray(snapshot.deviceApprovals)) {
+      dbState.deviceApprovals = filterVisibleItems(snapshot.deviceApprovals as DeviceEntryApproval[]);
+    }
+    if (snapshot.settings && typeof snapshot.settings === 'object') {
+      dbState.settings = { ...dbState.settings, ...snapshot.settings };
+    }
+
+    broadcastUpdate(isAutoHydrate ? 'Auto-hydrated from client vault' : 'Restored JSON backup', 'all');
+    return res.json({
+      success: true,
+      restored: true,
+      version: dbState.version,
+      lastUpdated: dbState.lastUpdated,
+      data: getPublicDatabaseSnapshot(dbState),
+      message: 'Sistem yedeği başarıyla geri yüklendi ve tüm cihazlara senkronize edildi.',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message || 'Yedek geri yükleme hatası.' });
   }
 });
 
@@ -2144,30 +2426,267 @@ app.post('/api/leaves', (req: Request, res: Response) => {
   return res.json({ success: true, leave: item, leaves: dbState.leaves });
 });
 
+const DEFAULT_ANNUAL_LEAVE_ENTITLEMENT = 14;
+
+function enumerateDateRangeServer(startDate: string, endDate: string): string[] {
+  const result: string[] = [];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    return result;
+  }
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const [ey, em, ed] = endDate.split('-').map(Number);
+  const start = new Date(sy, sm - 1, sd, 12, 0, 0);
+  const end = new Date(ey, em - 1, ed, 12, 0, 0);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+    return result;
+  }
+  const cursor = new Date(start.getTime());
+  let guard = 0;
+  while (cursor <= end && guard < 366) {
+    const y = cursor.getFullYear();
+    const m = String(cursor.getMonth() + 1).padStart(2, '0');
+    const d = String(cursor.getDate()).padStart(2, '0');
+    result.push(`${y}-${m}-${d}`);
+    cursor.setDate(cursor.getDate() + 1);
+    guard += 1;
+  }
+  return result;
+}
+
+function ensureEmployeeAnnualLeaveBalanceServer(emp: Employee): number {
+  const entitlement =
+    typeof emp.annualLeaveEntitlement === 'number' && emp.annualLeaveEntitlement >= 0
+      ? emp.annualLeaveEntitlement
+      : DEFAULT_ANNUAL_LEAVE_ENTITLEMENT;
+  emp.annualLeaveEntitlement = entitlement;
+
+  if (typeof emp.annualLeaveBalance === 'number' && !Number.isNaN(emp.annualLeaveBalance)) {
+    return emp.annualLeaveBalance;
+  }
+
+  const usedApprovedDays = dbState.leaves
+    .filter(
+      (l) =>
+        l.employeeId === emp.id &&
+        l.status === 'approved' &&
+        l.leaveType === 'Yıllık İzin'
+    )
+    .reduce((sum, l) => sum + Math.max(0, Number(l.days) || 0), 0);
+
+  emp.annualLeaveBalance = Math.max(0, entitlement - usedApprovedDays);
+  return emp.annualLeaveBalance;
+}
+
 app.post('/api/leaves/:id/approve', (req: Request, res: Response) => {
   const { id } = req.params;
   const leave = dbState.leaves.find((l) => l.id === id);
   if (!leave) return res.status(404).json({ success: false, message: 'İzin bulunamadı.' });
+  if (leave.status === 'cancelled') {
+    return res.status(400).json({ success: false, message: 'İptal edilmiş izin talebi onaylanamaz.' });
+  }
+
+  const wasAlreadyApproved = leave.status === 'approved';
+  const emp = dbState.employees.find((e) => e.id === leave.employeeId);
+
+  if (!wasAlreadyApproved && emp) {
+    const currentBalance = ensureEmployeeAnnualLeaveBalanceServer(emp);
+    if (leave.leaveType === 'Yıllık İzin') {
+      const deductDays = Math.max(0, Number(leave.days) || 0);
+      emp.annualLeaveBalance = Math.max(0, currentBalance - deductDays);
+      leave.balance_deducted_days = deductDays;
+    }
+    const today = getTodayString();
+    if (leave.startDate <= today && leave.endDate >= today) {
+      emp.status = 'leave';
+      emp.currentPresence = 'outside';
+    }
+  }
 
   leave.status = 'approved';
   leave.approvedAt = new Date().toISOString();
   leave.approvedBy = req.body.approvedBy || 'İK Yöneticisi';
 
   broadcastUpdate(`Leave approved for ${leave.employeeName}`, 'leaves');
-  return res.json({ success: true, leave, leaves: dbState.leaves });
+  return res.json({
+    success: true,
+    leave,
+    leaves: dbState.leaves,
+    employees: filterVisibleItems(dbState.employees),
+    version: dbState.version,
+  });
 });
 
 app.post('/api/leaves/:id/reject', (req: Request, res: Response) => {
   const { id } = req.params;
   const leave = dbState.leaves.find((l) => l.id === id);
   if (!leave) return res.status(404).json({ success: false, message: 'İzin bulunamadı.' });
+  if (leave.status === 'cancelled') {
+    return res.status(400).json({ success: false, message: 'İptal edilmiş izin talebi reddedilemez.' });
+  }
 
   leave.status = 'rejected';
   leave.rejectionReason = req.body.reason || 'İK tarafından reddedildi.';
 
   broadcastUpdate(`Leave rejected for ${leave.employeeName}`, 'leaves');
-  return res.json({ success: true, leave, leaves: dbState.leaves });
+  return res.json({ success: true, leave, leaves: dbState.leaves, version: dbState.version });
 });
+
+function handleCancelLeaveRequestServer(req: Request, res: Response) {
+  try {
+    const actor = resolveActorServer(req);
+    if (!actor.isAuthenticated) {
+      return res.status(401).json({
+        success: false,
+        message: 'Oturum doğrulanamadı. Lütfen tekrar giriş yapın.',
+      });
+    }
+
+    // Strict RBAC: ONLY HR (ik_yoneticisi) and Super Admin can cancel leaves
+    const isAuthorizedHR = actor.isSuperAdmin || actor.account?.role === 'ik_yoneticisi';
+    if (!isAuthorizedHR) {
+      return res.status(403).json({
+        success: false,
+        message: '403 Forbidden: Yıllık izin iptal yetkisi sadece İK birimindedir',
+      });
+    }
+
+    const id = String(req.params.id || '').trim();
+    const leave = dbState.leaves.find((l) => l.id === id);
+    if (!leave) {
+      return res.status(404).json({ success: false, message: 'İptal edilecek izin talebi bulunamadı.' });
+    }
+    if (leave.status === 'cancelled') {
+      return res.status(400).json({ success: false, message: 'Bu izin talebi zaten iptal edilmiş.' });
+    }
+
+    const rawReason = String(req.body?.cancel_reason ?? req.body?.reason ?? '').trim();
+    const cancelReason = rawReason || 'İK tarafından iptal edildi';
+    const previousStatus = leave.status;
+    const nowIso = new Date().toISOString();
+    // Keep hidden Super Admin anonymous in audit logs (never expose Admin.Admin username)
+    const cancelledByLabel = actor.isSuperAdmin
+      ? 'Sistem Yöneticisi (İK)'
+      : actor.actorName || 'İK Yöneticisi';
+
+    const emp = dbState.employees.find((e) => e.id === leave.employeeId);
+    let refundedDays = 0;
+
+    // 1. Automatic Annual Leave Balance Refund (when an approved annual leave is cancelled)
+    if (previousStatus === 'approved' && leave.leaveType === 'Yıllık İzin' && emp) {
+      // Compute current balance BEFORE flipping leave.status to 'cancelled'
+      const currentBalance = ensureEmployeeAnnualLeaveBalanceServer(emp);
+      const entitlement = emp.annualLeaveEntitlement ?? DEFAULT_ANNUAL_LEAVE_ENTITLEMENT;
+      const daysToRefund =
+        typeof leave.balance_deducted_days === 'number' && leave.balance_deducted_days >= 0
+          ? leave.balance_deducted_days
+          : Math.max(0, Number(leave.days) || 0);
+
+      emp.annualLeaveBalance = Math.min(entitlement + daysToRefund, currentBalance + daysToRefund);
+      // Cap neatly at entitlement if balance wasn't artificially over-entitlement
+      if (currentBalance <= entitlement) {
+        emp.annualLeaveBalance = Math.min(entitlement, currentBalance + daysToRefund);
+      }
+      refundedDays = daysToRefund;
+      leave.balance_refunded_days = refundedDays;
+    }
+
+    // 2. Soft-Cancel Leave Record (Preserve in DB with full Audit Trail)
+    leave.status = 'cancelled';
+    leave.cancelled_by = cancelledByLabel;
+    leave.cancelled_at = nowIso;
+    leave.cancel_reason = cancelReason.slice(0, 300);
+
+    // 3. Automatic Weekly Shift Calendar & Presence Rollback
+    const affectedDates = enumerateDateRangeServer(leave.startDate, leave.endDate);
+    const affectedDateSet = new Set(affectedDates);
+    const offShiftIds = new Set(
+      dbState.shifts
+        .filter((s) => s && (s.isOffDay || s.id === 'SHIFT-OFF' || s.colorKey === 'off'))
+        .map((s) => s.id)
+    );
+    offShiftIds.add('SHIFT-OFF');
+
+    let clearedCalendarOverrides = 0;
+    if (Array.isArray(dbState.employee_shifts) && affectedDateSet.size > 0) {
+      const beforeCount = dbState.employee_shifts.length;
+      dbState.employee_shifts = dbState.employee_shifts.filter((es) => {
+        if (es.employeeId !== leave.employeeId) return true;
+        if (!affectedDateSet.has(es.date)) return true;
+        const isOffOrLeaveOverride =
+          offShiftIds.has(es.shiftId) ||
+          (typeof es.note === 'string' && /izin|leave|tatil/i.test(es.note));
+        return !isOffOrLeaveOverride;
+      });
+      clearedCalendarOverrides = beforeCount - dbState.employee_shifts.length;
+    }
+
+    // Restore employee active status if today was covered by the cancelled leave and no other approved leave covers today
+    const today = getTodayString();
+    let restoredActiveStatus = false;
+    if (emp && emp.status === 'leave' && leave.startDate <= today && leave.endDate >= today) {
+      const hasAnotherApprovedLeaveToday = dbState.leaves.some(
+        (other) =>
+          other.id !== leave.id &&
+          other.employeeId === emp.id &&
+          other.status === 'approved' &&
+          other.startDate <= today &&
+          other.endDate >= today
+      );
+      if (!hasAnotherApprovedLeaveToday) {
+        emp.status = 'active';
+        restoredActiveStatus = true;
+      }
+    }
+
+    // 4. Audit Notification
+    const notif: PDKSNotification = {
+      id: `NTF-${Date.now().toString().slice(-6)}`,
+      type: 'leave_request',
+      title: 'İzin Talebi İptal Edildi',
+      message: `${leave.employeeName} personeline ait ${leave.startDate} – ${leave.endDate} (${leave.days} gün, ${leave.leaveType}) izni ${cancelledByLabel} tarafından iptal edildi. Neden: ${leave.cancel_reason}.${refundedDays > 0 ? ` (+${refundedDays} gün yıllık izin bakiyesi iade edildi.)` : ''}`,
+      timestamp: nowIso,
+      read: false,
+      employeeId: leave.employeeId,
+      employeeName: leave.employeeName,
+      department: leave.department,
+      severity: 'warning',
+    };
+    dbState.notifications.unshift(notif);
+    if (dbState.notifications.length > 200) {
+      dbState.notifications = dbState.notifications.slice(0, 200);
+    }
+
+    broadcastUpdate(
+      `Leave cancelled (${leave.id}) for ${leave.employeeName} by ${cancelledByLabel}`,
+      'all'
+    );
+
+    return res.json({
+      success: true,
+      leave,
+      leaves: dbState.leaves,
+      employees: filterVisibleItems(dbState.employees),
+      employee_shifts: dbState.employee_shifts,
+      refundedDays,
+      clearedCalendarOverrides,
+      restoredCalendarDates: affectedDates,
+      restoredActiveStatus,
+      version: dbState.version,
+      message:
+        refundedDays > 0
+          ? `${leave.employeeName} personeline ait izin iptal edildi, +${refundedDays} gün yıllık izin bakiyesi iade edildi ve vardiya takvimi güncellendi.`
+          : `${leave.employeeName} personeline ait izin iptal edildi ve vardiya takvimi güncellendi.`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      message: err?.message || 'İzin iptal işlemi sırasında sunucu hatası oluştu.',
+    });
+  }
+}
+
+app.post('/api/leaves/:id/cancel', handleCancelLeaveRequestServer);
+app.put('/api/leaves/:id/cancel', handleCancelLeaveRequestServer);
 
 app.delete('/api/leaves/:id', (req: Request, res: Response) => {
   const { id } = req.params;
@@ -2965,6 +3484,39 @@ app.get('/api/employee-shifts', (req: Request, res: Response) => {
   });
 });
 
+function ensureOrResolveShiftForAssignmentServer(shiftId: string): Shift | undefined {
+  const existingIdx = dbState.shifts.findIndex((s) => s.id === shiftId);
+  if (existingIdx >= 0) {
+    const existing = dbState.shifts[existingIdx];
+    if (shiftId === 'SHIFT-OFF' && existing.is_active === false) {
+      dbState.shifts[existingIdx] = {
+        ...existing,
+        isOffDay: true,
+        colorKey: 'off',
+        is_active: true,
+      };
+    }
+    return dbState.shifts[existingIdx];
+  }
+  if (shiftId === 'SHIFT-OFF') {
+    const recreatedOffShift: Shift = {
+      id: 'SHIFT-OFF',
+      name: 'İzinli / Hafta Tatili',
+      startTime: '00:00',
+      endTime: '00:00',
+      toleranceMinutes: 0,
+      breakMinutes: 0,
+      workDays: [],
+      isOffDay: true,
+      colorKey: 'off',
+      is_active: true,
+    };
+    dbState.shifts.push(recreatedOffShift);
+    return recreatedOffShift;
+  }
+  return undefined;
+}
+
 // POST & PUT /api/employee-shifts - Single date-based shift assignment (Auto-save) with strict 403 RBAC + department check
 function handleUpsertEmployeeShift(req: Request, res: Response) {
   const actor = resolveActorServer(req);
@@ -2995,7 +3547,7 @@ function handleUpsertEmployeeShift(req: Request, res: Response) {
     });
   }
 
-  const targetShift = dbState.shifts.find((s) => s.id === shiftId);
+  const targetShift = ensureOrResolveShiftForAssignmentServer(shiftId.trim());
   if (!targetShift) {
     return res.status(404).json({ success: false, message: 'Seçilen vardiya şablonu sistemde bulunamadı.' });
   }
@@ -3041,6 +3593,7 @@ function handleUpsertEmployeeShift(req: Request, res: Response) {
     message: 'Vardiya güncellendi',
     assignment,
     employee: targetEmp,
+    shifts: dbState.shifts,
     employee_shifts: dbState.employee_shifts,
     version: dbState.version,
   });
@@ -3090,7 +3643,7 @@ app.post('/api/employee-shifts/bulk', (req: Request, res: Response) => {
       });
     }
 
-    const targetShift = dbState.shifts.find((s) => s.id === shiftId);
+    const targetShift = ensureOrResolveShiftForAssignmentServer(shiftId);
     if (!targetShift) {
       return res.status(404).json({
         success: false,
@@ -3149,6 +3702,7 @@ app.post('/api/employee-shifts/bulk', (req: Request, res: Response) => {
     message: 'Vardiya güncellendi',
     updatedCount: updatedAssignments.length,
     assignments: updatedAssignments,
+    shifts: dbState.shifts,
     employee_shifts: dbState.employee_shifts,
     version: dbState.version,
   });

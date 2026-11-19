@@ -40,6 +40,7 @@ import {
   LayoutGrid,
   Eye,
   Loader2,
+  Ban,
 } from 'lucide-react';
 import {
   Shift,
@@ -224,6 +225,8 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
 
   const activeUser = currentUser || pdksStorage.getActiveUser();
   const isHRManager = pdksStorage.isHRorSuperAdmin(activeUser);
+  const canCancelLeave =
+    pdksStorage.isSuperAdmin(activeUser) || activeUser?.role === 'ik_yoneticisi';
   const canToggleShiftPermissions = pdksStorage.canToggleShiftPermission(activeUser);
   const canManageShifts = pdksStorage.hasShiftManagePermission(activeUser);
   const managedDepartment = pdksStorage.getManagedShiftDepartment(activeUser);
@@ -471,11 +474,41 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     return 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-700/70 text-emerald-900 dark:text-emerald-200';
   };
 
+  const hasActiveOffDayShift = useMemo(
+    () => shifts.some((s) => Boolean(s.isOffDay || s.id === 'SHIFT-OFF' || s.colorKey === 'off')),
+    [shifts]
+  );
+
+  const calendarSelectableShifts = useMemo<Shift[]>(() => {
+    if (hasActiveOffDayShift) return shifts;
+    return [
+      ...shifts,
+      {
+        id: 'SHIFT-OFF',
+        name: 'İzinli / Hafta Tatili',
+        startTime: '00:00',
+        endTime: '00:00',
+        toleranceMinutes: 0,
+        breakMinutes: 0,
+        workDays: [],
+        isOffDay: true,
+        colorKey: 'off',
+        is_active: true,
+      },
+    ];
+  }, [shifts, hasActiveOffDayShift]);
+
   const getEffectiveShiftForCell = (emp: Employee, dateStr: string, dayName: string) => {
     const cellKey = `${emp.id}__${dateStr}`;
     const pending = pendingShiftChanges[cellKey];
     const savedOverride = employeeShiftMap.get(cellKey);
-    const defaultShift = shifts.find((s) => s.id === emp.shiftId) || shifts[0];
+    const defaultShift =
+      calendarSelectableShifts.find((s) => s.id === emp.shiftId) ||
+      calendarSelectableShifts.find((s) => !s.isOffDay) ||
+      calendarSelectableShifts[0];
+    const offDayShift = calendarSelectableShifts.find(
+      (s) => s.isOffDay || s.id === 'SHIFT-OFF' || s.colorKey === 'off'
+    );
     const defaultIsWorkDay = defaultShift ? defaultShift.workDays.includes(dayName) : false;
 
     const effectiveShiftId = pending
@@ -484,11 +517,11 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
         ? savedOverride.shiftId
         : defaultIsWorkDay && defaultShift
           ? defaultShift.id
-          : 'SHIFT-OFF';
+          : offDayShift?.id || 'SHIFT-OFF';
 
     const shiftObj =
-      shifts.find((s) => s.id === effectiveShiftId) ||
-      shifts.find((s) => s.id === 'SHIFT-OFF') ||
+      calendarSelectableShifts.find((s) => s.id === effectiveShiftId) ||
+      offDayShift ||
       defaultShift;
 
     return {
@@ -640,8 +673,11 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     return Number.isNaN(d.getTime()) ? 'Pazartesi' : names[d.getDay()];
   }, [selectedDailyDate]);
 
-  // Shift Modal
+  // Shift Modal & In-App Delete Confirmation State (iframe-safe, no window.confirm)
   const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
+  const [isSavingShift, setIsSavingShift] = useState(false);
+  const [shiftToDelete, setShiftToDelete] = useState<Shift | null>(null);
+  const [isDeletingShift, setIsDeletingShift] = useState(false);
   const [shiftForm, setShiftForm] = useState<Partial<Shift>>({
     name: '',
     startTime: '08:30',
@@ -649,10 +685,14 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     toleranceMinutes: 15,
     breakMinutes: 60,
     workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+    isOffDay: false,
   });
 
-  // Leave Modal
+  // Leave Modal & HR Leave Cancellation Modal (iframe-safe, no window.confirm)
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
+  const [leaveToCancel, setLeaveToCancel] = useState<LeaveRequest | null>(null);
+  const [cancelLeaveReason, setCancelLeaveReason] = useState<string>('');
+  const [isCancellingLeave, setIsCancellingLeave] = useState<boolean>(false);
   const [leaveForm, setLeaveForm] = useState({
     employeeId: '',
     leaveType: 'Yıllık İzin' as LeaveRequest['leaveType'],
@@ -948,37 +988,44 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     window.print();
   };
 
-  // Delete Shift (İK / Super Admin / Silme Yetkili)
+  // Delete Shift (İK / Super Admin / Silme Yetkili) — opens in-app confirmation modal
   const handleDeleteShift = (id: string, name: string) => {
     if (!isHRManager && !canDelete) {
       setPermissionNotice('Yetkisiz İşlem: Vardiya silme yetkiniz bulunmamaktadır.');
       setTimeout(() => setPermissionNotice(null), 4000);
       return;
     }
+    const target = shifts.find((s) => s.id === id) || {
+      id,
+      name,
+      startTime: '08:00',
+      endTime: '17:00',
+      toleranceMinutes: 15,
+      breakMinutes: 60,
+      workDays: [],
+    };
+    setShiftToDelete(target);
+  };
 
-    if (window.confirm(`"${name}" (${id}) vardiyasını silmek istediğinize emin misiniz?`)) {
-      pdksStorage.deleteShift(id);
-      loadData();
+  const confirmDeleteShift = async () => {
+    if (!shiftToDelete) return;
+    setIsDeletingShift(true);
+    try {
+      const res = await pdksStorage.deleteShiftAsync(shiftToDelete.id);
+      if (res.success) {
+        setShiftToDelete(null);
+        loadData();
+        showFloatingToast('success', res.message || 'Vardiya tanımı kaldırıldı.');
+      } else {
+        showFloatingToast('error', res.message || 'Vardiya silinemedi.');
+      }
+    } finally {
+      setIsDeletingShift(false);
     }
   };
 
-  // Conflict Detection Memos
-  const createShiftConflict = useMemo(() => {
-    if (!shiftForm.startTime || !shiftForm.endTime) return null;
-    for (const existingShift of shifts) {
-      const conflict = detectShiftTimeConflict(
-        {
-          name: shiftForm.name || 'Yeni Vardiya',
-          startTime: shiftForm.startTime,
-          endTime: shiftForm.endTime,
-          workDays: shiftForm.workDays,
-        },
-        existingShift
-      );
-      if (conflict.hasConflict) return conflict;
-    }
-    return null;
-  }, [shiftForm.startTime, shiftForm.endTime, shiftForm.workDays, shiftForm.name, shifts]);
+  // Shift template definitions intentionally allow overlapping hours across templates
+  // (e.g. 08:00-17:00 alongside 09:00-18:00 or 22:00-06:00 overnight shifts).
 
   const calendarCellConflict = useMemo(() => {
     if (!selectedCellDetail || !reassignShiftId) return null;
@@ -1048,13 +1095,6 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
       );
       setTimeout(() => setPermissionNotice(null), 4000);
       return;
-    }
-
-    if (assignShiftConflict?.hasConflict) {
-      const proceed = window.confirm(
-        `⚠️ Çakışma Kontrolü Uyarısı:\n\n${assignShiftConflict.message}\n\nVardiya atamasını yine de gerçekleştirmek istediğinize emin misiniz?`
-      );
-      if (!proceed) return;
     }
 
     const emp = employees.find((e) => e.id === assignForm.employeeId);
@@ -1128,7 +1168,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     if (!supEmp) return;
 
     if (supervisorFormAssignedIds.length === 0) {
-      alert('Lütfen bu Birim Amirinin sorumlu olacağı en az 1 personel seçiniz.');
+      showFloatingToast('error', 'Lütfen bu Birim Amirinin sorumlu olacağı en az 1 personel seçiniz.');
       return;
     }
 
@@ -1162,39 +1202,64 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     });
   };
 
-  // Save Shift (Only ik_yoneticisi)
-  const handleSaveShift = (e: React.FormEvent) => {
+  // Save Shift (Only ik_yoneticisi / Super Admin — NO overlap restriction, supports overnight shifts)
+  const handleSaveShift = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isHRManager) {
       setPermissionNotice('Yetkisiz İşlem: Yeni vardiya ekleme yetkisi yalnızca İK Yöneticisine aittir.');
       setTimeout(() => setPermissionNotice(null), 4000);
       return;
     }
-    if (!shiftForm.name) return;
-
-    // Çakışma Kontrolü (Conflict Check)
-    if (createShiftConflict?.hasConflict) {
-      const proceed = window.confirm(
-        `⚠️ Çakışma Kontrolü Uyarısı:\n\n${createShiftConflict.message}\n\nBu vardiya planını yine de kaydetmek istediğinize emin misiniz?`
-      );
-      if (!proceed) return;
+    const cleanName = (shiftForm.name || '').trim();
+    if (!cleanName) {
+      showFloatingToast('error', 'Lütfen vardiya adı giriniz.');
+      return;
     }
 
+    const isOffDay = Boolean(shiftForm.isOffDay);
+    const startTime = isOffDay ? '00:00' : (shiftForm.startTime || '08:30').trim();
+    const endTime = isOffDay ? '00:00' : (shiftForm.endTime || '17:30').trim();
+    const selectedDays = isOffDay
+      ? []
+      : shiftForm.workDays && shiftForm.workDays.length > 0
+        ? shiftForm.workDays
+        : ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'];
+
+    const shiftId =
+      typeof shiftForm.id === 'string' && shiftForm.id.trim()
+        ? shiftForm.id.trim()
+        : isOffDay && !hasActiveOffDayShift
+          ? 'SHIFT-OFF'
+          : isOffDay
+            ? `SHIFT-OFF-${Date.now().toString().slice(-5)}`
+            : `SHIFT-${Date.now().toString().slice(-6)}`;
+
     const newShift: Shift = {
-      id: `SHIFT-${Date.now().toString().slice(-4)}`,
-      name: shiftForm.name,
-      startTime: shiftForm.startTime || '08:30',
-      endTime: shiftForm.endTime || '17:30',
-      toleranceMinutes: Number(shiftForm.toleranceMinutes) || 15,
-      breakMinutes: Number(shiftForm.breakMinutes) || 60,
-      workDays: shiftForm.workDays || ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+      id: shiftId,
+      name: cleanName,
+      startTime,
+      endTime,
+      toleranceMinutes: isOffDay ? 0 : Math.max(0, Number(shiftForm.toleranceMinutes) || 0),
+      breakMinutes: isOffDay ? 0 : Math.max(0, Number(shiftForm.breakMinutes) || 0),
+      workDays: selectedDays,
+      isOffDay,
+      colorKey: isOffDay ? 'off' : 'custom',
+      is_active: true,
     };
 
-    pdksStorage.saveShift(newShift);
-    setIsShiftModalOpen(false);
-    loadData();
-    setNotificationToast('Yeni vardiya planı başarıyla kaydedildi.');
-    setTimeout(() => setNotificationToast(null), 3000);
+    setIsSavingShift(true);
+    try {
+      const res = await pdksStorage.saveShiftAsync(newShift);
+      if (res.success) {
+        setIsShiftModalOpen(false);
+        loadData();
+        showFloatingToast('success', res.message || 'Yeni vardiya planı başarıyla kaydedildi.');
+      } else {
+        showFloatingToast('error', res.message || 'Vardiya kaydedilemedi.');
+      }
+    } finally {
+      setIsSavingShift(false);
+    }
   };
 
   // Save Leave Request
@@ -1235,6 +1300,44 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
     setTimeout(() => setNotificationToast(null), 3000);
   };
 
+  const handleOpenCancelLeaveModal = (leave: LeaveRequest) => {
+    if (!canCancelLeave) {
+      showFloatingToast('error', '403 Forbidden: Yıllık izin iptal yetkisi sadece İK birimindedir');
+      return;
+    }
+    setLeaveToCancel(leave);
+    setCancelLeaveReason('');
+  };
+
+  const handleConfirmCancelLeave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!leaveToCancel) return;
+    if (!canCancelLeave) {
+      showFloatingToast('error', '403 Forbidden: Yıllık izin iptal yetkisi sadece İK birimindedir');
+      return;
+    }
+    const cleanedReason = cancelLeaveReason.trim();
+    if (!cleanedReason) {
+      showFloatingToast('error', 'Lütfen iptal nedenini belirtiniz.');
+      return;
+    }
+
+    setIsCancellingLeave(true);
+    try {
+      const res = await pdksStorage.cancelLeaveRequestAsync(leaveToCancel.id, cleanedReason);
+      if (res.success) {
+        setLeaveToCancel(null);
+        setCancelLeaveReason('');
+        loadData();
+        showFloatingToast('success', res.message);
+      } else {
+        showFloatingToast('error', res.message || 'İzin talebi iptal edilemedi.');
+      }
+    } finally {
+      setIsCancellingLeave(false);
+    }
+  };
+
   // Reassign Shift for Employee from Interactive Calendar (IK & Yetkili Birim Amiri)
   const handleApplyShiftReassignment = () => {
     if (!selectedCellDetail || !reassignShiftId) return;
@@ -1251,14 +1354,6 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
       );
       setTimeout(() => setPermissionNotice(null), 4000);
       return;
-    }
-
-    // Çakışma Kontrolü Uyarısı
-    if (calendarCellConflict?.hasConflict) {
-      const proceed = window.confirm(
-        `⚠️ Çakışma Kontrolü Uyarısı:\n\n${calendarCellConflict.message}\n\nYine de bu vardiyayı personele atamak istediğinize emin misiniz?`
-      );
-      if (!proceed) return;
     }
 
     const updatedEmp: Employee = {
@@ -1691,22 +1786,29 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
         </div>
       </div>
 
-      {/* VIEW SWITCHER TABS */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
+      {/* VIEW SWITCHER TABS — 2 Satırlı Kaydırmasız Tam Sığan Düzen */}
+      <div className="w-full overflow-x-hidden border-b border-slate-200 dark:border-slate-800 pb-3 space-y-2">
+        {/* 1. Satır: Ana 4 Sekme */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
           <button
+            type="button"
             onClick={() => setActiveViewTab('calendar')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl font-bold transition-all cursor-pointer whitespace-nowrap ${
+            className={`w-full min-w-0 flex items-center justify-between gap-1.5 px-3 py-2 rounded-xl font-bold transition-all cursor-pointer border ${
               activeViewTab === 'calendar'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 border-slate-200 dark:border-slate-700'
             }`}
+            title="Haftalık Vardiya Takvimi (Etkileşimli)"
           >
-            <CalendarDays className="w-4 h-4" />
-            <span>Haftalık Vardiya Takvimi</span>
+            <span className="inline-flex items-center gap-1.5 min-w-0">
+              <CalendarDays className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Haftalık Vardiya Takvimi</span>
+            </span>
             <span
-              className={`px-1.5 py-0.5 rounded-full text-[10px] ${
-                activeViewTab === 'calendar' ? 'bg-indigo-500 text-white' : 'bg-slate-100 text-slate-600'
+              className={`px-1.5 py-0.5 rounded-md text-[10px] font-semibold shrink-0 ${
+                activeViewTab === 'calendar'
+                  ? 'bg-indigo-500 text-white'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
               }`}
             >
               Etkileşimli
@@ -1714,97 +1816,146 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveViewTab('shifts')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl font-bold transition-all cursor-pointer whitespace-nowrap ${
+            className={`w-full min-w-0 flex items-center justify-between gap-1.5 px-3 py-2 rounded-xl font-bold transition-all cursor-pointer border tabular-nums ${
               activeViewTab === 'shifts'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 border-slate-200 dark:border-slate-700'
             }`}
+            title={`Vardiya Tanımları (${shifts.length})`}
           >
-            <Clock className="w-4 h-4" />
-            <span>Vardiya Tanımları ({shifts.length})</span>
+            <span className="inline-flex items-center gap-1.5 min-w-0">
+              <Clock className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Vardiya Tanımları</span>
+            </span>
+            <span
+              className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono font-bold shrink-0 ${
+                activeViewTab === 'shifts'
+                  ? 'bg-indigo-500 text-white'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              {shifts.length}
+            </span>
           </button>
 
-          {/* Birim Amirleri & Yetkilendirme Tabı */}
           <button
+            type="button"
             onClick={() => setActiveViewTab('supervisors')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl font-bold transition-all cursor-pointer whitespace-nowrap ${
+            className={`w-full min-w-0 flex items-center justify-between gap-1.5 px-3 py-2 rounded-xl font-bold transition-all cursor-pointer border tabular-nums ${
               activeViewTab === 'supervisors'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 border-slate-200 dark:border-slate-700'
             }`}
+            title={`Birim Amirleri & Yetkiler (${supervisorAssignments.length})`}
           >
-            <ShieldCheck className="w-4 h-4" />
-            <span>Birim Amirleri & Yetkiler ({supervisorAssignments.length})</span>
+            <span className="inline-flex items-center gap-1.5 min-w-0">
+              <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">
+                Birim Amirleri & Yetkiler ({supervisorAssignments.length})
+              </span>
+            </span>
             {isHRManager && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-purple-100 text-purple-700 font-bold">
+              <span
+                className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold shrink-0 ${
+                  activeViewTab === 'supervisors'
+                    ? 'bg-indigo-500 text-white'
+                    : 'bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300'
+                }`}
+              >
                 İK Yönetimi
               </span>
             )}
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveViewTab('leaves')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl font-bold transition-all cursor-pointer whitespace-nowrap ${
+            className={`w-full min-w-0 flex items-center justify-between gap-1.5 px-3 py-2 rounded-xl font-bold transition-all cursor-pointer border tabular-nums ${
               activeViewTab === 'leaves'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 border-slate-200 dark:border-slate-700'
             }`}
+            title={`İzin Talepleri (${leaves.length})`}
           >
-            <CalendarCheck className="w-4 h-4" />
-            <span>İzin Talepleri ({leaves.length})</span>
+            <span className="inline-flex items-center gap-1.5 min-w-0">
+              <CalendarCheck className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">İzin Talepleri</span>
+            </span>
+            <span
+              className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono font-bold shrink-0 ${
+                activeViewTab === 'leaves'
+                  ? 'bg-indigo-500 text-white'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              {leaves.length}
+            </span>
           </button>
+        </div>
 
+        {/* 2. Satır: Fazla Mesai, Tümünü Göster ve Hızlı Vardiya Atama */}
+        <div
+          className={`grid grid-cols-1 gap-2 text-xs ${
+            isHRManager || isSupervisor ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
+          }`}
+        >
           <button
+            type="button"
             onClick={() => setActiveViewTab('overtime')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl font-bold transition-all cursor-pointer whitespace-nowrap ${
+            className={`w-full min-w-0 flex items-center justify-between gap-1.5 px-3 py-2 rounded-xl font-bold transition-all cursor-pointer border tabular-nums ${
               activeViewTab === 'overtime'
-                ? 'bg-amber-600 text-white shadow-xs'
-                : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 border-slate-200 dark:border-slate-700'
             }`}
+            title={`Fazla Mesai Talepleri (${overtimes.length})`}
           >
-            <Timer className="w-4 h-4" />
-            <span>Fazla Mesai Talepleri ({overtimes.length})</span>
+            <span className="inline-flex items-center gap-1.5 min-w-0">
+              <Timer className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Fazla Mesai Talepleri ({overtimes.length})</span>
+            </span>
             {overtimes.filter((o) => o.status === 'pending').length > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-bold">
+              <span className="px-1.5 py-0.5 rounded-md bg-rose-500 text-white text-[10px] font-bold shrink-0">
                 {overtimes.filter((o) => o.status === 'pending').length} bekleyen
               </span>
             )}
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveViewTab('all')}
-            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl font-semibold transition-all cursor-pointer whitespace-nowrap ${
+            className={`w-full min-w-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl font-semibold transition-all cursor-pointer border ${
               activeViewTab === 'all'
-                ? 'bg-slate-900 dark:bg-indigo-600 text-white shadow-xs'
-                : 'bg-white text-slate-500 hover:bg-slate-100 border border-slate-200'
+                ? 'bg-slate-900 dark:bg-indigo-600 text-white border-slate-900 dark:border-indigo-600 shadow-xs'
+                : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 border-slate-200 dark:border-slate-700'
             }`}
           >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Tümünü Göster</span>
+            <Sparkles className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Tümünü Göster</span>
           </button>
-        </div>
 
-        {/* Vardiya Ata & Çakışma Denetimi Butonu (İK ve Birim Amirleri için) */}
-        {(isHRManager || isSupervisor) && (
-          <button
-            onClick={() => {
-              const allowedEmps = isHRManager
-                ? employees
-                : employees.filter((e) => responsibleEmpIds.includes(e.id));
-              setAssignForm({
-                employeeId: allowedEmps[0]?.id || '',
-                shiftId: shifts[0]?.id || '',
-              });
-              setIsAssignShiftModalOpen(true);
-            }}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 shadow-2xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
-            title="Personellere vardiya atarken iki farklı vardiyanın çakışmasını otomatik denetleyin"
-          >
-            <UserCheck className="w-4 h-4 text-indigo-600" />
-            <span>Vardiya Ata & Çakışma Denetimi</span>
-          </button>
-        )}
+          {(isHRManager || isSupervisor) && (
+            <button
+              type="button"
+              onClick={() => {
+                const allowedEmps = isHRManager
+                  ? employees
+                  : employees.filter((e) => responsibleEmpIds.includes(e.id));
+                setAssignForm({
+                  employeeId: allowedEmps[0]?.id || '',
+                  shiftId: shifts[0]?.id || '',
+                });
+                setIsAssignShiftModalOpen(true);
+              }}
+              className="w-full min-w-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-indigo-700 dark:text-indigo-200 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 border border-indigo-200 dark:border-indigo-800 transition-colors cursor-pointer"
+              title="Personellere vardiya atarken iki farklı vardiyanın çakışmasını otomatik denetleyin"
+            >
+              <UserCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+              <span className="truncate">Vardiya Ata & Çakışma Denetimi</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ETKİLEŞİMLİ HAFTALIK VARDİYA TAKVİMİ & HIZLI VARDİYA ATAMA ARAYÜZÜ */}
@@ -2213,7 +2364,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                                           className="w-full min-w-0 px-1 py-0.5 text-[9.5px] font-medium bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-600 dark:text-slate-300 cursor-pointer focus:outline-indigo-500 truncate"
                                         >
                                           <option value="">Pzt–Cum hızlı ata...</option>
-                                          {shifts.map((s) => (
+                                          {calendarSelectableShifts.map((s) => (
                                             <option key={s.id} value={s.id}>
                                               {getCompactShiftLabel(s)} ({s.isOffDay ? 'OFF' : `${s.startTime}–${s.endTime}`})
                                             </option>
@@ -2286,7 +2437,7 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                                               : ''
                                           }`}
                                         >
-                                          {shifts.map((s) => (
+                                          {calendarSelectableShifts.map((s) => (
                                             <option
                                               key={s.id}
                                               value={s.id}
@@ -2500,13 +2651,13 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                                       resolved.isPending ? 'ring-2 ring-indigo-500 border-indigo-500' : ''
                                     }`}
                                   >
-                                    {shifts.map((s) => (
+                                    {calendarSelectableShifts.map((s) => (
                                       <option
                                         key={s.id}
                                         value={s.id}
                                         className="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
                                       >
-                                        {s.isOffDay ? 'İzinli / Hafta Tatili' : s.name}
+                                        {s.isOffDay ? `${s.name} (OFF)` : s.name}
                                       </option>
                                     ))}
                                   </select>
@@ -2577,23 +2728,48 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
               </span>
             </div>
             {isHRManager ? (
-              <button
-                onClick={() => {
-                  setShiftForm({
-                    name: '',
-                    startTime: '08:30',
-                    endTime: '17:30',
-                    toleranceMinutes: 15,
-                    breakMinutes: 60,
-                    workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
-                  });
-                  setIsShiftModalOpen(true);
-                }}
-                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors cursor-pointer w-full sm:w-auto"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Yeni Vardiya Ekle</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShiftForm({
+                      id: !hasActiveOffDayShift ? 'SHIFT-OFF' : undefined,
+                      name: 'İzinli / Hafta Tatili',
+                      startTime: '00:00',
+                      endTime: '00:00',
+                      toleranceMinutes: 0,
+                      breakMinutes: 0,
+                      workDays: [],
+                      isOffDay: true,
+                      colorKey: 'off',
+                    });
+                    setIsShiftModalOpen(true);
+                  }}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-lg transition-colors cursor-pointer flex-1 sm:flex-none"
+                >
+                  <Calendar className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+                  <span>{hasActiveOffDayShift ? 'Yeni İzin Günü (OFF)' : 'İzin Günü (OFF) Oluştur'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShiftForm({
+                      name: '',
+                      startTime: '08:30',
+                      endTime: '17:30',
+                      toleranceMinutes: 15,
+                      breakMinutes: 60,
+                      workDays: ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+                      isOffDay: false,
+                    });
+                    setIsShiftModalOpen(true);
+                  }}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors cursor-pointer flex-1 sm:flex-none"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Yeni Vardiya Ekle</span>
+                </button>
+              </div>
             ) : (
               <div
                 className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 rounded-lg cursor-not-allowed border border-slate-200 dark:border-slate-700 w-full sm:w-auto"
@@ -2631,13 +2807,14 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                           {s.id}
                         </span>
                       </div>
-                      {isHRManager && (
+                      {(isHRManager || canDelete) && (
                         <button
+                          type="button"
                           onClick={() => handleDeleteShift(s.id, s.name)}
                           className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded transition-colors cursor-pointer shrink-0"
                           title={`"${s.name}" vardiyasını sil`}
                         >
-                          <Trash2 className="w-3 h-3" />
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       )}
                     </div>
@@ -3317,72 +3494,141 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
           </button>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xs overflow-hidden">
           {/* Mobile Leave Request Cards (md:hidden) */}
-          <div className="md:hidden divide-y divide-slate-100">
+          <div className="md:hidden divide-y divide-slate-100 dark:divide-slate-800">
             {leaves.length === 0 ? (
               <div className="py-12 text-center text-slate-400 text-xs">
                 Aktif izin talebi bulunmuyor.
               </div>
             ) : (
-              leaves.map((lr) => (
-                <div key={lr.id} className="p-3.5 space-y-2.5">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="font-bold text-xs text-slate-900">{lr.employeeName}</div>
-                      <div className="text-[10px] text-slate-500 font-mono">
-                        {lr.id} · {lr.department}
+              leaves.map((lr) => {
+                const balanceInfo =
+                  lr.leaveType === 'Yıllık İzin'
+                    ? pdksStorage.getEmployeeAnnualLeaveBalance(lr.employeeId)
+                    : null;
+                const canShowCancelBtn =
+                  canCancelLeave && (lr.status === 'pending' || lr.status === 'approved');
+                return (
+                  <div
+                    key={lr.id}
+                    className={`p-3.5 space-y-2.5 ${
+                      lr.status === 'cancelled' ? 'bg-slate-50/70 dark:bg-slate-800/40' : ''
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="font-bold text-xs text-slate-900 dark:text-slate-100">
+                          {lr.employeeName}
+                        </div>
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+                          {lr.id} · {lr.department}
+                        </div>
+                        {balanceInfo && (
+                          <div className="text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold mt-0.5 tabular-nums">
+                            Yıllık İzin Bakiyesi: {balanceInfo.remaining} / {balanceInfo.entitlement} gün
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        {lr.status === 'approved' ? (
+                          <span className="inline-flex items-center gap-1 text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full text-[10px] border border-emerald-200">
+                            <CheckCircle2 className="w-3 h-3" /> Onaylandı
+                          </span>
+                        ) : lr.status === 'rejected' ? (
+                          <span className="inline-flex items-center gap-1 text-rose-700 font-bold bg-rose-50 px-2 py-0.5 rounded-full text-[10px] border border-rose-200">
+                            <AlertCircle className="w-3 h-3" /> Reddedildi
+                          </span>
+                        ) : lr.status === 'cancelled' ? (
+                          <span className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-300 font-bold bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full text-[10px] border border-slate-300 dark:border-slate-700">
+                            <Ban className="w-3 h-3 text-rose-600" /> İptal Edildi
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded-full text-[10px] border border-amber-200">
+                            <Clock className="w-3 h-3" /> Onay Bekliyor
+                          </span>
+                        )}
                       </div>
                     </div>
 
-                    <div>
-                      {lr.status === 'approved' ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full text-[10px] border border-emerald-200">
-                          <CheckCircle2 className="w-3 h-3" /> Onaylandı
-                        </span>
-                      ) : lr.status === 'rejected' ? (
-                        <span className="inline-flex items-center gap-1 text-rose-700 font-bold bg-rose-50 px-2 py-0.5 rounded-full text-[10px] border border-rose-200">
-                          <AlertCircle className="w-3 h-3" /> Reddedildi
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-amber-700 font-bold bg-amber-50 px-2 py-0.5 rounded-full text-[10px] border border-amber-200">
-                          <Clock className="w-3 h-3" /> Onay Bekliyor
-                        </span>
-                      )}
+                    <div className="flex items-center justify-between text-[11px] pt-1">
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">{lr.leaveType}</span>
+                      <span className="font-mono text-slate-600 dark:text-slate-300 font-medium tabular-nums">
+                        {lr.startDate} - {lr.endDate} ({lr.days} Gün)
+                      </span>
                     </div>
+
+                    {lr.reason && (
+                      <div className="text-[11px] text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/70 p-2 rounded-lg border border-slate-100 dark:border-slate-700">
+                        {lr.reason}
+                      </div>
+                    )}
+
+                    {lr.status === 'cancelled' && (
+                      <div className="text-[10.5px] bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200/80 dark:border-rose-900/60 rounded-lg p-2 space-y-0.5 text-rose-900 dark:text-rose-200">
+                        <div className="font-semibold flex items-center justify-between gap-2">
+                          <span>İptal Eden: {lr.cancelled_by || 'İK Yöneticisi'}</span>
+                          {lr.cancelled_at && (
+                            <span className="font-mono text-[10px] opacity-80">
+                              {new Date(lr.cancelled_at).toLocaleString('tr-TR', {
+                                day: '2-digit',
+                                month: '2-digit',
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                          )}
+                        </div>
+                        {lr.cancel_reason && (
+                          <div className="text-[10.5px] text-rose-800 dark:text-rose-300">
+                            Neden: {lr.cancel_reason}
+                          </div>
+                        )}
+                        {typeof lr.balance_refunded_days === 'number' && lr.balance_refunded_days > 0 && (
+                          <div className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+                            +{lr.balance_refunded_days} gün yıllık izin bakiyesine iade edildi · Takvim güncellendi
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {((lr.status === 'pending' && canApprove) || canShowCancelBtn) && (
+                      <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-slate-100 dark:border-slate-800">
+                        {lr.status === 'pending' && canApprove && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateStatus(lr.id, 'approved')}
+                              className="flex-1 py-1.5 px-3 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-xs transition-colors cursor-pointer text-center"
+                            >
+                              Onayla
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateStatus(lr.id, 'rejected')}
+                              className="flex-1 py-1.5 px-3 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors cursor-pointer text-center"
+                            >
+                              Reddet
+                            </button>
+                          </>
+                        )}
+                        {canShowCancelBtn && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCancelLeaveModal(lr)}
+                            className="inline-flex items-center justify-center gap-1.5 flex-1 py-1.5 px-3 text-xs font-bold text-amber-800 bg-amber-50 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-300 rounded-lg border border-amber-300 transition-colors cursor-pointer"
+                          >
+                            <Ban className="w-3.5 h-3.5" />
+                            <span>İzni İptal Et</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
-
-                  <div className="flex items-center justify-between text-[11px] pt-1">
-                    <span className="font-semibold text-slate-800">{lr.leaveType}</span>
-                    <span className="font-mono text-slate-600 font-medium">
-                      {lr.startDate} - {lr.endDate} ({lr.days} Gün)
-                    </span>
-                  </div>
-
-                  {lr.reason && (
-                    <div className="text-[11px] text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100">
-                      {lr.reason}
-                    </div>
-                  )}
-
-                  {lr.status === 'pending' && canApprove && (
-                    <div className="flex items-center gap-2 pt-1.5 border-t border-slate-100">
-                      <button
-                        onClick={() => handleUpdateStatus(lr.id, 'approved')}
-                        className="flex-1 py-1.5 px-3 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-xs transition-colors cursor-pointer text-center"
-                      >
-                        Onayla
-                      </button>
-                      <button
-                        onClick={() => handleUpdateStatus(lr.id, 'rejected')}
-                        className="flex-1 py-1.5 px-3 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors cursor-pointer text-center"
-                      >
-                        Reddet
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 
@@ -3390,17 +3636,17 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
           <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-50/70 text-slate-500 font-semibold uppercase tracking-wider">
+                <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/70 text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider">
                   <th className="py-3 px-4">Talep No & Personel</th>
                   <th className="py-3 px-4">İzin Türü</th>
                   <th className="py-3 px-4">Tarih Aralığı</th>
                   <th className="py-3 px-4">Süre</th>
-                  <th className="py-3 px-4">Gerekçe</th>
+                  <th className="py-3 px-4">Gerekçe / İptal Kaydı</th>
                   <th className="py-3 px-4">Onay Durumu</th>
                   <th className="py-3 px-4 text-right">İşlem</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {leaves.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="py-12 text-center text-slate-400">
@@ -3408,73 +3654,157 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                     </td>
                   </tr>
                 ) : (
-                  leaves.map((lr) => (
-                    <tr key={lr.id} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="font-semibold text-slate-900">{lr.employeeName}</div>
-                        <div className="text-[11px] text-slate-500 font-mono">
-                          {lr.id} · {lr.department}
-                        </div>
-                      </td>
+                  leaves.map((lr) => {
+                    const balanceInfo =
+                      lr.leaveType === 'Yıllık İzin'
+                        ? pdksStorage.getEmployeeAnnualLeaveBalance(lr.employeeId)
+                        : null;
+                    const canShowCancelBtn =
+                      canCancelLeave && (lr.status === 'pending' || lr.status === 'approved');
 
-                      <td className="py-3 px-4">
-                        <span className="font-medium text-slate-800">{lr.leaveType}</span>
-                      </td>
-
-                      <td className="py-3 px-4 font-mono text-slate-700 whitespace-nowrap">
-                        {lr.startDate} - {lr.endDate}
-                      </td>
-
-                      <td className="py-3 px-4 font-mono font-medium text-slate-900">
-                        {lr.days} Gün
-                      </td>
-
-                      <td className="py-3 px-4 text-slate-600 max-w-xs truncate">
-                        {lr.reason}
-                      </td>
-
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        {lr.status === 'approved' ? (
-                          <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold bg-emerald-50 px-2.5 py-1 rounded-md text-[11px]">
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Onaylandı
-                          </span>
-                        ) : lr.status === 'rejected' ? (
-                          <span className="inline-flex items-center gap-1 text-rose-700 font-semibold bg-rose-50 px-2.5 py-1 rounded-md text-[11px]">
-                            <AlertCircle className="w-3.5 h-3.5" /> Reddedildi
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-amber-700 font-semibold bg-amber-50 px-2.5 py-1 rounded-md text-[11px]">
-                            <Clock className="w-3.5 h-3.5" /> Bekliyor
-                          </span>
-                        )}
-                      </td>
-
-                      <td className="py-3 px-4 text-right">
-                        {lr.status === 'pending' ? (
-                          canApprove ? (
-                            <div className="flex items-center justify-end gap-1.5">
-                              <button
-                                onClick={() => handleUpdateStatus(lr.id, 'approved')}
-                                className="px-2.5 py-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-md shadow-xs transition-colors cursor-pointer"
-                              >
-                                Onayla
-                              </button>
-                              <button
-                                onClick={() => handleUpdateStatus(lr.id, 'rejected')}
-                                className="px-2.5 py-1 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-md transition-colors cursor-pointer"
-                              >
-                                Reddet
-                              </button>
+                    return (
+                      <tr
+                        key={lr.id}
+                        className={`hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors ${
+                          lr.status === 'cancelled' ? 'bg-slate-50/50 dark:bg-slate-800/30' : ''
+                        }`}
+                      >
+                        <td className="py-3 px-4">
+                          <div className="font-semibold text-slate-900 dark:text-slate-100">
+                            {lr.employeeName}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                            {lr.id} · {lr.department}
+                          </div>
+                          {balanceInfo && (
+                            <div className="text-[10.5px] text-indigo-600 dark:text-indigo-400 font-semibold mt-0.5 tabular-nums">
+                              Kalan Yıllık İzin: {balanceInfo.remaining} / {balanceInfo.entitlement} gün
                             </div>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4">
+                          <span className="font-medium text-slate-800 dark:text-slate-200">
+                            {lr.leaveType}
+                          </span>
+                        </td>
+
+                        <td className="py-3 px-4 font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap tabular-nums">
+                          {lr.startDate} - {lr.endDate}
+                        </td>
+
+                        <td className="py-3 px-4 font-mono font-medium text-slate-900 dark:text-slate-100 tabular-nums">
+                          {lr.days} Gün
+                        </td>
+
+                        <td className="py-3 px-4 text-slate-600 dark:text-slate-300 max-w-xs">
+                          <div className="truncate" title={lr.reason}>
+                            {lr.reason}
+                          </div>
+                          {lr.status === 'cancelled' && (
+                            <div className="mt-1 p-1.5 rounded-md bg-rose-50/80 dark:bg-rose-950/40 border border-rose-200/80 dark:border-rose-900/60 text-[10.5px] space-y-0.5">
+                              <div className="font-semibold text-rose-800 dark:text-rose-200">
+                                İptal: {lr.cancel_reason || 'İK tarafından iptal edildi'}
+                              </div>
+                              <div className="text-[10px] text-rose-700/90 dark:text-rose-300/90">
+                                {lr.cancelled_by || 'İK Yöneticisi'}
+                                {lr.cancelled_at
+                                  ? ` · ${new Date(lr.cancelled_at).toLocaleString('tr-TR', {
+                                      day: '2-digit',
+                                      month: '2-digit',
+                                      year: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })}`
+                                  : ''}
+                              </div>
+                              {typeof lr.balance_refunded_days === 'number' && lr.balance_refunded_days > 0 && (
+                                <div className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400">
+                                  +{lr.balance_refunded_days} gün bakiye iade edildi
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          {lr.status === 'approved' ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold bg-emerald-50 px-2.5 py-1 rounded-md text-[11px] border border-emerald-200/70">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Onaylandı
+                            </span>
+                          ) : lr.status === 'rejected' ? (
+                            <span className="inline-flex items-center gap-1 text-rose-700 font-semibold bg-rose-50 px-2.5 py-1 rounded-md text-[11px] border border-rose-200/70">
+                              <AlertCircle className="w-3.5 h-3.5" /> Reddedildi
+                            </span>
+                          ) : lr.status === 'cancelled' ? (
+                            <span className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-200 font-semibold bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-md text-[11px] border border-slate-300 dark:border-slate-700">
+                              <Ban className="w-3.5 h-3.5 text-rose-600" /> İptal Edildi
+                            </span>
                           ) : (
-                            <span className="text-slate-400 text-xs italic">İK Onayı Bekliyor</span>
-                          )
-                        ) : (
-                          <span className="text-slate-400 text-xs">Tamamlandı</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))
+                            <span className="inline-flex items-center gap-1 text-amber-700 font-semibold bg-amber-50 px-2.5 py-1 rounded-md text-[11px] border border-amber-200/70">
+                              <Clock className="w-3.5 h-3.5" /> Bekliyor
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          {lr.status === 'pending' ? (
+                            <div className="flex items-center justify-end gap-1.5">
+                              {canApprove ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpdateStatus(lr.id, 'approved')}
+                                    className="px-2.5 py-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-md shadow-xs transition-colors cursor-pointer"
+                                  >
+                                    Onayla
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpdateStatus(lr.id, 'rejected')}
+                                    className="px-2.5 py-1 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-md transition-colors cursor-pointer"
+                                  >
+                                    Reddet
+                                  </button>
+                                </>
+                              ) : (
+                                <span className="text-slate-400 text-xs italic">İK Onayı Bekliyor</span>
+                              )}
+                              {canShowCancelBtn && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenCancelLeaveModal(lr)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-rose-50 hover:text-rose-700 border border-amber-300 hover:border-rose-300 rounded-md transition-colors cursor-pointer"
+                                  title="İK Yetkisi ile İzni İptal Et"
+                                >
+                                  <Ban className="w-3 h-3" />
+                                  <span>İzni İptal Et</span>
+                                </button>
+                              )}
+                            </div>
+                          ) : lr.status === 'approved' ? (
+                            canShowCancelBtn ? (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenCancelLeaveModal(lr)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-md transition-colors cursor-pointer"
+                                title="Onaylanmış izni iptal et, bakiyeyi iade et ve takvimi temizle"
+                              >
+                                <Ban className="w-3.5 h-3.5" />
+                                <span>İzni İptal Et</span>
+                              </button>
+                            ) : (
+                              <span className="text-slate-400 text-xs">Tamamlandı</span>
+                            )
+                          ) : lr.status === 'cancelled' ? (
+                            <span className="text-slate-400 text-xs font-medium">İptal Kaydedildi</span>
+                          ) : (
+                            <span className="text-slate-400 text-xs">Tamamlandı</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -3808,9 +4138,9 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                       onChange={(e) => setReassignShiftId(e.target.value)}
                       className="flex-1 px-3 py-1.5 text-xs bg-white border border-indigo-300 rounded-lg text-slate-800 cursor-pointer font-medium"
                     >
-                      {shifts.map((s) => (
+                      {calendarSelectableShifts.map((s) => (
                         <option key={s.id} value={s.id}>
-                          {s.name} ({s.startTime} - {s.endTime})
+                          {s.isOffDay ? `${s.name} (OFF / İzinli)` : `${s.name} (${s.startTime} - ${s.endTime})`}
                         </option>
                       ))}
                     </select>
@@ -3887,166 +4217,309 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
         </div>
       )}
 
-      {/* MODAL: Yeni Vardiya */}
+      {/* MODAL: Yeni Vardiya (Saat çakışması kısıtlaması yok, gece vardiyası destekli) */}
       {isShiftModalOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">Yeni Vardiya Planı Tanımla</h3>
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 dark:bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => !isSavingShift && setIsShiftModalOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
+              <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                Yeni Vardiya Planı Tanımla
+              </h3>
               <button
+                type="button"
+                disabled={isSavingShift}
                 onClick={() => setIsShiftModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1"
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleSaveShift} className="mt-4 space-y-4">
+              {/* Vardiya Türü Seçici: Çalışma Vardiyası vs İzin Günü / Hafta Tatili (OFF) */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Vardiya Adı
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Plan Türü
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setShiftForm((prev) => ({
+                        ...prev,
+                        id: prev.id === 'SHIFT-OFF' ? undefined : prev.id,
+                        isOffDay: false,
+                        colorKey: 'custom',
+                        name: prev.name === 'İzinli / Hafta Tatili' ? '' : prev.name,
+                        startTime: prev.startTime === '00:00' ? '08:30' : prev.startTime || '08:30',
+                        endTime: prev.endTime === '00:00' ? '17:30' : prev.endTime || '17:30',
+                        toleranceMinutes: prev.toleranceMinutes || 15,
+                        breakMinutes: prev.breakMinutes || 60,
+                        workDays:
+                          prev.workDays && prev.workDays.length > 0
+                            ? prev.workDays
+                            : ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma'],
+                      }))
+                    }
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                      !shiftForm.isOffDay
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                        : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    Çalışma Vardiyası
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setShiftForm((prev) => ({
+                        ...prev,
+                        id: !hasActiveOffDayShift ? 'SHIFT-OFF' : prev.id,
+                        isOffDay: true,
+                        colorKey: 'off',
+                        name: prev.name?.trim() ? prev.name : 'İzinli / Hafta Tatili',
+                        startTime: '00:00',
+                        endTime: '00:00',
+                        toleranceMinutes: 0,
+                        breakMinutes: 0,
+                        workDays: [],
+                      }))
+                    }
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                      shiftForm.isOffDay
+                        ? 'bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 border-slate-800 dark:border-slate-200 shadow-xs'
+                        : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    İzin Günü / Hafta Tatili (OFF)
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  {shiftForm.isOffDay ? 'İzin Günü Adı' : 'Vardiya Adı'}
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="Örn: 2. Vardiya (16:00 - 00:00)"
-                  value={shiftForm.name}
+                  placeholder={
+                    shiftForm.isOffDay
+                      ? 'Örn: İzinli / Hafta Tatili'
+                      : 'Örn: Gece Vardiyası (22:00 - 06:00)'
+                  }
+                  value={shiftForm.name || ''}
                   onChange={(e) => setShiftForm({ ...shiftForm, name: e.target.value })}
-                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Başlangıç Saati
-                  </label>
-                  <input
-                    type="time"
-                    required
-                    value={shiftForm.startTime}
-                    onChange={(e) => setShiftForm({ ...shiftForm, startTime: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Bitiş Saati
-                  </label>
-                  <input
-                    type="time"
-                    required
-                    value={shiftForm.endTime}
-                    onChange={(e) => setShiftForm({ ...shiftForm, endTime: e.target.value })}
-                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Tolerans (Dk)
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={60}
-                    value={shiftForm.toleranceMinutes}
-                    onChange={(e) => setShiftForm({ ...shiftForm, toleranceMinutes: Number(e.target.value) })}
-                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Mola Süresi (Dk)
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={180}
-                    value={shiftForm.breakMinutes}
-                    onChange={(e) => setShiftForm({ ...shiftForm, breakMinutes: Number(e.target.value) })}
-                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                  />
-                </div>
-              </div>
-
-              {/* Çalışma Günleri */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Çalışma Günleri
-                </label>
-                <div className="flex flex-wrap gap-1.5">
-                  {[
-                    { full: 'Pazartesi', label: 'Pzt' },
-                    { full: 'Salı', label: 'Sal' },
-                    { full: 'Çarşamba', label: 'Çar' },
-                    { full: 'Perşembe', label: 'Per' },
-                    { full: 'Cuma', label: 'Cum' },
-                    { full: 'Cumartesi', label: 'Cts' },
-                    { full: 'Pazar', label: 'Paz' },
-                  ].map(({ full, label }) => {
-                    const isSelected = (shiftForm.workDays || []).includes(full);
-                    return (
-                      <button
-                        type="button"
-                        key={full}
-                        onClick={() => {
-                          const currentDays = shiftForm.workDays || [];
-                          if (isSelected) {
-                            setShiftForm({ ...shiftForm, workDays: currentDays.filter((d) => d !== full) });
-                          } else {
-                            setShiftForm({ ...shiftForm, workDays: [...currentDays, full] });
-                          }
-                        }}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
-                          isSelected
-                            ? 'bg-indigo-600 text-white border-indigo-600'
-                            : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* ÇAKIŞMA KONTROLÜ: Canlı Çakışma Uyarısı */}
-              {createShiftConflict?.hasConflict && (
-                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-950 text-xs space-y-1.5 animate-in fade-in">
-                  <div className="flex items-center gap-1.5 font-bold text-amber-800">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                    <span>Çakışma Kontrolü: Vardiya Saat Çakışması!</span>
-                  </div>
-                  <p className="text-[11px] leading-relaxed">
-                    Girilen saat aralığı ({shiftForm.startTime} - {shiftForm.endTime}), mevcut <strong>"{createShiftConflict.conflictingShift?.name}"</strong> ({createShiftConflict.conflictingShift?.startTime} - {createShiftConflict.conflictingShift?.endTime}) vardiyası ile aynı zaman dilimine denk gelmektedir.
-                  </p>
-                  <div className="text-[10px] text-amber-700 font-mono font-medium">
-                    Çakışan Ortak Günler: {createShiftConflict.sharedDays.join(', ')} ({createShiftConflict.overlapHoursStr} saat çakışma)
+              {shiftForm.isOffDay ? (
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs flex items-start gap-2.5">
+                  <Info className="w-4 h-4 shrink-0 text-slate-500 dark:text-slate-400 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="font-semibold text-slate-900 dark:text-slate-100">
+                      İzin Günü / Hafta Tatili (OFF) Şablonu
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-400">
+                      Bu şablon haftalık ve günlük vardiya takviminde personelleri <strong>İzinli / OFF</strong> olarak işaretlemek için kullanılır. Giriş beklenmez ve gecikme uyarısı üretmez.
+                    </p>
                   </div>
                 </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Başlangıç Saati
+                      </label>
+                      <input
+                        type="time"
+                        required
+                        value={shiftForm.startTime || '08:30'}
+                        onChange={(e) => setShiftForm({ ...shiftForm, startTime: e.target.value })}
+                        className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono tabular-nums"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Bitiş Saati
+                      </label>
+                      <input
+                        type="time"
+                        required
+                        value={shiftForm.endTime || '17:30'}
+                        onChange={(e) => setShiftForm({ ...shiftForm, endTime: e.target.value })}
+                        className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono tabular-nums"
+                      />
+                    </div>
+                  </div>
+
+                  {shiftForm.startTime &&
+                    shiftForm.endTime &&
+                    shiftForm.endTime <= shiftForm.startTime && (
+                      <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-[11px] flex items-center gap-2">
+                        <Info className="w-4 h-4 shrink-0 text-indigo-600 dark:text-indigo-400" />
+                        <span>
+                          <strong>Gece vardiyası</strong> algılandı ({shiftForm.startTime} başlar, ertesi gün{' '}
+                          <span className="font-mono font-semibold">{shiftForm.endTime}</span> saatinde biter).
+                        </span>
+                      </div>
+                    )}
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Tolerans (Dk)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={60}
+                        value={shiftForm.toleranceMinutes ?? 15}
+                        onChange={(e) => setShiftForm({ ...shiftForm, toleranceMinutes: Number(e.target.value) })}
+                        className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono tabular-nums"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Mola Süresi (Dk)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={180}
+                        value={shiftForm.breakMinutes ?? 60}
+                        onChange={(e) => setShiftForm({ ...shiftForm, breakMinutes: Number(e.target.value) })}
+                        className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono tabular-nums"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Çalışma Günleri */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                      Çalışma Günleri
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { full: 'Pazartesi', label: 'Pzt' },
+                        { full: 'Salı', label: 'Sal' },
+                        { full: 'Çarşamba', label: 'Çar' },
+                        { full: 'Perşembe', label: 'Per' },
+                        { full: 'Cuma', label: 'Cum' },
+                        { full: 'Cumartesi', label: 'Cmt' },
+                        { full: 'Pazar', label: 'Paz' },
+                      ].map(({ full, label }) => {
+                        const isSelected = (shiftForm.workDays || []).includes(full);
+                        return (
+                          <button
+                            type="button"
+                            key={full}
+                            onClick={() => {
+                              const currentDays = shiftForm.workDays || [];
+                              if (isSelected) {
+                                setShiftForm({ ...shiftForm, workDays: currentDays.filter((d) => d !== full) });
+                              } else {
+                                setShiftForm({ ...shiftForm, workDays: [...currentDays, full] });
+                              }
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-indigo-600 text-white border-indigo-600'
+                                : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
               )}
 
-              <div className="pt-4 border-t border-slate-100 flex justify-end gap-2">
+              <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-2">
                 <button
                   type="button"
+                  disabled={isSavingShift}
                   onClick={() => setIsShiftModalOpen(false)}
-                  className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                  className="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
                 >
                   İptal
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-sm"
+                  disabled={isSavingShift}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 rounded-lg shadow-xs cursor-pointer"
                 >
-                  Kaydet
+                  {isSavingShift && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{isSavingShift ? 'Kaydediliyor...' : 'Kaydet'}</span>
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Vardiya Silme Onayı (In-App Modal — iframe uyumlu, soft/hard delete) */}
+      {shiftToDelete && (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 dark:bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => !isDeletingShift && setShiftToDelete(null)}
+        >
+          <div
+            className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                  Vardiya Tanımını Kaldır
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
+                  <strong>&quot;{shiftToDelete.name}&quot;</strong> ({shiftToDelete.id}) vardiya tanımını kaldırmak istediğinize emin misiniz?
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">
+                  Bu vardiya geçmiş veya aktif personel kayıtlarında kullanıldıysa veri bütünlüğü için pasife alınarak listeden gizlenir; kullanılmadıysa kalıcı olarak silinir.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                disabled={isDeletingShift}
+                onClick={() => setShiftToDelete(null)}
+                className="px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingShift}
+                onClick={() => void confirmDeleteShift()}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-60 rounded-lg cursor-pointer"
+              >
+                {isDeletingShift ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                <span>{isDeletingShift ? 'Kaldırılıyor...' : 'Evet, Kaldır'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -4174,6 +4647,163 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
         </div>
       )}
 
+      {/* MODAL: İK & SÜPER ADMİN İZİN İPTAL ONAY & İPTAL NEDENİ (Audit + Bakiye İadesi + Takvim Geri Alma) */}
+      {leaveToCancel && (() => {
+        const balanceInfo =
+          leaveToCancel.leaveType === 'Yıllık İzin'
+            ? pdksStorage.getEmployeeAnnualLeaveBalance(leaveToCancel.employeeId)
+            : null;
+        const willRefundAnnualDays =
+          leaveToCancel.status === 'approved' && leaveToCancel.leaveType === 'Yıllık İzin'
+            ? typeof leaveToCancel.balance_deducted_days === 'number'
+              ? leaveToCancel.balance_deducted_days
+              : leaveToCancel.days
+            : 0;
+        const projectedBalance =
+          balanceInfo
+            ? Math.min(balanceInfo.entitlement, balanceInfo.remaining + willRefundAnnualDays)
+            : null;
+
+        return (
+          <div
+            className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 dark:bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4"
+            onClick={() => !isCancellingLeave && setLeaveToCancel(null)}
+          >
+            <div
+              className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                    <Ban className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                      İzin Talebini İptal Et (İK Yetkisi)
+                    </h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Kayıt silinmez; &quot;İptal Edildi&quot; olarak denetim kaydına (Audit Log) alınır.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isCancellingLeave}
+                  onClick={() => setLeaveToCancel(null)}
+                  className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-xs space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-slate-900 dark:text-slate-100">
+                    {leaveToCancel.employeeName}
+                  </span>
+                  <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                    {leaveToCancel.id}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300">
+                  <span>{leaveToCancel.leaveType}</span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {leaveToCancel.startDate} – {leaveToCancel.endDate} ({leaveToCancel.days} Gün)
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/70 text-[11px] text-amber-900 dark:text-amber-200 space-y-1.5">
+                <div className="font-bold flex items-center gap-1.5">
+                  <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                  <span>Otomatik Geri Alma İşlemleri</span>
+                </div>
+                {willRefundAnnualDays > 0 && balanceInfo && projectedBalance !== null ? (
+                  <p>
+                    • <strong>Yıllık İzin Bakiyesi İadesi:</strong>{' '}
+                    <span className="font-mono font-bold text-emerald-700 dark:text-emerald-400">
+                      +{willRefundAnnualDays} gün
+                    </span>{' '}
+                    iade edilecek ({balanceInfo.remaining} gün →{' '}
+                    <strong className="font-mono">{projectedBalance} gün</strong>).
+                  </p>
+                ) : (
+                  <p>
+                    • Bu izin talebinde onaylanmış yıllık izin düşümü olmadığı için bakiye değişikliği yapılmayacaktır.
+                  </p>
+                )}
+                <p>
+                  • <strong>Vardiya Takvimi &amp; PDKS:</strong>{' '}
+                  <span className="font-mono">{leaveToCancel.startDate} – {leaveToCancel.endDate}</span>{' '}
+                  aralığındaki &quot;İzinli&quot; blokajı kaldırılacak ve personel tekrar vardiya atamasına ve giriş-çıkış takibine açılacaktır.
+                </p>
+              </div>
+
+              <form onSubmit={handleConfirmCancelLeave} className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                    İptal Nedeni <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {[
+                      'Personel talebiyle iptal',
+                      'İş yoğunluğu nedeniyle ertelendi',
+                      'Plan değişikliği',
+                      'Hatalı tarih girişi',
+                    ].map((preset) => (
+                      <button
+                        type="button"
+                        key={preset}
+                        onClick={() => setCancelLeaveReason(preset)}
+                        className={`px-2 py-1 rounded-md text-[10.5px] font-medium border transition-colors cursor-pointer ${
+                          cancelLeaveReason === preset
+                            ? 'bg-rose-600 text-white border-rose-600'
+                            : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                  <textarea
+                    rows={3}
+                    required
+                    placeholder="Örn: Personel talebiyle iptal edildi veya iş yoğunluğu nedeniyle ertelendi..."
+                    value={cancelLeaveReason}
+                    onChange={(e) => setCancelLeaveReason(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  />
+                </div>
+
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={isCancellingLeave}
+                    onClick={() => setLeaveToCancel(null)}
+                    className="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
+                  >
+                    Vazgeç
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isCancellingLeave || !cancelLeaveReason.trim()}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-60 rounded-lg shadow-xs cursor-pointer"
+                  >
+                    {isCancellingLeave ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Ban className="w-3.5 h-3.5" />
+                    )}
+                    <span>{isCancellingLeave ? 'İptal Ediliyor...' : 'İzni İptal Et ve Geri Al'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* MODAL: PERSONEL VARDİYA ATAMA & ÇAKIŞMA DENETİMİ (İK & BİRİM AMİRİ) */}
       {isAssignShiftModalOpen && (() => {
         const assignableEmployees = isHRManager
@@ -4248,9 +4878,11 @@ export const ShiftAndLeaveManagement: React.FC<ShiftAndLeaveManagementProps> = (
                     className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                   >
                     <option value="">Vardiya Seçin...</option>
-                    {shifts.map((s) => (
+                    {calendarSelectableShifts.map((s) => (
                       <option key={s.id} value={s.id}>
-                        {s.name} ({s.startTime} - {s.endTime}) [Tolerans: ±{s.toleranceMinutes} dk]
+                        {s.isOffDay
+                          ? `${s.name} (OFF / İzinli)`
+                          : `${s.name} (${s.startTime} - ${s.endTime}) [Tolerans: ±${s.toleranceMinutes} dk]`}
                       </option>
                     ))}
                   </select>

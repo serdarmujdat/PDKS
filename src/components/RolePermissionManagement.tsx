@@ -590,10 +590,17 @@ export const RolePermissionManagement: React.FC<RolePermissionManagementProps> =
         </div>
       )}
 
-      {/* Section 1: Super-Admin-Only Company Name Settings & Permitted Maintenance Controls */}
-      {(isSuperAdmin || canClearLogs || canManageDevices) && (
-        <div className={`grid grid-cols-1 ${isSuperAdmin ? 'lg:grid-cols-2' : ''} gap-6`}>
-          {isSuperAdmin && (
+      {/* Section 1: Company Name Settings (Super Admin) & JSON Backup/Restore (Super Admin + İK) */}
+      {(isSuperAdmin || currentUser.role === 'ik_yoneticisi' || canClearLogs || canManageDevices) && (
+        <div
+          className={`grid grid-cols-1 ${
+            (isSuperAdmin || currentUser.role === 'ik_yoneticisi') &&
+            (isSuperAdmin || canClearLogs || canManageDevices)
+              ? 'lg:grid-cols-2'
+              : ''
+          } gap-6`}
+        >
+          {(isSuperAdmin || currentUser.role === 'ik_yoneticisi') && (
             <CompanySettingsPanel
               currentUser={currentUser}
               compact

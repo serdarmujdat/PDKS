@@ -545,8 +545,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
         )}
       </div>
 
-      {/* Sistem / Şirket Ayarları (Yalnızca Gizli Süper Yönetici - Admin.Admin) */}
-      {isSuperAdmin && (
+      {/* Sistem / Şirket Ayarları (Kurum Adı: Süper Admin, Tam Yedekleme/Geri Yükleme: Süper Admin & İK) */}
+      {(isSuperAdmin || activeUser.role === 'ik_yoneticisi') && (
         <CompanySettingsPanel
           currentUser={activeUser}
           onCompanyUpdated={(updatedName) => setCompanyName(updatedName)}

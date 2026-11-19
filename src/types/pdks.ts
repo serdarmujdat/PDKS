@@ -18,6 +18,7 @@ export interface Shift {
   workDays: string[];
   isOffDay?: boolean;       // true for "İzinli / Hafta Tatili"
   colorKey?: 'morning' | 'evening' | 'night' | 'off' | 'custom';
+  is_active?: boolean;      // false when soft-deleted (preserved for historical records)
 }
 
 export interface EmployeeShiftAssignment {
@@ -67,6 +68,9 @@ export interface Employee {
   archivedBy?: string;
   // HR-Controlled Unit Manager Foreign Key (UserAccount.id of assigned Birim Amiri)
   manager_id?: string | null;
+  // Annual Leave Balance Tracking (Yıllık İzin Bakiyesi)
+  annualLeaveEntitlement?: number; // Default 14 days/year
+  annualLeaveBalance?: number;     // Remaining annual leave days
 }
 
 export type ActionType = 'check_in' | 'check_out' | 'break_start' | 'break_end';
@@ -386,11 +390,17 @@ export interface LeaveRequest {
   endDate: string;
   days: number;
   reason: string;
-  status: 'approved' | 'pending' | 'rejected';
+  status: 'approved' | 'pending' | 'rejected' | 'cancelled';
   appliedAt: string;
   approvedAt?: string;
   approvedBy?: string;
   rejectionReason?: string;
+  // HR / Super Admin Leave Cancellation Audit Trail
+  cancelled_by?: string;
+  cancelled_at?: string;
+  cancel_reason?: string;
+  balance_deducted_days?: number;
+  balance_refunded_days?: number;
 }
 
 export interface OvertimeRequest {

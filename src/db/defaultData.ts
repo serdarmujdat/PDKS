@@ -665,6 +665,7 @@ export const DEFAULT_OVERTIME: OvertimeRequest[] = [
 export interface PDKSDatabase {
   version: number;
   lastUpdated: string;
+  isSeedDefault?: boolean;
   companyName: string;
   employees: Employee[];
   records: AttendanceRecord[];
@@ -687,10 +688,11 @@ export function createInitialDatabase(): PDKSDatabase {
   return {
     version: 1,
     lastUpdated: new Date().toISOString(),
+    isSeedDefault: true,
     companyName: DEFAULT_COMPANY_NAME,
     employees: JSON.parse(JSON.stringify(DEFAULT_EMPLOYEES)),
     records: JSON.parse(JSON.stringify(DEFAULT_RECORDS)),
-    shifts: JSON.parse(JSON.stringify(DEFAULT_SHIFTS)),
+    shifts: JSON.parse(JSON.stringify(DEFAULT_SHIFTS)).map((s: Shift) => ({ ...s, is_active: true })),
     employee_shifts: [],
     leaves: JSON.parse(JSON.stringify(DEFAULT_LEAVES)),
     overtime: JSON.parse(JSON.stringify(DEFAULT_OVERTIME)),

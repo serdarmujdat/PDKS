@@ -18,6 +18,11 @@ import {
 } from '../firebase';
 import { DEFAULT_THEME_ID, isValidThemeId, applyThemeToDocument } from '../themes/themes';
 import {
+  loadVaultSnapshot,
+  saveVaultSnapshot,
+  type PersistentVaultSnapshot,
+} from '../utils/persistentVault';
+import {
   PDKS_SYSTEM_API_KEY,
   DEFAULT_COMPANY_NAME,
   DEFAULT_COMPANY_LOGO,
@@ -683,6 +688,148 @@ export function isInitialServerSyncComplete(): boolean {
   return isServerHydrated;
 }
 
+const USER_CUSTOMIZED_FLAG_KEY = 'pdks_user_customized_v1';
+
+function markUserCustomized(): void {
+  try {
+    localStorage.setItem(USER_CUSTOMIZED_FLAG_KEY, 'true');
+  } catch {
+    // ignore
+  }
+}
+
+function safeParseJson<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function buildCurrentClientSnapshot(): PersistentVaultSnapshot {
+  const wallQr = safeParseJson<Record<string, unknown>>(
+    localStorage.getItem(STORAGE_KEYS.COMPANY_WALL_QR),
+    {}
+  );
+  const companyName =
+    (authoritativeCompanyName && authoritativeCompanyName !== DEFAULT_COMPANY_NAME
+      ? authoritativeCompanyName
+      : '') ||
+    (typeof wallQr?.companyName === 'string' && wallQr.companyName.trim()
+      ? wallQr.companyName.trim()
+      : DEFAULT_COMPANY_NAME);
+
+  return {
+    savedAt: new Date().toISOString(),
+    schemaVersion: 1,
+    companyName,
+    systemSettings: {
+      companyName,
+      branchName: typeof wallQr?.branchName === 'string' ? wallQr.branchName : undefined,
+      updatedAt: new Date().toISOString(),
+    },
+    companyWallQR: wallQr,
+    companyLogo: localStorage.getItem(STORAGE_KEYS.COMPANY_LOGO) || undefined,
+    kioskLockPassword: localStorage.getItem(STORAGE_KEYS.KIOSK_LOCK_PASSWORD) || undefined,
+    employees: safeParseJson<unknown[]>(localStorage.getItem(STORAGE_KEYS.EMPLOYEES), []),
+    accounts: safeParseJson<unknown[]>(localStorage.getItem(STORAGE_KEYS.ACCOUNTS), []),
+    shifts: safeParseJson<unknown[]>(localStorage.getItem(STORAGE_KEYS.SHIFTS), []),
+    employee_shifts: safeParseJson<unknown[]>(localStorage.getItem(STORAGE_KEYS.EMPLOYEE_SHIFTS), []),
+    records: safeParseJson<unknown[]>(localStorage.getItem(STORAGE_KEYS.RECORDS), []),
+    leaves: safeParseJson<unknown[]>(localStorage.getItem(STORAGE_KEYS.LEAVES), []),
+    overtime: safeParseJson<unknown[]>(localStorage.getItem(STORAGE_KEYS.OVERTIME), []),
+    notifications: safeParseJson<unknown[]>(localStorage.getItem(STORAGE_KEYS.NOTIFICATIONS), []),
+    supervisorAssignments: safeParseJson<unknown[]>(
+      localStorage.getItem(STORAGE_KEYS.SUPERVISOR_ASSIGNMENTS),
+      []
+    ),
+    deviceApprovals: safeParseJson<unknown[]>(localStorage.getItem(STORAGE_KEYS.DEVICE_APPROVALS), []),
+    settings: safeParseJson<Record<string, unknown>>(localStorage.getItem(STORAGE_KEYS.SETTINGS), {}),
+  };
+}
+
+function mirrorClientVaultSnapshot(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const snap = buildCurrentClientSnapshot();
+    void saveVaultSnapshot(snap);
+  } catch {
+    // ignore vault write failure
+  }
+}
+
+function hydrateLocalStorageFromSnapshot(snapshot: PersistentVaultSnapshot): void {
+  if (!snapshot || typeof snapshot !== 'object') return;
+  try {
+    const incomingName =
+      (typeof (snapshot.systemSettings as any)?.companyName === 'string' &&
+        String((snapshot.systemSettings as any).companyName).trim()) ||
+      (typeof snapshot.companyName === 'string' && snapshot.companyName.trim()) ||
+      (typeof (snapshot.companyWallQR as any)?.companyName === 'string' &&
+        String((snapshot.companyWallQR as any).companyName).trim()) ||
+      '';
+    if (incomingName && incomingName !== DEFAULT_COMPANY_NAME) {
+      authoritativeCompanyName = incomingName;
+    }
+    if (snapshot.companyWallQR && typeof snapshot.companyWallQR === 'object') {
+      const mergedWall = {
+        ...DEFAULT_COMPANY_WALL_QR,
+        ...snapshot.companyWallQR,
+        ...(incomingName ? { companyName: incomingName } : {}),
+      };
+      safeSetLocalStorage(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(mergedWall));
+      window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: mergedWall }));
+    }
+    if (incomingName) {
+      window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: incomingName }));
+    }
+    if (typeof snapshot.companyLogo === 'string' && snapshot.companyLogo.trim() && !snapshot.companyLogo.startsWith('blob:')) {
+      safeSetLocalStorage(STORAGE_KEYS.COMPANY_LOGO, snapshot.companyLogo.trim());
+      window.dispatchEvent(new CustomEvent('pdks-company-logo-updated', { detail: snapshot.companyLogo.trim() }));
+    }
+    if (typeof snapshot.kioskLockPassword === 'string' && snapshot.kioskLockPassword.trim()) {
+      safeSetLocalStorage(STORAGE_KEYS.KIOSK_LOCK_PASSWORD, snapshot.kioskLockPassword.trim());
+    }
+    if (Array.isArray(snapshot.employees) && snapshot.employees.length > 0) {
+      safeSetLocalStorage(STORAGE_KEYS.EMPLOYEES, JSON.stringify(filterVisibleList(snapshot.employees as Employee[])));
+    }
+    if (Array.isArray(snapshot.accounts) && snapshot.accounts.length > 0) {
+      safeSetLocalStorage(STORAGE_KEYS.ACCOUNTS, JSON.stringify(filterVisibleList(snapshot.accounts as UserAccount[])));
+    }
+    if (Array.isArray(snapshot.shifts)) {
+      safeSetLocalStorage(STORAGE_KEYS.SHIFTS, JSON.stringify(snapshot.shifts));
+    }
+    if (Array.isArray(snapshot.employee_shifts)) {
+      safeSetLocalStorage(STORAGE_KEYS.EMPLOYEE_SHIFTS, JSON.stringify(snapshot.employee_shifts));
+    }
+    if (Array.isArray(snapshot.records)) {
+      safeSetLocalStorage(STORAGE_KEYS.RECORDS, JSON.stringify(filterVisibleList(snapshot.records as AttendanceRecord[])));
+    }
+    if (Array.isArray(snapshot.leaves)) {
+      safeSetLocalStorage(STORAGE_KEYS.LEAVES, JSON.stringify(snapshot.leaves));
+    }
+    if (Array.isArray(snapshot.overtime)) {
+      safeSetLocalStorage(STORAGE_KEYS.OVERTIME, JSON.stringify(snapshot.overtime));
+    }
+    if (Array.isArray(snapshot.notifications)) {
+      safeSetLocalStorage(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(filterVisibleList(snapshot.notifications as PDKSNotification[])));
+    }
+    if (Array.isArray(snapshot.supervisorAssignments)) {
+      safeSetLocalStorage(STORAGE_KEYS.SUPERVISOR_ASSIGNMENTS, JSON.stringify(snapshot.supervisorAssignments));
+    }
+    if (Array.isArray(snapshot.deviceApprovals)) {
+      safeSetLocalStorage(STORAGE_KEYS.DEVICE_APPROVALS, JSON.stringify(snapshot.deviceApprovals));
+    }
+    if (snapshot.settings && typeof snapshot.settings === 'object') {
+      safeSetLocalStorage(STORAGE_KEYS.SETTINGS, JSON.stringify(snapshot.settings));
+    }
+    markUserCustomized();
+  } catch {
+    // ignore
+  }
+}
+
 export async function syncWithServer(force = false): Promise<boolean> {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return false;
   
@@ -710,6 +857,61 @@ export async function syncWithServer(force = false): Promise<boolean> {
       if (json.data) {
         const d = json.data;
         const newVersion = json.version || (localDbVersion + 1);
+
+        // ANTI-REVERT GUARD: If a freshly deployed/restarted container booted with seed defaults
+        // (isSeedDefault === true), NEVER overwrite the user's customized browser data or IndexedDB vault!
+        // Instead, automatically heal the fresh server with the client's persisted snapshot.
+        if (d.isSeedDefault === true) {
+          const hasLocalFlag = localStorage.getItem(USER_CUSTOMIZED_FLAG_KEY) === 'true';
+          const localWall = safeParseJson<Record<string, unknown>>(
+            localStorage.getItem(STORAGE_KEYS.COMPANY_WALL_QR),
+            {}
+          );
+          const hasLocalCustomName = Boolean(
+            typeof localWall?.companyName === 'string' &&
+              localWall.companyName.trim() !== '' &&
+              localWall.companyName.trim() !== DEFAULT_COMPANY_NAME
+          );
+          const vaultSnap = await loadVaultSnapshot();
+          const hasVaultData = Boolean(
+            vaultSnap &&
+              ((vaultSnap.companyName && vaultSnap.companyName !== DEFAULT_COMPANY_NAME) ||
+                (Array.isArray(vaultSnap.employees) && vaultSnap.employees.length > 0))
+          );
+
+          if (hasLocalFlag || hasLocalCustomName || hasVaultData) {
+            const clientSnap =
+              hasLocalFlag || hasLocalCustomName
+                ? buildCurrentClientSnapshot()
+                : (vaultSnap as PersistentVaultSnapshot);
+            if (!hasLocalFlag && vaultSnap) {
+              hydrateLocalStorageFromSnapshot(vaultSnap);
+            }
+            try {
+              const restoreRes = await fetch('/api/db/restore-snapshot', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  mode: 'auto_hydrate_fresh_server',
+                  snapshot: clientSnap,
+                }),
+              });
+              if (restoreRes.ok) {
+                const restoreJson = await restoreRes.json();
+                if (restoreJson && typeof restoreJson.version === 'number') {
+                  localDbVersion = restoreJson.version;
+                  safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+                }
+                mirrorClientVaultSnapshot();
+                window.dispatchEvent(new CustomEvent('pdks-data-synced', { detail: { version: localDbVersion } }));
+                return true;
+              }
+            } catch {
+              // Keep local customized state intact even if restore request fails temporarily
+              return true;
+            }
+          }
+        }
         
         // Only update storage and fire sync events if version actually changed
         if (newVersion !== localDbVersion || force) {
@@ -1065,6 +1267,11 @@ export async function syncWithServer(force = false): Promise<boolean> {
             } catch {}
           }
 
+          if (d.isSeedDefault === false) {
+            markUserCustomized();
+            mirrorClientVaultSnapshot();
+          }
+
           window.dispatchEvent(new CustomEvent('pdks-data-synced', { detail: { version: localDbVersion } }));
         }
         return true;
@@ -1080,6 +1287,8 @@ export async function syncWithServer(force = false): Promise<boolean> {
 
 export async function pushToServer(collection: string, data: any): Promise<void> {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return;
+  markUserCustomized();
+  mirrorClientVaultSnapshot();
   // Never allow pre-hydration default state to overwrite the central server database
   if (!isServerHydrated) {
     console.warn(`Skipped premature pushToServer(${collection}) before initial server hydration.`);
@@ -1106,6 +1315,8 @@ export async function pushToServer(collection: string, data: any): Promise<void>
 
 export async function pushBatchToServer(updates: Record<string, any>): Promise<void> {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return;
+  markUserCustomized();
+  mirrorClientVaultSnapshot();
   if (!isServerHydrated) {
     console.warn('Skipped premature pushBatchToServer before initial server hydration.');
     return;
@@ -1331,7 +1542,7 @@ export const pdksStorage = {
           ? 'break_end'
           : 'check_in';
 
-      const shifts = this.getShifts();
+      const shifts = this.getAllShiftsIncludingInactive();
       const shift = shifts.find(s => s.id === emp.shiftId) || shifts[0];
       let status: AttendanceStatus = 'normal';
       let lateMinutes = 0;
@@ -1933,47 +2144,185 @@ export const pdksStorage = {
     return this.getEmployees().filter(e => e.avatarStatus === 'pending' && !!e.pendingAvatar);
   },
 
-  getShifts(): Shift[] {
+  getAllShiftsIncludingInactive(): Shift[] {
     const raw = localStorage.getItem(STORAGE_KEYS.SHIFTS);
-    if (!raw) {
-      localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(DEFAULT_SHIFTS));
-      return DEFAULT_SHIFTS;
+    if (raw === null) {
+      const seeded = DEFAULT_SHIFTS.map((s) => ({ ...s, is_active: true }));
+      try {
+        localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(seeded));
+      } catch {
+        // ignore
+      }
+      return seeded;
     }
     try {
       const parsed: Shift[] = JSON.parse(raw);
-      if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_SHIFTS;
-      const existingIds = new Set(parsed.map((s) => s?.id));
-      const missingCanonical = CANONICAL_SHIFT_TEMPLATES.filter((t) => !existingIds.has(t.id));
-      if (missingCanonical.length > 0) {
-        const merged = [...missingCanonical, ...parsed];
-        try { localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(merged)); } catch {}
-        return merged;
-      }
-      return parsed;
+      if (!Array.isArray(parsed)) return DEFAULT_SHIFTS.map((s) => ({ ...s, is_active: true }));
+      return parsed.filter((s) => Boolean(s && s.id));
     } catch {
-      return DEFAULT_SHIFTS;
+      return DEFAULT_SHIFTS.map((s) => ({ ...s, is_active: true }));
     }
+  },
+
+  getShifts(): Shift[] {
+    return this.getAllShiftsIncludingInactive().filter((s) => s.is_active !== false);
   },
 
   saveShift(shift: Shift): Shift {
-    const list = this.getShifts();
-    const idx = list.findIndex(s => s.id === shift.id);
+    const normalized: Shift = {
+      ...shift,
+      is_active: shift.is_active !== false,
+    };
+    const list = this.getAllShiftsIncludingInactive();
+    const idx = list.findIndex((s) => s.id === normalized.id);
     if (idx >= 0) {
-      list[idx] = shift;
+      list[idx] = normalized;
     } else {
-      list.push(shift);
+      list.push(normalized);
     }
     localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(list));
+    markUserCustomized();
+    mirrorClientVaultSnapshot();
     pushToServer('shifts', list);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
-    return shift;
+    return normalized;
   },
 
-  deleteShift(id: string): void {
-    const list = this.getShifts().filter(s => s.id !== id);
-    localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(list));
-    pushToServer('shifts', list);
+  async saveShiftAsync(
+    shift: Shift
+  ): Promise<{ success: boolean; shift?: Shift; message: string }> {
+    const active = this.getActiveUser();
+    const isSA = this.isSuperAdmin(active);
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (isSA && saToken) headers['X-Super-Admin-Token'] = saToken;
+    else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+    const normalized: Shift = {
+      ...shift,
+      is_active: true,
+    };
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch('/api/shifts', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(normalized),
+        });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.success) {
+          if (Array.isArray(json.shifts)) {
+            localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(json.shifts));
+          } else {
+            const list = this.getAllShiftsIncludingInactive();
+            const idx = list.findIndex((s) => s.id === normalized.id);
+            if (idx >= 0) list[idx] = json.shift || normalized;
+            else list.push(json.shift || normalized);
+            localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(list));
+          }
+          if (typeof json.version === 'number') {
+            localDbVersion = json.version;
+            safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+          }
+          markUserCustomized();
+          mirrorClientVaultSnapshot();
+          window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+          return {
+            success: true,
+            shift: json.shift || normalized,
+            message: json.message || 'Vardiya planı başarıyla kaydedildi.',
+          };
+        }
+        if (res.status === 400 || res.status === 403) {
+          return { success: false, message: json?.message || 'Vardiya kaydedilemedi.' };
+        }
+      } catch {
+        // Offline / fallback to local persistence below
+      }
+    }
+
+    const saved = this.saveShift(normalized);
+    return { success: true, shift: saved, message: 'Vardiya planı başarıyla kaydedildi.' };
+  },
+
+  deleteShift(id: string): { mode: 'soft_delete' | 'hard_delete' } {
+    const allShifts = this.getAllShiftsIncludingInactive();
+    const isUsedByEmployee = this.getAllEmployeesIncludingArchived().some((e) => e && e.shiftId === id);
+    const isUsedBySchedule = this.getEmployeeShifts().some((es) => es && es.shiftId === id);
+
+    let mode: 'soft_delete' | 'hard_delete' = 'hard_delete';
+    let nextList: Shift[];
+    if (isUsedByEmployee || isUsedBySchedule) {
+      mode = 'soft_delete';
+      nextList = allShifts.map((s) => (s.id === id ? { ...s, is_active: false } : s));
+    } else {
+      nextList = allShifts.filter((s) => s.id !== id);
+    }
+
+    localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(nextList));
+    markUserCustomized();
+    mirrorClientVaultSnapshot();
+    pushToServer('shifts', nextList);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return { mode };
+  },
+
+  async deleteShiftAsync(
+    id: string
+  ): Promise<{ success: boolean; mode?: 'soft_delete' | 'hard_delete'; message: string }> {
+    const active = this.getActiveUser();
+    const isSA = this.isSuperAdmin(active);
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+    const headers: Record<string, string> = {};
+    if (isSA && saToken) headers['X-Super-Admin-Token'] = saToken;
+    else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch(`/api/shifts/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers,
+        });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.success) {
+          if (Array.isArray(json.shifts)) {
+            localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(json.shifts));
+          } else {
+            this.deleteShift(id);
+          }
+          if (typeof json.version === 'number') {
+            localDbVersion = json.version;
+            safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+          }
+          markUserCustomized();
+          mirrorClientVaultSnapshot();
+          window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+          return {
+            success: true,
+            mode: json.mode,
+            message: json.message || 'Vardiya tanımı kaldırıldı.',
+          };
+        }
+        if (res.status === 403 || res.status === 404) {
+          return { success: false, message: json?.message || 'Vardiya silinemedi.' };
+        }
+      } catch {
+        // Fallback to local soft/hard delete below
+      }
+    }
+
+    const localRes = this.deleteShift(id);
+    return {
+      success: true,
+      mode: localRes.mode,
+      message:
+        localRes.mode === 'soft_delete'
+          ? 'Vardiya geçmiş/aktif kayıtlarda kullanıldığı için pasife alındı ve aktif listeden kaldırıldı.'
+          : 'Vardiya tanımı kalıcı olarak silindi.',
+    };
   },
 
   // Relational Employee Shifts (employee_shifts: employeeId + date -> shiftId)
@@ -1993,10 +2342,10 @@ export const pdksStorage = {
     date: string,
     fallbackShiftId?: string
   ): { shift: Shift | undefined; shiftId: string; isOverride: boolean; assignment?: EmployeeShiftAssignment } {
-    const shifts = this.getShifts();
+    const shifts = this.getAllShiftsIncludingInactive();
     const assignments = this.getEmployeeShifts();
     const assignment = assignments.find((a) => a.employeeId === employeeId && a.date === date);
-    const resolvedShiftId = assignment?.shiftId || fallbackShiftId || shifts[0]?.id || 'SHIFT-SABAH';
+    const resolvedShiftId = assignment?.shiftId || fallbackShiftId || shifts.find((s) => s.is_active !== false)?.id || shifts[0]?.id || 'SHIFT-SABAH';
     const shift = shifts.find((s) => s.id === resolvedShiftId) || shifts[0];
     return {
       shift,
@@ -2051,6 +2400,9 @@ export const pdksStorage = {
           localDbVersion = json.version;
           try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
         }
+        if (Array.isArray(json.shifts)) {
+          localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(json.shifts));
+        }
         if (Array.isArray(json.employee_shifts)) {
           localStorage.setItem(STORAGE_KEYS.EMPLOYEE_SHIFTS, JSON.stringify(json.employee_shifts));
         }
@@ -2059,6 +2411,8 @@ export const pdksStorage = {
           const updatedEmps = allEmps.map((e) => (e.id === json.employee.id ? json.employee : e));
           localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(updatedEmps));
         }
+        markUserCustomized();
+        mirrorClientVaultSnapshot();
         window.dispatchEvent(new CustomEvent('pdks-data-synced'));
         return {
           success: true,
@@ -2129,9 +2483,14 @@ export const pdksStorage = {
           localDbVersion = json.version;
           try { localStorage.setItem('pdks_db_version_v1', String(localDbVersion)); } catch {}
         }
+        if (Array.isArray(json.shifts)) {
+          localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(json.shifts));
+        }
         if (Array.isArray(json.employee_shifts)) {
           localStorage.setItem(STORAGE_KEYS.EMPLOYEE_SHIFTS, JSON.stringify(json.employee_shifts));
         }
+        markUserCustomized();
+        mirrorClientVaultSnapshot();
         window.dispatchEvent(new CustomEvent('pdks-data-synced'));
         return {
           success: true,
@@ -2256,6 +2615,38 @@ export const pdksStorage = {
     }
   },
 
+  getEmployeeAnnualLeaveBalance(employeeId: string): {
+    entitlement: number;
+    used: number;
+    remaining: number;
+  } {
+    const allEmps = this.getAllEmployeesIncludingArchived();
+    const emp = allEmps.find((e) => e.id === employeeId);
+    const entitlement =
+      typeof emp?.annualLeaveEntitlement === 'number' && emp.annualLeaveEntitlement >= 0
+        ? emp.annualLeaveEntitlement
+        : 14;
+    const approvedAnnualDays = this.getLeaveRequests()
+      .filter(
+        (l) =>
+          l.employeeId === employeeId &&
+          l.status === 'approved' &&
+          l.leaveType === 'Yıllık İzin'
+      )
+      .reduce((sum, l) => sum + Math.max(0, Number(l.days) || 0), 0);
+
+    const remaining =
+      typeof emp?.annualLeaveBalance === 'number' && !Number.isNaN(emp.annualLeaveBalance)
+        ? Math.max(0, emp.annualLeaveBalance)
+        : Math.max(0, entitlement - approvedAnnualDays);
+
+    return {
+      entitlement,
+      used: approvedAnnualDays,
+      remaining,
+    };
+  },
+
   saveLeaveRequest(req: LeaveRequest): void {
     const list = this.getLeaveRequests();
     const idx = list.findIndex(l => l.id === req.id);
@@ -2265,6 +2656,8 @@ export const pdksStorage = {
       list.unshift(req);
     }
     localStorage.setItem(STORAGE_KEYS.LEAVES, JSON.stringify(list));
+    markUserCustomized();
+    mirrorClientVaultSnapshot();
     pushToServer('leaves', list);
     window.dispatchEvent(new CustomEvent('pdks-data-synced'));
   },
@@ -2272,25 +2665,156 @@ export const pdksStorage = {
   updateLeaveStatus(id: string, status: 'approved' | 'rejected' | 'pending'): void {
     const list = this.getLeaveRequests();
     const req = list.find(l => l.id === id);
-    if (req) {
+    if (req && req.status !== 'cancelled') {
+      const wasApproved = req.status === 'approved';
       req.status = status;
-      localStorage.setItem(STORAGE_KEYS.LEAVES, JSON.stringify(list));
-      pushToServer('leaves', list);
-      // If approved for today, mark employee as on leave
-      if (status === 'approved' && req.startDate === getTodayString()) {
-        const allCurrent = this.getAllEmployeesIncludingArchived();
-        const employees = allCurrent.filter((e) => !isArchivedEmployee(e));
-        const emp = employees.find(e => e.id === req.employeeId);
-        if (emp) {
+      if (status === 'approved') {
+        req.approvedAt = new Date().toISOString();
+      }
+
+      const allCurrent = this.getAllEmployeesIncludingArchived();
+      const employees = allCurrent.filter((e) => !isArchivedEmployee(e));
+      const emp = employees.find(e => e.id === req.employeeId);
+      let employeesModified = false;
+
+      if (status === 'approved' && !wasApproved && emp) {
+        if (req.leaveType === 'Yıllık İzin') {
+          const entitlement =
+            typeof emp.annualLeaveEntitlement === 'number' && emp.annualLeaveEntitlement >= 0
+              ? emp.annualLeaveEntitlement
+              : 14;
+          const prevUsed = list
+            .filter(
+              (l) =>
+                l.id !== req.id &&
+                l.employeeId === emp.id &&
+                l.status === 'approved' &&
+                l.leaveType === 'Yıllık İzin'
+            )
+            .reduce((sum, l) => sum + Math.max(0, Number(l.days) || 0), 0);
+          const currentBalance =
+            typeof emp.annualLeaveBalance === 'number' && !Number.isNaN(emp.annualLeaveBalance)
+              ? emp.annualLeaveBalance
+              : Math.max(0, entitlement - prevUsed);
+          const deductDays = Math.max(0, Number(req.days) || 0);
+          emp.annualLeaveEntitlement = entitlement;
+          emp.annualLeaveBalance = Math.max(0, currentBalance - deductDays);
+          req.balance_deducted_days = deductDays;
+          employeesModified = true;
+        }
+        const today = getTodayString();
+        if (req.startDate <= today && req.endDate >= today) {
           emp.status = 'leave';
           emp.currentPresence = 'outside';
-          const combined = mergeEmployeesPreservingArchived(allCurrent, employees);
-          localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
-          pushToServer('employees', combined);
+          employeesModified = true;
         }
       }
+
+      localStorage.setItem(STORAGE_KEYS.LEAVES, JSON.stringify(list));
+      if (employeesModified) {
+        const combined = mergeEmployeesPreservingArchived(allCurrent, employees);
+        localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(combined));
+        pushBatchToServer({ leaves: list, employees: combined });
+      } else {
+        pushToServer('leaves', list);
+      }
+      markUserCustomized();
+      mirrorClientVaultSnapshot();
       window.dispatchEvent(new CustomEvent('pdks-data-synced'));
     }
+  },
+
+  async cancelLeaveRequestAsync(
+    leaveId: string,
+    cancelReason: string
+  ): Promise<{
+    success: boolean;
+    status?: number;
+    leave?: LeaveRequest;
+    refundedDays?: number;
+    clearedCalendarOverrides?: number;
+    restoredActiveStatus?: boolean;
+    message: string;
+  }> {
+    const active = this.getActiveUser();
+    if (!active) {
+      return {
+        success: false,
+        status: 401,
+        message: 'Oturum doğrulanamadı. Lütfen tekrar giriş yapın.',
+      };
+    }
+
+    const isSA = this.isSuperAdmin(active);
+    const isHR = active.role === 'ik_yoneticisi';
+    if (!isSA && !isHR) {
+      return {
+        success: false,
+        status: 403,
+        message: '403 Forbidden: Yıllık izin iptal yetkisi sadece İK birimindedir',
+      };
+    }
+
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (isSA && saToken) headers['X-Super-Admin-Token'] = saToken;
+    else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch(`/api/leaves/${encodeURIComponent(leaveId)}/cancel`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ cancel_reason: cancelReason.trim() }),
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json?.success) {
+          return {
+            success: false,
+            status: res.status,
+            message: json?.message || `İzin iptal edilemedi (HTTP ${res.status}).`,
+          };
+        }
+        if (typeof json.version === 'number') {
+          localDbVersion = json.version;
+          safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+        }
+        if (Array.isArray(json.leaves)) {
+          localStorage.setItem(STORAGE_KEYS.LEAVES, JSON.stringify(json.leaves));
+        }
+        if (Array.isArray(json.employees)) {
+          localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(json.employees));
+        }
+        if (Array.isArray(json.employee_shifts)) {
+          localStorage.setItem(STORAGE_KEYS.EMPLOYEE_SHIFTS, JSON.stringify(json.employee_shifts));
+        }
+        markUserCustomized();
+        mirrorClientVaultSnapshot();
+        window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+        return {
+          success: true,
+          status: 200,
+          leave: json.leave,
+          refundedDays: json.refundedDays ?? 0,
+          clearedCalendarOverrides: json.clearedCalendarOverrides ?? 0,
+          restoredActiveStatus: Boolean(json.restoredActiveStatus),
+          message: json.message || 'İzin talebi başarıyla iptal edildi.',
+        };
+      } catch {
+        return {
+          success: false,
+          status: 503,
+          message: 'Sunucuya erişilemediği için izin iptal işlemi doğrulanamadı.',
+        };
+      }
+    }
+
+    return {
+      success: false,
+      status: 500,
+      message: 'İstemci API ortamı kullanılamıyor.',
+    };
   },
 
   getOvertimeRequests(): OvertimeRequest[] {
@@ -2416,7 +2940,7 @@ export const pdksStorage = {
     const now = new Date();
     const timeStr = now.toTimeString().split(' ')[0]; // "08:35:12"
     const dateStr = getTodayString();
-    const shifts = this.getShifts();
+    const shifts = this.getAllShiftsIncludingInactive();
     const shift = shifts.find(s => s.id === emp.shiftId) || shifts[0];
 
     // Evaluate on-time / late status
@@ -3122,7 +3646,7 @@ export const pdksStorage = {
     }
 
     // 4. Calculate Punctuality / Compliance
-    const shifts = this.getShifts();
+    const shifts = this.getAllShiftsIncludingInactive();
     const shift = shifts.find((s) => s.id === emp.shiftId) || shifts[0];
     let status: AttendanceStatus = 'normal';
     let lateMinutes = 0;
@@ -4525,7 +5049,7 @@ export const pdksStorage = {
         emp.registeredDeviceAt = nowIso;
       }
       if (emp.currentPresence === 'outside') {
-        const shifts = this.getShifts();
+        const shifts = this.getAllShiftsIncludingInactive();
         const shift = shifts.find((s) => s.id === emp.shiftId) || shifts[0];
         let status: AttendanceStatus = 'on_time';
         let lateMinutes = 0;
@@ -6461,6 +6985,8 @@ export const pdksStorage = {
       ...(cleanBranch ? { branchName: cleanBranch } : {}),
     };
     safeSetLocalStorage(STORAGE_KEYS.COMPANY_WALL_QR, JSON.stringify(updated));
+    markUserCustomized();
+    mirrorClientVaultSnapshot();
 
     window.dispatchEvent(new CustomEvent('pdks-company-name-updated', { detail: cleanCompany }));
     window.dispatchEvent(new CustomEvent('pdks-wall-qr-updated', { detail: updated }));
@@ -6821,7 +7347,7 @@ export const pdksStorage = {
   } {
     const employees = this.getEmployees().filter(e => e.status !== 'inactive');
     const records = this.getAttendanceRecords();
-    const shifts = this.getShifts();
+    const shifts = this.getAllShiftsIncludingInactive();
 
     const sampleDays = [
       { date: '2026-10-02', dayName: 'Cuma' },
@@ -6995,6 +7521,83 @@ export const pdksStorage = {
       averageBreakDiscipline,
       departmentRanking,
       weekdayPunctualityPattern,
+    };
+  },
+
+  exportFullBackupJson(): PersistentVaultSnapshot {
+    const snap = buildCurrentClientSnapshot();
+    markUserCustomized();
+    mirrorClientVaultSnapshot();
+    return snap;
+  },
+
+  async restoreFullBackupJsonAsync(
+    rawSnapshot: unknown
+  ): Promise<{ success: boolean; message: string }> {
+    if (!rawSnapshot || typeof rawSnapshot !== 'object') {
+      return { success: false, message: 'Geçersiz JSON yedek dosyası.' };
+    }
+    const snapshot = rawSnapshot as PersistentVaultSnapshot;
+    const hasCoreData = Boolean(
+      snapshot.companyName ||
+        Array.isArray(snapshot.employees) ||
+        Array.isArray(snapshot.accounts) ||
+        Array.isArray(snapshot.shifts)
+    );
+    if (!hasCoreData) {
+      return {
+        success: false,
+        message: 'Seçilen dosya geçerli bir PDKS yedeği içermiyor.',
+      };
+    }
+
+    // 1. Immediately hydrate browser localStorage + IndexedDB vault
+    hydrateLocalStorageFromSnapshot(snapshot);
+    mirrorClientVaultSnapshot();
+
+    // 2. Push restored snapshot to central server
+    const active = this.getActiveUser();
+    const isSA = this.isSuperAdmin(active);
+    const saToken = getSuperAdminToken();
+    const userToken = getUserSessionToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (isSA && saToken) headers['X-Super-Admin-Token'] = saToken;
+    else if (userToken) headers['X-PDKS-Session-Token'] = userToken;
+
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      try {
+        const res = await fetch('/api/db/restore-snapshot', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ snapshot }),
+        });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.success) {
+          if (typeof json.version === 'number') {
+            localDbVersion = json.version;
+            safeSetLocalStorage('pdks_db_version_v1', String(localDbVersion));
+          }
+          window.dispatchEvent(new CustomEvent('pdks-data-synced', { detail: { version: localDbVersion } }));
+          return {
+            success: true,
+            message: json.message || 'Sistem yedeği başarıyla geri yüklendi.',
+          };
+        }
+        if (res.status === 401 || res.status === 403) {
+          return {
+            success: false,
+            message: json?.message || 'Yedek geri yükleme yetkiniz bulunmamaktadır.',
+          };
+        }
+      } catch {
+        // Local restoration still succeeded
+      }
+    }
+
+    window.dispatchEvent(new CustomEvent('pdks-data-synced'));
+    return {
+      success: true,
+      message: 'Yedek yerel tarayıcı kasasına başarıyla geri yüklendi.',
     };
   },
 

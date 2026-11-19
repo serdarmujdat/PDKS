@@ -80,7 +80,7 @@ export const AnalyticsReports: React.FC = () => {
 
   const loadSourceData = () => {
     setEmployees(pdksStorage.getEmployees());
-    setShifts(pdksStorage.getShifts());
+    setShifts(pdksStorage.getAllShiftsIncludingInactive());
     setEmployeeShifts(pdksStorage.getEmployeeShifts());
     setRecords(pdksStorage.getAttendanceRecords());
     setLeaves(pdksStorage.getLeaveRequests());
